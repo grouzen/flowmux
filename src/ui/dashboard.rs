@@ -454,12 +454,7 @@ fn render_card(
         return (0, 0);
     };
 
-    let divider_area = Rect {
-        x: resp_area.x,
-        y: resp_area.y,
-        width: resp_area.width,
-        height: 1,
-    };
+    // 1-line gap, then content
     let content_area = if resp_area.height > 1 {
         Rect {
             x: resp_area.x,
@@ -468,18 +463,8 @@ fn render_card(
             height: resp_area.height - 1,
         }
     } else {
-        resp_area
+        return (0, 0);
     };
-
-    // Draw divider — matches selection state
-    let divider_color = if is_selected { BLUE } else { BG2 };
-    let divider: String = std::iter::repeat('─')
-        .take(resp_area.width as usize)
-        .collect();
-    f.render_widget(
-        Paragraph::new(divider).style(ds(dimmed).fg(divider_color)),
-        divider_area,
-    );
 
     // Render response content
     match &entry.meta.last_model_response {
@@ -493,10 +478,14 @@ fn render_card(
 
             // Scroll hint on selected card
             if is_selected && scroll_offset > 0 {
+                let hint_area = Rect {
+                    height: 1,
+                    ..content_area
+                };
                 let hint = Paragraph::new("▲ PgUp")
                     .style(ds(dimmed).fg(GRAY))
                     .alignment(Alignment::Right);
-                f.render_widget(hint, divider_area);
+                f.render_widget(hint, hint_area);
             }
         }
         _ => {
