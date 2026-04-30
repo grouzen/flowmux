@@ -165,22 +165,12 @@ pub fn render_agent_view(
     }
     let status_line = Line::from(status_spans);
 
-    let hint = " Shift+drag to select";
     let nav = "  [Ctrl+g] Dashboard";
-    let right_width = (hint.len() + nav.len()) as u16;
+    let nav_width = nav.len() as u16;
     let status_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(0), Constraint::Length(right_width)])
+        .constraints([Constraint::Min(0), Constraint::Length(nav_width)])
         .split(status_area);
-
-    // Split the right section into nav hint + drag hint
-    let right_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(nav.len() as u16),
-            Constraint::Length(hint.len() as u16),
-        ])
-        .split(status_chunks[1]);
 
     f.render_widget(Paragraph::new(status_line), status_chunks[0]);
     f.render_widget(
@@ -190,11 +180,7 @@ pub fn render_agent_view(
             Span::styled("]", Style::default().fg(BG2)),
             Span::styled(" Dashboard", Style::default().fg(GRAY)),
         ])),
-        right_chunks[0],
-    );
-    f.render_widget(
-        Paragraph::new(hint).style(Style::default().fg(GRAY)),
-        right_chunks[1],
+        status_chunks[1],
     );
 
     // Stopped overlay

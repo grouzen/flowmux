@@ -326,17 +326,17 @@ fn render_card(
     };
     let left_text = format!("{}{}", ctx_text, work_text);
 
-    // Status badge: "[ ● Running ]"
-    let badge_inner = format!("{} {}", sym, lbl);
-    let badge = format!("[ {} ]", badge_inner);
+    // Status badge: colored bg pill " ● Running "
+    let badge_text = format!(" {} {} ", sym, lbl);
     let avail = inner.width as usize;
-    let padding = avail.saturating_sub(left_text.chars().count() + badge.chars().count());
+    let padding = avail.saturating_sub(left_text.chars().count() + badge_text.chars().count());
     let row0 = Line::from(vec![
         Span::styled(left_text, ds(dimmed).fg(GRAY)),
         Span::raw(" ".repeat(padding)),
-        Span::styled("[ ", ds(dimmed).fg(BG2)),
-        Span::styled(badge_inner, ds(dimmed).fg(col).add_modifier(Modifier::BOLD)),
-        Span::styled(" ]", ds(dimmed).fg(BG2)),
+        Span::styled(
+            badge_text,
+            ds(dimmed).fg(BG1).bg(col).add_modifier(Modifier::BOLD),
+        ),
     ]);
 
     // First prompt only — single line, centered vertically with 1-cell top/bottom padding
@@ -542,17 +542,5 @@ fn render_keybindings_bar(f: &mut Frame, area: Rect, agents: &[AgentEntry], dimm
     ));
 
     let status_line = Line::from(spans);
-
-    let hint = " Shift+drag to select";
-    let hint_width = hint.len() as u16;
-    let bar_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(0), Constraint::Length(hint_width)])
-        .split(area);
-
-    f.render_widget(Paragraph::new(status_line), bar_chunks[0]);
-    f.render_widget(
-        Paragraph::new(hint).style(ds(dimmed).fg(GRAY)),
-        bar_chunks[1],
-    );
+    f.render_widget(Paragraph::new(status_line), area);
 }
