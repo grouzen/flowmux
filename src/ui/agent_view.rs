@@ -110,11 +110,25 @@ pub fn render_agent_view(
         .count();
 
     let sep = Span::styled(" │ ", Style::default().fg(BG2));
+
+    let ctx_text = if let Some(ctx) = &agent_entry.meta.context {
+        let used = format_tokens(ctx.used);
+        if let Some(total) = ctx.total {
+            format!("{}/{}", used, format_tokens(total))
+        } else {
+            format!("{}", used)
+        }
+    } else {
+        String::new()
+    };
+
     let status_line = Line::from(vec![
         Span::styled(
             format!(" {}", agent_entry.config.name),
             Style::default().fg(FG).add_modifier(Modifier::BOLD),
         ),
+        sep.clone(),
+        Span::styled(ctx_text, Style::default().fg(GRAY)),
         sep.clone(),
         Span::styled(format!("{} ", ICON_DIR), Style::default().fg(GRAY)),
         Span::styled(dir_str.as_str(), Style::default().fg(GRAY)),

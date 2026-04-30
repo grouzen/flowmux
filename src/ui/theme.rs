@@ -49,3 +49,18 @@ pub const ICON_WAIT: &str = "⏸";
 pub const ICON_STOP: &str = "■";
 /// U+2717 BALLOT X — error indicator.
 pub const ICON_ERR: &str = "✗";
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+/// Formats a token count compactly: `1.2M`, `34k`, or the raw number.
+pub fn format_tokens(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.0}k", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
+}

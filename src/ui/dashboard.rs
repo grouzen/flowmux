@@ -212,16 +212,6 @@ fn status_color(status: &AgentStatus) -> ratatui::style::Color {
     }
 }
 
-fn format_tokens(n: u64) -> String {
-    if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    } else if n >= 1_000 {
-        format!("{:.0}k", n as f64 / 1_000.0)
-    } else {
-        n.to_string()
-    }
-}
-
 /// Truncates a string to `max` chars (hard cut, no ellipsis).
 fn truncate(s: &str, max: usize) -> String {
     let chars: Vec<char> = s.chars().collect();
