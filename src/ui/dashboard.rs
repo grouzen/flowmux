@@ -542,5 +542,17 @@ fn render_keybindings_bar(f: &mut Frame, area: Rect, agents: &[AgentEntry], dimm
     ));
 
     let status_line = Line::from(spans);
-    f.render_widget(Paragraph::new(status_line), area);
+
+    let brand = format!("♥ Stable v{}  ", env!("CARGO_PKG_VERSION"));
+    let brand_width = brand.chars().count() as u16;
+    let bar_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(brand_width)])
+        .split(area);
+
+    f.render_widget(Paragraph::new(status_line), bar_chunks[0]);
+    f.render_widget(
+        Paragraph::new(brand).style(ds(dimmed).fg(GRAY)),
+        bar_chunks[1],
+    );
 }

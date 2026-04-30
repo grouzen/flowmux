@@ -166,10 +166,16 @@ pub fn render_agent_view(
     let status_line = Line::from(status_spans);
 
     let nav = "  [Ctrl+g] Dashboard";
+    let brand = format!("  ♥ Stable v{}  ", env!("CARGO_PKG_VERSION"));
     let nav_width = nav.len() as u16;
+    let brand_width = brand.chars().count() as u16;
     let status_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(0), Constraint::Length(nav_width)])
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(nav_width),
+            Constraint::Length(brand_width),
+        ])
         .split(status_area);
 
     f.render_widget(Paragraph::new(status_line), status_chunks[0]);
@@ -181,6 +187,10 @@ pub fn render_agent_view(
             Span::styled(" Dashboard", Style::default().fg(GRAY)),
         ])),
         status_chunks[1],
+    );
+    f.render_widget(
+        Paragraph::new(brand).style(Style::default().fg(GRAY)),
+        status_chunks[2],
     );
 
     // Stopped overlay
