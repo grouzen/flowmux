@@ -784,7 +784,7 @@ impl AgentAdapter for OpenCodeAdapter {
                 .filter_map(|m| all_text_parts(m))
                 .collect();
             if !parts.is_empty() {
-                return Some(parts.join("\n"));
+                return Some(parts.join("\n\n"));
             }
         }
 
@@ -795,7 +795,7 @@ impl AgentAdapter for OpenCodeAdapter {
             .filter(|m| msg_role(m) == Some("assistant"))
             .filter_map(|m| all_text_parts(m))
             .collect();
-        if !parts.is_empty() { Some(parts.join("\n")) } else { None }
+        if !parts.is_empty() { Some(parts.join("\n\n")) } else { None }
     }
 
     fn get_cached_session_id(&self) -> Option<String> {
