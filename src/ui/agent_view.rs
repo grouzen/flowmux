@@ -116,13 +116,13 @@ pub fn render_agent_view(
         if let Some(total) = ctx.total {
             format!("{}/{}", used, format_tokens(total))
         } else {
-            format!("{}", used)
+            used
         }
     } else {
-        String::new()
+        "∞/∞".to_string()
     };
 
-    let status_line = Line::from(vec![
+    let mut status_spans = vec![
         Span::styled(
             format!(" {}", agent_entry.config.name),
             Style::default().fg(FG).add_modifier(Modifier::BOLD),
@@ -151,7 +151,19 @@ pub fn render_agent_view(
             format!("  {} {} waiting", ICON_WAIT, waiting),
             Style::default().fg(YELLOW),
         ),
-    ]);
+    ];
+    if let Some(model_str) = agent_entry.meta.model_name.as_deref() {
+        // Insert model name after agent_type (index 8, before the time sep)
+        let insert_at = status_spans.len() - 3; // before sep+time+counts
+        status_spans.insert(
+            insert_at,
+            Span::styled(
+                format!("  {} {}", ICON_MODEL, model_str),
+                Style::default().fg(GRAY),
+            ),
+        );
+    }
+    let status_line = Line::from(status_spans);
 
     let hint = " Shift+drag to select";
     let nav = "  [Ctrl+g] Dashboard";

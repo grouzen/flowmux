@@ -312,7 +312,7 @@ fn render_card(
             used
         }
     } else {
-        "—".to_string()
+        "∞/∞".to_string()
     };
 
     let work_text = if entry.meta.total_work_ms > 0 {
@@ -354,16 +354,21 @@ fn render_card(
         Span::styled(dir_str, ds(dimmed).fg(GRAY)),
     ]);
 
-    // --- Info row B: agent_type · model_name ---
+    // --- Info row B: agent_type · model_name (only if known) ---
     let agent_type = &entry.config.agent_type;
-    let model_str = entry.meta.model_name.as_deref().unwrap_or("—");
-    let info_b = Line::from(vec![
+    let mut info_b_spans = vec![
         Span::styled(format!("{} ", ICON_AGENT), ds(dimmed).fg(GRAY)),
         Span::styled(agent_type.as_str(), ds(dimmed).fg(GRAY)),
-        Span::styled("  ", ds(dimmed).fg(GRAY)),
-        Span::styled(format!("{} ", ICON_MODEL), ds(dimmed).fg(GRAY)),
-        Span::styled(model_str, ds(dimmed).fg(GRAY)),
-    ]);
+    ];
+    if let Some(model_str) = entry.meta.model_name.as_deref() {
+        info_b_spans.push(Span::styled("  ", ds(dimmed).fg(GRAY)));
+        info_b_spans.push(Span::styled(
+            format!("{} ", ICON_MODEL),
+            ds(dimmed).fg(GRAY),
+        ));
+        info_b_spans.push(Span::styled(model_str, ds(dimmed).fg(GRAY)));
+    }
+    let info_b = Line::from(info_b_spans);
 
     let info_row_h: u16 = 1;
     let info_row_b_h: u16 = 2; // 1 text + 1 empty margin line
@@ -420,11 +425,11 @@ fn render_card(
         f.render_widget(prompt_block, slot);
 
         let usable = text_inner.width as usize;
-        let content = if text.is_empty() {
-            Paragraph::new(Span::styled("—", ds(dimmed).fg(GRAY))).style(ds(dimmed).bg(BG1))
-        } else {
+        let content = if !text.is_empty() {
             Paragraph::new(Span::styled(truncate(text, usable), ds(dimmed).fg(FG)))
                 .style(ds(dimmed).bg(BG1))
+        } else {
+            Paragraph::new("").style(ds(dimmed).bg(BG1))
         };
         f.render_widget(content, text_inner);
     };
@@ -488,10 +493,7 @@ fn render_card(
                 f.render_widget(hint, hint_area);
             }
         }
-        _ => {
-            let placeholder = Paragraph::new("no response yet").style(ds(dimmed).fg(GRAY));
-            f.render_widget(placeholder, content_area);
-        }
+        _ => {}
     }
 
     (content_area.height, content_area.width)
