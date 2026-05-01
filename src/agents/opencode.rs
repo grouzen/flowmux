@@ -760,15 +760,6 @@ impl AgentAdapter for OpenCodeAdapter {
         self.live_cache.read().unwrap().first_prompt.clone()
     }
 
-    async fn get_last_prompt(&self) -> Option<String> {
-        let messages = self.live_cache.read().unwrap().recent_messages.clone()?;
-        messages
-            .into_iter()
-            .filter(|m: &Value| msg_role(m) == Some("user"))
-            .last()
-            .and_then(|m| all_text_parts(&m))
-    }
-
     async fn get_last_model_response(&self) -> Option<String> {
         let mut messages = self.live_cache.read().unwrap().recent_messages.clone()?;
         // Sort oldest-first by creation timestamp so positional ordering is reliable.
@@ -793,7 +784,7 @@ impl AgentAdapter for OpenCodeAdapter {
                 .filter_map(|m| all_text_parts(m))
                 .collect();
             if !parts.is_empty() {
-                return Some(parts.join("\n"));
+                return Some(parts.join("\n\n"));
             }
         }
 
@@ -804,7 +795,7 @@ impl AgentAdapter for OpenCodeAdapter {
             .filter(|m| msg_role(m) == Some("assistant"))
             .filter_map(|m| all_text_parts(m))
             .collect();
-        if !parts.is_empty() { Some(parts.join("\n")) } else { None }
+        if !parts.is_empty() { Some(parts.join("\n\n")) } else { None }
     }
 
     fn get_cached_session_id(&self) -> Option<String> {

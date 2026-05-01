@@ -79,7 +79,6 @@ async fn main() -> Result<()> {
                 status: AgentStatus::Unknown,
                 context: None,
                 first_prompt: None,
-                last_prompt: None,
                 last_model_response: None,
                 model_name: None,
                 total_work_ms: 0,
@@ -102,7 +101,7 @@ async fn main() -> Result<()> {
                     let area = f.area();
                     match &state {
                         app::AppState::Dashboard => {
-                            ui::dashboard::render_dashboard(f, area, &app.agents, app.selected, &app.card_scroll, &mut app.card_response_heights, &mut app.card_response_widths);
+                            ui::dashboard::render_dashboard(f, area, &app.agents, app.selected, &app.card_scroll, &mut app.card_response_heights, &mut app.card_response_widths, false);
                         }
                         app::AppState::AgentView(idx) => {
                             if let Some(entry) = app.agents.get(*idx) {
@@ -116,11 +115,11 @@ async fn main() -> Result<()> {
                             }
                         }
                         app::AppState::CreateAgentDialog => {
-                            ui::dashboard::render_dashboard(f, area, &app.agents, app.selected, &app.card_scroll, &mut app.card_response_heights, &mut app.card_response_widths);
+                            ui::dashboard::render_dashboard(f, area, &app.agents, app.selected, &app.card_scroll, &mut app.card_response_heights, &mut app.card_response_widths, true);
                             ui::create_agent::render_create_agent(f, area, &app.create_state);
                         }
                         app::AppState::RemoveAgentDialog(idx) => {
-                            ui::dashboard::render_dashboard(f, area, &app.agents, app.selected, &app.card_scroll, &mut app.card_response_heights, &mut app.card_response_widths);
+                            ui::dashboard::render_dashboard(f, area, &app.agents, app.selected, &app.card_scroll, &mut app.card_response_heights, &mut app.card_response_widths, true);
                             let name = app
                                 .agents
                                 .get(*idx)

@@ -19,7 +19,6 @@ pub struct AgentMeta {
     pub status: AgentStatus,
     pub context: Option<ContextInfo>,
     pub first_prompt: Option<String>,
-    pub last_prompt: Option<String>,
     pub last_model_response: Option<String>,
     /// Model identifier reported by the agent (e.g. "claude-sonnet-4-5").
     pub model_name: Option<String>,
@@ -33,7 +32,6 @@ impl Default for AgentMeta {
             status: AgentStatus::Unknown,
             context: None,
             first_prompt: None,
-            last_prompt: None,
             last_model_response: None,
             model_name: None,
             total_work_ms: 0,

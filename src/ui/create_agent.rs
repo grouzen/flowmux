@@ -1,12 +1,13 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph},
     Frame,
 };
 
 use crate::app::{CreateAgentState, CreateField};
+use crate::ui::theme::*;
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -25,9 +26,13 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
     f.render_widget(Clear, modal_area);
 
     let outer = Block::default()
-        .title(" New Agent ")
+        .title(Span::styled(
+            " New Agent ",
+            Style::default().fg(FG).add_modifier(Modifier::BOLD),
+        ))
         .borders(Borders::ALL)
-        .style(Style::default().fg(Color::White));
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(ORANGE));
     f.render_widget(outer, modal_area);
 
     // Inner area (inside the border)
@@ -89,9 +94,14 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
     row += 1;
 
     // Tab hint
-    let hint = Paragraph::new("             Tab: path autocomplete")
-        .style(Style::default().fg(Color::DarkGray));
-    f.render_widget(hint, rows[row]);
+    let tab_hint = Line::from(vec![
+        Span::raw("             "),
+        Span::styled("[", Style::default().fg(BG2)),
+        Span::styled("Tab", Style::default().fg(ORANGE)),
+        Span::styled("]", Style::default().fg(BG2)),
+        Span::styled(" path autocomplete", Style::default().fg(GRAY)),
+    ]);
+    f.render_widget(Paragraph::new(tab_hint), rows[row]);
     row += 1;
 
     // blank
@@ -99,8 +109,11 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
 
     // Agent label
     let agent_line = Line::from(vec![
-        Span::raw("  Agent:     "),
-        Span::styled("● opencode", Style::default().fg(Color::Green)),
+        Span::styled("  Agent:     ", Style::default().fg(GRAY)),
+        Span::styled(
+            format!("{} opencode", ICON_AGENT),
+            Style::default().fg(GREEN),
+        ),
     ]);
     f.render_widget(Paragraph::new(agent_line), rows[row]);
     row += 1;
@@ -110,16 +123,29 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
 
     // Error line (optional)
     if let Some(err) = &state.error {
-        let err_text = format!("  Error: {}", err);
-        let err_para = Paragraph::new(err_text.as_str()).style(Style::default().fg(Color::Red));
-        f.render_widget(err_para, rows[row]);
+        let err_line = Line::from(vec![
+            Span::raw("  "),
+            Span::styled(format!("{} ", ICON_ERR), Style::default().fg(RED)),
+            Span::styled(err.as_str(), Style::default().fg(RED)),
+        ]);
+        f.render_widget(Paragraph::new(err_line), rows[row]);
         row += 1;
     }
 
     // Action hints
-    let actions = Paragraph::new("  [Enter] Launch        [Esc] Cancel")
-        .style(Style::default().fg(Color::DarkGray));
-    f.render_widget(actions, rows[row]);
+    let actions = Line::from(vec![
+        Span::raw("  "),
+        Span::styled("[", Style::default().fg(BG2)),
+        Span::styled("Enter", Style::default().fg(ORANGE)),
+        Span::styled("]", Style::default().fg(BG2)),
+        Span::styled(" Launch", Style::default().fg(GRAY)),
+        Span::raw("        "),
+        Span::styled("[", Style::default().fg(BG2)),
+        Span::styled("Esc", Style::default().fg(GRAY)),
+        Span::styled("]", Style::default().fg(BG2)),
+        Span::styled(" Cancel", Style::default().fg(GRAY)),
+    ]);
+    f.render_widget(Paragraph::new(actions), rows[row]);
 }
 
 // ---------------------------------------------------------------------------
@@ -130,28 +156,20 @@ fn render_field_row(f: &mut Frame, area: Rect, label: &str, value: &str, focused
     let input_width = area.width.saturating_sub(label.len() as u16 + 2 + 2); // 2 brackets, 2 spaces
     let displayed = truncate_left(value, input_width as usize);
 
-    let input_style = if focused {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
+    let (bracket_color, input_fg, input_modifier) = if focused {
+        (YELLOW, FG, Modifier::BOLD)
     } else {
-        Style::default().fg(Color::White)
-    };
-
-    let bracket_style = if focused {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default().fg(Color::DarkGray)
+        (GRAY, GRAY, Modifier::empty())
     };
 
     let line = Line::from(vec![
-        Span::raw(format!("  {}", label)),
-        Span::styled("[", bracket_style),
+        Span::styled(format!("  {}", label), Style::default().fg(GRAY)),
+        Span::styled("[", Style::default().fg(bracket_color)),
         Span::styled(
             format!("{:<width$}", displayed, width = input_width as usize),
-            input_style,
+            Style::default().fg(input_fg).add_modifier(input_modifier),
         ),
-        Span::styled("]", bracket_style),
+        Span::styled("]", Style::default().fg(bracket_color)),
     ]);
 
     f.render_widget(Paragraph::new(line), area);
