@@ -1,6 +1,8 @@
+mod agent_discovery;
 mod agents;
 mod app;
 mod config;
+mod global_config;
 mod models;
 mod tmux;
 mod tui;
@@ -9,10 +11,12 @@ mod ui;
 use anyhow::Result;
 use clap::Parser;
 
+use agent_discovery::DiscoveredAgents;
 use agents::opencode::OpenCodeAdapter;
 use agents::AgentAdapter;
 use app::App;
 use config::Config;
+use global_config::GlobalConfig;
 use models::{AgentEntry, AgentMeta, AgentStatus};
 
 /// stable — multi-agent TUI dashboard
@@ -28,6 +32,12 @@ struct Cli {
 async fn main() -> Result<()> {
     // Parse CLI
     let cli = Cli::parse();
+
+    // Probe $PATH for agent binaries
+    let discovered = DiscoveredAgents::probe();
+
+    // Load global (cross-session) config
+    let _global_config = GlobalConfig::load()?;
 
     // Initialise the tmux session name before any tmux operations.
     tmux::init(&cli.tmux_session);
@@ -88,7 +98,7 @@ async fn main() -> Result<()> {
     }
 
     // Build App and spawn background tasks
-    let mut app = App::new(config, agents, adapters);
+    let mut app = App::new(config, agents, adapters, discovered);
     app.spawn_tasks();
 
     tui::run(|mut terminal| async move {

@@ -2,6 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::time::{interval, Duration};
 
+use crate::agent_discovery::DiscoveredAgents;
 use crate::agents::opencode::OpenCodeAdapter;
 use crate::agents::AgentAdapter;
 use crate::config::{AgentConfig, Config};
@@ -202,6 +203,7 @@ pub struct App {
     pub state: AppState,
     pub selected: usize,
     pub config: Config,
+    pub discovered: DiscoveredAgents,
     pub agent_view_state: AgentViewState,
     pub create_state: CreateAgentState,
     pub tx: UnboundedSender<Event>,
@@ -221,7 +223,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(config: Config, agents: Vec<AgentEntry>, adapters: Vec<Box<dyn AgentAdapter>>) -> Self {
+    pub fn new(config: Config, agents: Vec<AgentEntry>, adapters: Vec<Box<dyn AgentAdapter>>, discovered: DiscoveredAgents) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let card_count = agents.len();
         Self {
@@ -230,6 +232,7 @@ impl App {
             state: AppState::Dashboard,
             selected: 0,
             config,
+            discovered,
             agent_view_state: AgentViewState::default(),
             create_state: CreateAgentState::default(),
             tx,
