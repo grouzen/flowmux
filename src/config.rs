@@ -2,18 +2,69 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+// ---------------------------------------------------------------------------
+// AgentKind
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "agent_type", rename_all = "lowercase")]
+pub enum AgentKind {
+    Opencode {
+        port: u16,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+    },
+    Claude {
+        stable_agent_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transcript_path: Option<String>,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// AgentConfig
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     pub name: String,
     pub pane: String,
-    pub agent_type: String,
     pub directory: String,
-    pub port: u16,
-    /// Last known session ID for this agent, persisted so the dashboard can
-    /// show history immediately on startup without a global session lookup.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
+    #[serde(flatten)]
+    pub kind: AgentKind,
 }
+
+impl AgentConfig {
+    /// Return a display string for the agent type (e.g. "opencode", "claude").
+    pub fn agent_type_str(&self) -> &'static str {
+        match &self.kind {
+            AgentKind::Opencode { .. } => "opencode",
+            AgentKind::Claude { .. } => "claude",
+        }
+    }
+
+    /// Convenience: return the session_id regardless of agent kind.
+    pub fn session_id(&self) -> Option<&str> {
+        match &self.kind {
+            AgentKind::Opencode { session_id, .. } => session_id.as_deref(),
+            AgentKind::Claude { session_id, .. } => session_id.as_deref(),
+        }
+    }
+
+    /// Convenience: set the session_id on whichever kind is active.
+    pub fn set_session_id(&mut self, id: Option<String>) {
+        match &mut self.kind {
+            AgentKind::Opencode { session_id, .. } => *session_id = id,
+            AgentKind::Claude { session_id, .. } => *session_id = id,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Config (runtime) / ConfigFile (on-disk)
+// ---------------------------------------------------------------------------
 
 /// Serialisable portion of the config (agents list only).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -90,5 +141,60 @@ impl Config {
             .with_context(|| format!("rename config {:?} -> {:?}", tmp_path, path))?;
 
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Round-trip test
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_kind_round_trip() {
+        let agents = vec![
+            AgentConfig {
+                name: "oc".into(),
+                pane: "stable:1.0".into(),
+                directory: "/tmp".into(),
+                kind: AgentKind::Opencode {
+                    port: 9000,
+                    session_id: Some("s1".into()),
+                },
+            },
+            AgentConfig {
+                name: "cl".into(),
+                pane: "stable:2.0".into(),
+                directory: "/tmp".into(),
+                kind: AgentKind::Claude {
+                    stable_agent_id: "abc-123".into(),
+                    session_id: None,
+                    transcript_path: Some("/tmp/t.jsonl".into()),
+                },
+            },
+        ];
+
+        #[derive(Serialize, Deserialize)]
+        struct File {
+            agents: Vec<AgentConfig>,
+        }
+
+        let toml_str = toml::to_string_pretty(&File {
+            agents: agents.clone(),
+        })
+        .unwrap();
+        let back: File = toml::from_str(&toml_str).unwrap();
+
+        assert_eq!(back.agents[0].name, "oc");
+        assert!(matches!(
+            back.agents[0].kind,
+            AgentKind::Opencode { port: 9000, .. }
+        ));
+        assert_eq!(back.agents[0].session_id(), Some("s1"));
+
+        assert_eq!(back.agents[1].name, "cl");
+        assert!(matches!(back.agents[1].kind, AgentKind::Claude { .. }));
+        assert_eq!(back.agents[1].session_id(), None);
     }
 }

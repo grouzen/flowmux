@@ -341,10 +341,10 @@ fn render_card(
     ]);
 
     // --- Info row B: agent_type · model_name (only if known) ---
-    let agent_type = &entry.config.agent_type;
+    let agent_type = entry.config.agent_type_str();
     let mut info_b_spans = vec![
         Span::styled(format!("{} ", ICON_AGENT), ds(dimmed).fg(GRAY)),
-        Span::styled(agent_type.as_str(), ds(dimmed).fg(GRAY)),
+        Span::styled(agent_type, ds(dimmed).fg(GRAY)),
     ];
     if let Some(model_str) = entry.meta.model_name.as_deref() {
         info_b_spans.push(Span::styled(" ", ds(dimmed).fg(GRAY)));

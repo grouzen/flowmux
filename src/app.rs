@@ -5,7 +5,7 @@ use tokio::time::{interval, Duration};
 use crate::agent_discovery::DiscoveredAgents;
 use crate::agents::opencode::OpenCodeAdapter;
 use crate::agents::AgentAdapter;
-use crate::config::{AgentConfig, Config};
+use crate::config::{AgentConfig, AgentKind, Config};
 use crate::models::{AgentEntry, AgentMeta, AgentStatus};
 use crate::tmux;
 use crate::ui::dashboard::grid_layout;
@@ -717,8 +717,8 @@ impl App {
             // correct history immediately on the next startup.
             let session_id = self.adapters[i].get_cached_session_id();
             if let Some(agent_config) = self.config.agents.get_mut(i) {
-                if session_id.is_some() && session_id != agent_config.session_id {
-                    agent_config.session_id = session_id;
+                if session_id.is_some() && session_id.as_deref() != agent_config.session_id() {
+                    agent_config.set_session_id(session_id);
                     config_dirty = true;
                 }
             }
@@ -900,10 +900,11 @@ impl App {
                             let config = AgentConfig {
                                 name: name.clone(),
                                 pane: pane.clone(),
-                                agent_type: "opencode".to_string(),
                                 directory: dir,
-                                port: adapter.port,
-                                session_id: None,
+                                kind: AgentKind::Opencode {
+                                    port: adapter.port,
+                                    session_id: None,
+                                },
                             };
                             self.config.agents.push(config.clone());
                             let _ = self.config.save();
@@ -1005,7 +1006,7 @@ impl App {
     /// then update the in-memory state and persist the config.
     pub async fn restart_agent(&mut self, idx: usize) {
         let (dir, name, session_id) = match self.config.agents.get(idx) {
-            Some(c) => (c.directory.clone(), c.name.clone(), c.session_id.clone()),
+            Some(c) => (c.directory.clone(), c.name.clone(), c.session_id().map(str::to_owned)),
             None => return,
         };
 
@@ -1016,14 +1017,18 @@ impl App {
                 // Update persisted config.
                 if let Some(c) = self.config.agents.get_mut(idx) {
                     c.pane = new_pane.clone();
-                    c.port = new_port;
+                    if let AgentKind::Opencode { ref mut port, .. } = c.kind {
+                        *port = new_port;
+                    }
                 }
                 let _ = self.config.save();
 
                 // Update in-memory agent entry.
                 if let Some(entry) = self.agents.get_mut(idx) {
                     entry.config.pane = new_pane;
-                    entry.config.port = new_port;
+                    if let AgentKind::Opencode { ref mut port, .. } = entry.config.kind {
+                        *port = new_port;
+                    }
                     entry.meta.status = AgentStatus::Unknown;
                 }
 

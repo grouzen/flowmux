@@ -15,7 +15,7 @@ use agent_discovery::DiscoveredAgents;
 use agents::opencode::OpenCodeAdapter;
 use agents::AgentAdapter;
 use app::App;
-use config::Config;
+use config::{AgentKind, Config};
 use global_config::GlobalConfig;
 use models::{AgentEntry, AgentMeta, AgentStatus};
 
@@ -51,24 +51,27 @@ async fn main() -> Result<()> {
     // Auto-resume any agents whose tmux pane died (e.g. after a tmux server
     // restart).  For each dead pane we open a new tmux window and relaunch
     // opencode with `--session <id>` so the existing session is preserved.
+    // Only applies to Opencode agents — Claude agents manage their own process.
     let mut config_dirty = false;
     for agent_config in config.agents.iter_mut() {
-        if !tmux::is_alive(&agent_config.pane) {
-            match OpenCodeAdapter::restart(
-                &agent_config.directory,
-                &agent_config.name,
-                agent_config.session_id.as_deref(),
-            )
-            .await
-            {
-                Ok((_adapter, window_index, new_port)) => {
-                    agent_config.pane = format!("{}:{}.0", tmux::session_name(), window_index);
-                    agent_config.port = new_port;
-                    config_dirty = true;
-                }
-                Err(_) => {
-                    // Could not restart this agent — leave config unchanged so
-                    // the user can manually restart or remove it from the UI.
+        if let AgentKind::Opencode { ref mut port, ref session_id } = agent_config.kind {
+            if !tmux::is_alive(&agent_config.pane) {
+                match OpenCodeAdapter::restart(
+                    &agent_config.directory,
+                    &agent_config.name,
+                    session_id.as_deref(),
+                )
+                .await
+                {
+                    Ok((_adapter, window_index, new_port)) => {
+                        agent_config.pane = format!("{}:{}.0", tmux::session_name(), window_index);
+                        *port = new_port;
+                        config_dirty = true;
+                    }
+                    Err(_) => {
+                        // Could not restart this agent — leave config unchanged so
+                        // the user can manually restart or remove it from the UI.
+                    }
                 }
             }
         }
@@ -82,19 +85,27 @@ async fn main() -> Result<()> {
     let mut adapters: Vec<Box<dyn AgentAdapter>> = Vec::new();
 
     for agent_config in &config.agents {
-        let adapter = OpenCodeAdapter::new(agent_config.port, agent_config.session_id.clone());
-        agents.push(AgentEntry {
-            config: agent_config.clone(),
-            meta: AgentMeta {
-                status: AgentStatus::Unknown,
-                context: None,
-                first_prompt: None,
-                last_model_response: None,
-                model_name: None,
-                total_work_ms: 0,
-            },
-        });
-        adapters.push(Box::new(adapter));
+        match &agent_config.kind {
+            AgentKind::Opencode { port, session_id } => {
+                let adapter = OpenCodeAdapter::new(*port, session_id.clone());
+                agents.push(AgentEntry {
+                    config: agent_config.clone(),
+                    meta: AgentMeta {
+                        status: AgentStatus::Unknown,
+                        context: None,
+                        first_prompt: None,
+                        last_model_response: None,
+                        model_name: None,
+                        total_work_ms: 0,
+                    },
+                });
+                adapters.push(Box::new(adapter));
+            }
+            AgentKind::Claude { .. } => {
+                // ClaudeAdapter will be wired in Phase 7.
+                // For now, skip Claude agents on startup to avoid compile errors.
+            }
+        }
     }
 
     // Build App and spawn background tasks

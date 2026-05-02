@@ -130,7 +130,7 @@ pub fn render_agent_view(
         Span::styled(dir_str.as_str(), Style::default().fg(GRAY)),
         Span::styled(format!(" {} ", ICON_AGENT), Style::default().fg(GRAY)),
         Span::styled(
-            agent_entry.config.agent_type.as_str(),
+            agent_entry.config.agent_type_str(),
             Style::default().fg(GRAY),
         ),
     ];
