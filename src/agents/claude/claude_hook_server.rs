@@ -24,6 +24,8 @@ pub struct ClaudeHookState {
     pub session_id: Option<String>,
     pub transcript_path: Option<String>,
     pub context_used: Option<u64>,
+    /// Sum of all `TurnDuration` system-entry `durationMs` values in the transcript.
+    pub total_work_ms: u64,
 }
 
 impl Default for ClaudeHookState {
@@ -36,6 +38,7 @@ impl Default for ClaudeHookState {
             session_id: None,
             transcript_path: None,
             context_used: None,
+            total_work_ms: 0,
         }
     }
 }
@@ -171,6 +174,7 @@ async fn hook_handler(
                     if info.model_name.is_some() {
                         entry.model_name = info.model_name;
                     }
+                    entry.total_work_ms = info.total_work_ms;
                 }
                 if transcript_path_override.is_some() {
                     entry.transcript_path = transcript_path_override;
@@ -230,17 +234,23 @@ pub struct TranscriptInfo {
     pub last_response_text: Option<String>,
     /// Model name reported by the last assistant message.
     pub model_name: Option<String>,
+    /// Sum of all `TurnDuration` system-entry `durationMs` values — equivalent
+    /// to OpenCode's `total_work_ms` (model generation time across the session).
+    pub total_work_ms: u64,
 }
 
 /// Parse `transcript_path` (JSONL) and return info from the last assistant entry.
 /// Returns `None` if the file cannot be opened or contains no assistant entries.
 pub fn parse_transcript(transcript_path: &str) -> Option<TranscriptInfo> {
-    use claude_code_transcripts::types::{AssistantContentBlock, Entry};
+    use claude_code_transcripts::types::{AssistantContentBlock, Entry, SystemSubtype};
 
     let file = std::fs::File::open(transcript_path).ok()?;
     let reader = std::io::BufReader::new(file);
 
-    let mut last: Option<TranscriptInfo> = None;
+    let mut last_context_used: Option<u64> = None;
+    let mut last_response_text: Option<String> = None;
+    let mut last_model_name: Option<String> = None;
+    let mut total_work_ms: u64 = 0;
 
     for line in reader.lines().map_while(Result::ok) {
         let line = line.trim().to_owned();
@@ -252,30 +262,40 @@ pub fn parse_transcript(transcript_path: &str) -> Option<TranscriptInfo> {
             Err(_) => continue,
         };
 
-        if let Entry::Assistant(a) = entry {
-            let usage = &a.message.usage;
-            let context_used = usage.input_tokens
-                + usage.cache_read_input_tokens.unwrap_or(0)
-                + usage.cache_creation_input_tokens.unwrap_or(0);
+        match entry {
+            Entry::Assistant(a) => {
+                let usage = &a.message.usage;
+                let context_used = usage.input_tokens
+                    + usage.cache_read_input_tokens.unwrap_or(0)
+                    + usage.cache_creation_input_tokens.unwrap_or(0);
 
-            // Extract the first Text block as the response preview.
-            let last_response_text = a.message.content.iter().find_map(|block| {
-                if let AssistantContentBlock::Text { text } = block {
-                    Some(text.clone())
-                } else {
-                    None
+                let response_text = a.message.content.iter().find_map(|block| {
+                    if let AssistantContentBlock::Text { text } = block {
+                        Some(text.clone())
+                    } else {
+                        None
+                    }
+                });
+
+                last_context_used = Some(context_used);
+                last_response_text = response_text;
+                last_model_name = a.message.model.clone();
+            }
+
+            Entry::System(s) if matches!(s.subtype, SystemSubtype::TurnDuration) => {
+                if let Some(ms) = s.duration_ms {
+                    total_work_ms += ms as u64;
                 }
-            });
+            }
 
-            let model_name = a.message.model.clone();
-
-            last = Some(TranscriptInfo {
-                context_used,
-                last_response_text,
-                model_name,
-            });
+            _ => {}
         }
     }
 
-    last
+    last_context_used.map(|context_used| TranscriptInfo {
+        context_used,
+        last_response_text,
+        model_name: last_model_name,
+        total_work_ms,
+    })
 }
