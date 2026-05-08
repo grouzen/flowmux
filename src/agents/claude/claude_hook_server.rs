@@ -47,13 +47,14 @@ impl Default for ClaudeHookState {
 pub type HookStateMap = Arc<Mutex<HashMap<String, ClaudeHookState>>>;
 
 // ---------------------------------------------------------------------------
-// Persist channel (SessionStart signals App to write session_id/path to toml)
+// Persist channel (hooks signal App to write session_id/path to toml)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
 pub struct HookPersistEvent {
     pub stable_agent_id: String,
-    pub session_id: String,
+    /// `None` means "no change to session_id in config".
+    pub session_id: Option<String>,
     pub transcript_path: Option<String>,
 }
 
@@ -117,7 +118,7 @@ async fn hook_handler(
                 // Signal App to persist session_id + transcript_path to disk.
                 let _ = state.persist_tx.send(HookPersistEvent {
                     stable_agent_id: agent_id.clone(),
-                    session_id: sid.clone(),
+                    session_id: Some(sid.clone()),
                     transcript_path: transcript_path.clone(),
                 });
             }
@@ -180,6 +181,17 @@ async fn hook_handler(
                     entry.transcript_path = transcript_path_override;
                 }
                 entry.status = AgentStatus::WaitingForInput;
+
+                // Persist transcript_path (and session_id if known) so that on
+                // the next startup restore() can parse the transcript and show
+                // meta info immediately without waiting for a new prompt.
+                if entry.transcript_path.is_some() || entry.session_id.is_some() {
+                    let _ = state.persist_tx.send(HookPersistEvent {
+                        stable_agent_id: agent_id.clone(),
+                        session_id: entry.session_id.clone(),
+                        transcript_path: entry.transcript_path.clone(),
+                    });
+                }
             }
         }
 

@@ -16,7 +16,7 @@ use agent_discovery::DiscoveredAgents;
 use app::App;
 use config::Config;
 use global_config::GlobalConfig;
-use models::{AgentEntry, AgentMeta, AgentStatus};
+use models::{AgentEntry, AgentMeta};
 use runner::AgentRunner;
 
 /// stable — multi-agent TUI dashboard
@@ -74,16 +74,19 @@ async fn main() -> Result<()> {
 
     for agent_config in &config.agents {
         let adapter = runner.restore(agent_config);
+        // Eagerly populate meta from the adapter so the dashboard shows
+        // meaningful data on the very first frame, before any tick fires.
+        let meta = AgentMeta {
+            status: adapter.get_status().await,
+            context: adapter.get_context().await,
+            first_prompt: adapter.get_first_prompt().await,
+            last_model_response: adapter.get_last_model_response().await,
+            model_name: adapter.get_model_name().await,
+            total_work_ms: adapter.get_total_work_ms().await,
+        };
         agents.push(AgentEntry {
             config: agent_config.clone(),
-            meta: AgentMeta {
-                status: AgentStatus::Unknown,
-                context: None,
-                first_prompt: None,
-                last_model_response: None,
-                model_name: None,
-                total_work_ms: 0,
-            },
+            meta,
         });
         agent_adapters.push(adapter);
     }

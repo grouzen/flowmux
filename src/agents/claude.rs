@@ -134,7 +134,9 @@ impl ClaudeRuntime {
                         } = &mut agent.kind
                         {
                             if *stable_agent_id == event.stable_agent_id {
-                                *session_id = Some(event.session_id.clone());
+                                if let Some(sid) = event.session_id.clone() {
+                                    *session_id = Some(sid);
+                                }
                                 if event.transcript_path.is_some() {
                                     *transcript_path = event.transcript_path.clone();
                                 }
