@@ -30,14 +30,29 @@ pub fn render_agent_view(
 
     let viewport_height = content_area.height as usize;
 
-    // Show the last viewport_height lines (live — scrolling is handled by tmux/opencode).
+    // Show the appropriate window of lines based on view_scroll.
+    // view_scroll == 0: live view (last viewport_height lines).
+    // view_scroll > 0: history view (a window offset from the end).
+    //
+    // Clamp effective_scroll here (read-only, no state write) so the renderer
+    // never produces an empty frame when view_scroll overshoots the buffer.
+    // This avoids a flicker cycle that would occur if we mutated state and
+    // triggered a dirty→redraw round-trip.
     let lines = &state.lines;
     let total = lines.len();
+    let max_scroll = total.saturating_sub(viewport_height);
+    let effective_scroll = state.view_scroll.min(max_scroll);
+    let (start, end) = if total == 0 {
+        (0, 0)
+    } else {
+        let end = total.saturating_sub(effective_scroll);
+        let start = end.saturating_sub(viewport_height);
+        (start, end)
+    };
     let visible_text = if total == 0 {
         String::new()
     } else {
-        let start = total.saturating_sub(viewport_height);
-        lines[start..].join("\n")
+        lines[start..end].join("\n")
     };
 
     // Parse ANSI escape sequences into styled ratatui Text
@@ -70,8 +85,8 @@ pub fn render_agent_view(
     let para = Paragraph::new(text).style(base_style);
     f.render_widget(para, content_area);
 
-    // Forward the pane cursor.
-    if !state.show_stopped_overlay {
+    // Forward the pane cursor only when showing live content (not scrolled back).
+    if !state.show_stopped_overlay && state.view_scroll == 0 {
         if let Some((cx, cy)) = state.cursor {
             let screen_x = content_area.x.saturating_add(cx);
             let screen_y = content_area.y.saturating_add(cy);

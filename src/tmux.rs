@@ -68,6 +68,16 @@ pub fn ensure_session() -> Result<()> {
             .context("failed to create tmux session")?;
     }
 
+    // Raise the per-pane scrollback limit so stable's AgentView can show deep
+    // history without requiring the user to touch ~/.tmux.conf.  We use the
+    // global option so it applies to every new window; existing windows are
+    // unaffected but that is acceptable (they were created with whatever limit
+    // was in place at the time).  The value matches MAX_RETAINED_LINES in
+    // app.rs — going higher wastes tmux memory for no visible benefit.
+    let _ = Command::new("tmux")
+        .args(["set-option", "-g", "history-limit", "50000"])
+        .status();
+
     Ok(())
 }
 
@@ -198,6 +208,28 @@ pub fn is_alive(target: &str) -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+/// Capture the last `lines_back` lines of the pane's scrollback history.
+///
+/// Uses `capture-pane -S -<lines_back>` so that content above the live
+/// viewport is included.  This is used by the AgentView scroll logic: when
+/// `view_scroll > 0` the tick captures history instead of just the visible
+/// viewport, and the renderer slices the appropriate window out of the buffer.
+pub fn capture_pane_history(target: &str, lines_back: usize) -> Result<String> {
+    let output = Command::new("tmux")
+        .args([
+            "capture-pane",
+            "-t",
+            target,
+            "-p",
+            "-e",
+            "-S",
+            &format!("-{}", lines_back),
+        ])
+        .output()
+        .with_context(|| format!("failed to capture pane history {}", target))?;
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Kill a tmux window by target (e.g., `mysession:1`).

@@ -171,7 +171,12 @@ async fn hook_handler(
             if let Some(entry) = map.get_mut(&agent_id) {
                 if let Some(info) = parsed {
                     entry.context_used = Some(info.context_used);
-                    entry.last_model_response = info.last_response_text;
+                    // Only overwrite the last response when we actually have one;
+                    // tool-use-only turns produce no text block and should not
+                    // erase the previous response.
+                    if info.last_response_text.is_some() {
+                        entry.last_model_response = info.last_response_text;
+                    }
                     if info.model_name.is_some() {
                         entry.model_name = info.model_name;
                     }
@@ -347,7 +352,14 @@ pub fn parse_transcript(transcript_path: &str) -> Option<TranscriptInfo> {
                 });
 
                 last_context_used = Some(context_used);
-                last_response_text = response_text;
+                // Only advance last_response_text when there is an actual text
+                // block.  Tool-use-only assistant entries (no Text block) must
+                // not overwrite a previously captured response with None — that
+                // would make every Stop event after a tool-use turn appear as if
+                // there was no response.
+                if response_text.is_some() {
+                    last_response_text = response_text;
+                }
                 last_model_name = a.message.model.clone();
 
                 // Update the latest assistant timestamp for this turn.

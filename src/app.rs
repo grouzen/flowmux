@@ -3,7 +3,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::time::{interval, Duration};
 
 use crate::agents::AgentAdapter;
-use crate::config::Config;
+use crate::config::{AgentKind, Config};
 use crate::models::{AgentEntry, AgentMeta, AgentStatus, AgentType};
 use crate::runner::AgentRunner;
 use crate::tmux;
@@ -39,15 +39,26 @@ pub enum Event {
 // ---------------------------------------------------------------------------
 
 /// Maximum number of lines retained in memory for the agent view.
-/// Older lines beyond this cap are discarded; the tmux pane itself retains
-/// the full scrollback so copy-mode scrolling is unaffected.
-const MAX_RETAINED_LINES: usize = 2000;
+///
+/// At ~150 bytes/line this costs ≈1.5 MB per agent while scrolled (plus
+/// another ≈1.5 MB for the change-detection buffer in `AgentViewState`).
+/// Going beyond ~20 k starts making the per-tick `capture-pane -S -N`
+/// subprocess noticeably heavier.  Note that tmux's own `history-limit`
+/// (default 2000) also bounds how much history is actually available;
+/// users wanting deep scroll should set `set-option -g history-limit 50000`
+/// (or similar) in their tmux.conf.
+const MAX_RETAINED_LINES: usize = 10_000;
 
 #[derive(Debug, Default)]
 pub struct AgentViewState {
     pub lines: Vec<String>,
     pub last_refresh: Option<std::time::SystemTime>,
     pub show_stopped_overlay: bool,
+    /// Number of lines from the bottom of the captured history to offset the
+    /// displayed window.  0 = live (bottom) view.  When > 0, the tick uses
+    /// `capture_pane_history` to pull scrollback and the renderer shows
+    /// `lines[end-scroll-height..end-scroll]` instead of the last N lines.
+    pub view_scroll: usize,
     /// Cursor position within the pane's visible screen (col, row).
     pub cursor: Option<(u16, u16)>,
     /// Last dimensions sent to tmux resize-window (width, height).  Used to
@@ -428,13 +439,26 @@ impl App {
         match mouse.kind {
             MouseEventKind::ScrollUp => {
                 if let Some(entry) = self.agents.get(idx) {
-                    let _ = tmux::send_keys(&entry.config.pane, "PPage");
+                    if matches!(entry.config.kind, AgentKind::Claude { .. }) {
+                        self.agent_view_state.view_scroll =
+                            self.agent_view_state.view_scroll.saturating_add(3)
+                            .min(MAX_RETAINED_LINES);
+                        self.dirty = true;
+                    } else {
+                        let _ = tmux::send_keys(&entry.config.pane, "PPage");
+                    }
                 }
                 return;
             }
             MouseEventKind::ScrollDown => {
                 if let Some(entry) = self.agents.get(idx) {
-                    let _ = tmux::send_keys(&entry.config.pane, "NPage");
+                    if matches!(entry.config.kind, AgentKind::Claude { .. }) {
+                        self.agent_view_state.view_scroll =
+                            self.agent_view_state.view_scroll.saturating_sub(3);
+                        self.dirty = true;
+                    } else {
+                        let _ = tmux::send_keys(&entry.config.pane, "NPage");
+                    }
                 }
                 return;
             }
@@ -790,12 +814,37 @@ impl App {
                 return;
             }
 
-            if let Ok(raw) = tmux::capture_pane(&pane) {
+            if let Ok(raw) = if self.agent_view_state.view_scroll > 0 {
+                tmux::capture_pane_history(&pane, MAX_RETAINED_LINES)
+            } else {
+                tmux::capture_pane(&pane)
+            } {
                 // update_lines returns true only when content changed.
                 if self.agent_view_state.update_lines(&raw) {
                     self.dirty = true;
                 }
             }
+
+            // Silently clamp view_scroll to the actual available history so
+            // that scrolling down responds immediately after the user reaches
+            // the top.  We do NOT set dirty here: the renderer already applies
+            // the same clamp for display, so nothing visible changes and there
+            // is no flicker-inducing extra redraw.
+            if self.agent_view_state.view_scroll > 0 {
+                let term_h = crossterm::terminal::size()
+                    .map(|(_, h)| h as usize)
+                    .unwrap_or(24);
+                let viewport_h = term_h.saturating_sub(2);
+                let max_scroll = self
+                    .agent_view_state
+                    .lines
+                    .len()
+                    .saturating_sub(viewport_h);
+                if self.agent_view_state.view_scroll > max_scroll {
+                    self.agent_view_state.view_scroll = max_scroll;
+                }
+            }
+
             let new_cursor = tmux::cursor_position(&pane);
             if new_cursor != self.agent_view_state.cursor {
                 self.agent_view_state.cursor = new_cursor;
@@ -871,6 +920,37 @@ impl App {
         match key.code {
             KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.state = AppState::Dashboard;
+            }
+            KeyCode::PageUp => {
+                if let Some(entry) = self.agents.get(idx) {
+                    if matches!(entry.config.kind, AgentKind::Claude { .. }) {
+                        let page = crossterm::terminal::size()
+                            .map(|(_, h)| h as usize)
+                            .unwrap_or(24)
+                            .saturating_sub(2);
+                        self.agent_view_state.view_scroll =
+                            self.agent_view_state.view_scroll.saturating_add(page)
+                            .min(MAX_RETAINED_LINES);
+                        self.dirty = true;
+                    } else {
+                        let _ = tmux::send_keys(&entry.config.pane, "PPage");
+                    }
+                }
+            }
+            KeyCode::PageDown => {
+                if let Some(entry) = self.agents.get(idx) {
+                    if matches!(entry.config.kind, AgentKind::Claude { .. }) {
+                        let page = crossterm::terminal::size()
+                            .map(|(_, h)| h as usize)
+                            .unwrap_or(24)
+                            .saturating_sub(2);
+                        self.agent_view_state.view_scroll =
+                            self.agent_view_state.view_scroll.saturating_sub(page);
+                        self.dirty = true;
+                    } else {
+                        let _ = tmux::send_keys(&entry.config.pane, "NPage");
+                    }
+                }
             }
             _ => {
                 // Forward key to tmux pane
