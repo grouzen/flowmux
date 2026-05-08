@@ -51,6 +51,20 @@ impl AgentRunner {
         self.discovered.opencode.is_some()
     }
 
+    /// Returns all agent types whose binaries were found on `$PATH`.
+    /// The order is stable: Opencode first, Claude second.  Future agent types
+    /// should be appended here; callers must not hardcode the list.
+    pub fn available_agent_types(&self) -> Vec<AgentType> {
+        let mut types = Vec::new();
+        if self.discovered.opencode.is_some() {
+            types.push(AgentType::Opencode);
+        }
+        if self.discovered.claude.is_some() {
+            types.push(AgentType::Claude);
+        }
+        types
+    }
+
     // -----------------------------------------------------------------------
     // Internal: lazily start ClaudeRuntime on first Claude agent operation
     // -----------------------------------------------------------------------
@@ -171,8 +185,8 @@ impl AgentRunner {
 
             AgentKind::Claude {
                 stable_agent_id,
-                session_id,
-                transcript_path,
+                session_id: _,
+                transcript_path: _,
             } => {
                 // Ensure the hook server is running (may not be if stable
                 // restarted and this is the first Claude operation).

@@ -36,8 +36,10 @@ impl AgentAdapter for ClaudeAdapter {
 
     async fn get_context(&self) -> Option<ContextInfo> {
         let map = self.hook_state.lock().unwrap();
-        let context_used = map.get(&self.stable_agent_id)?.context_used?;
-        Some(ContextInfo { used: context_used, total: None })
+        let entry = map.get(&self.stable_agent_id)?;
+        let context_used = entry.context_used?;
+        let total = entry.model_name.as_deref().and_then(model_context_window);
+        Some(ContextInfo { used: context_used, total })
     }
 
     async fn get_first_prompt(&self) -> Option<String> {
@@ -66,6 +68,38 @@ impl AgentAdapter for ClaudeAdapter {
     fn get_cached_session_id(&self) -> Option<String> {
         let map = self.hook_state.lock().unwrap();
         map.get(&self.stable_agent_id)?.session_id.clone()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Claude model context-window table
+// ---------------------------------------------------------------------------
+
+/// Return the context-window size (in tokens) for a known Claude model ID.
+///
+/// Source: <https://docs.anthropic.com/en/docs/about-claude/models>
+///
+/// All Claude 3+ models ship with a 200 k token context window.  Only the
+/// legacy Claude 2 / Instant lines have smaller windows; those are listed
+/// explicitly.  Any unrecognised `claude-*` string defaults to 200 k so that
+/// newly released models are handled gracefully without a code change.
+pub fn model_context_window(model: &str) -> Option<u64> {
+    // Explicit 100 k exceptions (Claude 2.0 and Instant 1.x lines).
+    const HUNDRED_K: &[&str] = &[
+        "claude-2.0",
+        "claude-instant-1",
+    ];
+    // If the model matches any 100 k prefix, return 100 k.
+    for prefix in HUNDRED_K {
+        if model.starts_with(prefix) {
+            return Some(100_000);
+        }
+    }
+    // Any other "claude-*" model gets 200 k.
+    if model.starts_with("claude") {
+        Some(200_000)
+    } else {
+        None
     }
 }
 

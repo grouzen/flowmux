@@ -100,6 +100,7 @@ impl AgentViewState {
 pub enum CreateField {
     Name,
     Directory,
+    AgentType,
 }
 
 #[derive(Debug)]
@@ -110,6 +111,10 @@ pub struct CreateAgentState {
     pub error: Option<String>,
     pub tab_matches: Vec<String>,
     pub tab_idx: usize,
+    /// Agent types available when the dialog was opened (from runner discovery).
+    pub available_types: Vec<AgentType>,
+    /// Index into `available_types` for the currently selected type.
+    pub selected_type_idx: usize,
 }
 
 impl Default for CreateAgentState {
@@ -121,11 +126,20 @@ impl Default for CreateAgentState {
             error: None,
             tab_matches: Vec::new(),
             tab_idx: 0,
+            available_types: vec![],
+            selected_type_idx: 0,
         }
     }
 }
 
 impl CreateAgentState {
+    pub fn selected_agent_type(&self) -> AgentType {
+        self.available_types
+            .get(self.selected_type_idx)
+            .cloned()
+            .unwrap_or(AgentType::Opencode)
+    }
+
     pub fn is_valid(&self) -> bool {
         !self.name.trim().is_empty() && !self.directory.trim().is_empty()
     }
@@ -566,7 +580,10 @@ impl App {
         match key.code {
             KeyCode::Char('q') => return false,
             KeyCode::Char('n') => {
-                self.create_state = CreateAgentState::default();
+                self.create_state = CreateAgentState {
+                    available_types: self.runner.available_agent_types(),
+                    ..CreateAgentState::default()
+                };
                 self.state = AppState::CreateAgentDialog;
             }
             KeyCode::Char('d') => {
@@ -892,16 +909,45 @@ impl App {
                 }
             }
             KeyCode::Up => {
-                self.create_state.focus = CreateField::Name;
+                self.create_state.focus = match self.create_state.focus {
+                    CreateField::Name => CreateField::Name,
+                    CreateField::Directory => CreateField::Name,
+                    CreateField::AgentType => CreateField::Directory,
+                };
             }
             KeyCode::Down => {
-                self.create_state.focus = CreateField::Directory;
+                self.create_state.focus = match self.create_state.focus {
+                    CreateField::Name => CreateField::Directory,
+                    CreateField::Directory => {
+                        if self.create_state.available_types.len() > 1 {
+                            CreateField::AgentType
+                        } else {
+                            CreateField::Directory
+                        }
+                    }
+                    CreateField::AgentType => CreateField::AgentType,
+                };
+            }
+            // Left / Right cycle agent type when that row is focused.
+            KeyCode::Left | KeyCode::Right
+                if self.create_state.focus == CreateField::AgentType =>
+            {
+                let n = self.create_state.available_types.len();
+                if n > 0 {
+                    let idx = self.create_state.selected_type_idx;
+                    self.create_state.selected_type_idx = if key.code == KeyCode::Right {
+                        (idx + 1) % n
+                    } else {
+                        (idx + n - 1) % n
+                    };
+                }
             }
             KeyCode::Enter => {
                 if self.create_state.is_valid() {
                     let name = tmux::sanitize_name(&self.create_state.name.clone());
                     let dir = self.create_state.directory.clone();
-                    match self.runner.create(&name, &dir, AgentType::Opencode).await {
+                    let agent_type = self.create_state.selected_agent_type();
+                    match self.runner.create(&name, &dir, agent_type).await {
                         Ok((config, adapter)) => {
                             self.config.agents.push(config.clone());
                             let _ = self.config.save();
@@ -931,8 +977,9 @@ impl App {
                         self.create_state.directory.pop();
                         // Invalidate tab matches when user edits
                         self.create_state.tab_matches.clear();
-                        self.create_state.tab_idx = 0;
+                        self.create_state.tab_idx =0;
                     }
+                    CreateField::AgentType => {}
                 }
             }
             KeyCode::Char(c) => {
@@ -946,6 +993,7 @@ impl App {
                         self.create_state.tab_matches.clear();
                         self.create_state.tab_idx = 0;
                     }
+                    CreateField::AgentType => {}
                 }
             }
             _ => {}
