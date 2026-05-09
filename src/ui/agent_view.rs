@@ -166,9 +166,35 @@ pub fn render_agent_view(
     ));
     let status_line = Line::from(status_spans);
 
-    let nav = " [Ctrl+g] Dashboard";
     let (brand, brand_width) = brand_line(false);
-    let nav_width = nav.len() as u16;
+
+    // When prefix mode is active, replace the nav hint with a prominent
+    // [PREFIX] badge so the user knows the next key will be forwarded.
+    let (nav_spans, nav_width): (Vec<Span>, u16) = if state.prefix_active {
+        let text = " [PREFIX] ";
+        (
+            vec![Span::styled(
+                text,
+                Style::default()
+                    .fg(ratatui::style::Color::Black)
+                    .bg(YELLOW)
+                    .add_modifier(Modifier::BOLD),
+            )],
+            text.len() as u16,
+        )
+    } else {
+        let text = " [Ctrl+g] Dashboard";
+        (
+            vec![
+                Span::styled(" [", Style::default().fg(BG2)),
+                Span::styled("Ctrl+g", Style::default().fg(ORANGE)),
+                Span::styled("]", Style::default().fg(BG2)),
+                Span::styled(" Dashboard", Style::default().fg(GRAY)),
+            ],
+            text.len() as u16,
+        )
+    };
+
     let status_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -179,15 +205,7 @@ pub fn render_agent_view(
         .split(status_area);
 
     f.render_widget(Paragraph::new(status_line), status_chunks[0]);
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(" [", Style::default().fg(BG2)),
-            Span::styled("Ctrl+g", Style::default().fg(ORANGE)),
-            Span::styled("]", Style::default().fg(BG2)),
-            Span::styled(" Dashboard", Style::default().fg(GRAY)),
-        ])),
-        status_chunks[1],
-    );
+    f.render_widget(Paragraph::new(Line::from(nav_spans)), status_chunks[1]);
     f.render_widget(Paragraph::new(brand), status_chunks[2]);
 
     // Stopped overlay

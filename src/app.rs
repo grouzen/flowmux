@@ -78,6 +78,10 @@ pub struct AgentViewState {
     prev_raw_len: usize,
     /// Last raw capture for byte-exact change detection.
     prev_raw: String,
+    /// When true, the next keypress will be forwarded directly to the tmux
+    /// pane instead of being intercepted by the app's hotkey handler.
+    /// Armed by pressing Ctrl-b; shown as a [PREFIX] indicator in the UI.
+    pub prefix_active: bool,
 }
 
 impl AgentViewState {
@@ -897,6 +901,24 @@ impl App {
     // -----------------------------------------------------------------------
 
     async fn handle_agent_view_key(&mut self, key: KeyEvent, idx: usize) -> bool {
+        // --- Prefix pass-through ---
+        // When prefix_active is true, the next keypress is forwarded directly
+        // to the tmux pane and then prefix mode is disarmed.  This allows the
+        // user to send Ctrl-g (or any other app-intercepted key) through to the
+        // agent by pressing Ctrl-b first.
+        if self.agent_view_state.prefix_active {
+            self.agent_view_state.prefix_active = false;
+            self.dirty = true;
+            if let Some(entry) = self.agents.get(idx) {
+                let pane = entry.config.pane.clone();
+                let keys = key_event_to_tmux(&key);
+                if !keys.is_empty() {
+                    let _ = tmux::send_keys(&pane, &keys);
+                }
+            }
+            return true;
+        }
+
         if self.agent_view_state.show_stopped_overlay {
             match key.code {
                 KeyCode::Char('r') => {
@@ -918,6 +940,14 @@ impl App {
         }
 
         match key.code {
+            // Arm prefix mode: next keypress will be forwarded to the pane
+            // verbatim, bypassing all app hotkeys.  This lets the user send
+            // keys like Ctrl-g to the agent (e.g. Claude Code's editor shortcut)
+            // without triggering the stable dashboard switch.
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.agent_view_state.prefix_active = true;
+                self.dirty = true;
+            }
             KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.state = AppState::Dashboard;
             }
