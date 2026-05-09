@@ -1222,27 +1222,36 @@ fn unicode_display_width(s: &str) -> usize {
 }
 
 fn key_event_to_tmux(key: &KeyEvent) -> String {
-    // Ctrl combos
-    if key.modifiers.contains(KeyModifiers::CONTROL) {
-        if let KeyCode::Char(c) = key.code {
-            return format!("C-{}", c);
-        }
-    }
-    match key.code {
-        KeyCode::Char(c) => c.to_string(),
-        KeyCode::Enter => "Enter".to_string(),
-        KeyCode::Backspace => "BSpace".to_string(),
-        KeyCode::Tab => "Tab".to_string(),
-        KeyCode::Esc => "Escape".to_string(),
-        KeyCode::Left => "Left".to_string(),
-        KeyCode::Right => "Right".to_string(),
-        KeyCode::Up => "Up".to_string(),
-        KeyCode::Down => "Down".to_string(),
-        KeyCode::PageUp => "PPage".to_string(),
-        KeyCode::PageDown => "NPage".to_string(),
-        KeyCode::Home => "Home".to_string(),
-        KeyCode::End => "End".to_string(),
-        KeyCode::Delete => "DC".to_string(),
-        _ => String::new(),
-    }
+    let ctrl  = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt   = key.modifiers.contains(KeyModifiers::ALT);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+    // Each arm yields (base_name, apply_shift_prefix).
+    // Char keys encode Shift in the character value (upper/lowercase), and
+    // BackTab encodes Shift implicitly, so neither gets an S- prefix.
+    let (base, apply_shift): (String, bool) = match key.code {
+        KeyCode::BackTab   => ("BTab".into(),   false),
+        KeyCode::Char(c)   => (c.to_string(),   false),
+        KeyCode::Enter     => ("Enter".into(),  true),
+        KeyCode::Backspace => ("BSpace".into(), true),
+        KeyCode::Tab       => ("Tab".into(),    true),
+        KeyCode::Esc       => ("Escape".into(), true),
+        KeyCode::Left      => ("Left".into(),   true),
+        KeyCode::Right     => ("Right".into(),  true),
+        KeyCode::Up        => ("Up".into(),     true),
+        KeyCode::Down      => ("Down".into(),   true),
+        KeyCode::PageUp    => ("PPage".into(),  true),
+        KeyCode::PageDown  => ("NPage".into(),  true),
+        KeyCode::Home      => ("Home".into(),   true),
+        KeyCode::End       => ("End".into(),    true),
+        KeyCode::Delete    => ("DC".into(),     true),
+        _                  => return String::new(),
+    };
+
+    let mut result = String::new();
+    if ctrl              { result.push_str("C-"); }
+    if alt               { result.push_str("M-"); }
+    if shift && apply_shift { result.push_str("S-"); }
+    result.push_str(&base);
+    result
 }
