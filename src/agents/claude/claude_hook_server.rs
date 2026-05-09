@@ -150,6 +150,15 @@ async fn hook_handler(
         }
 
         "Stop" => {
+            // The Stop hook payload includes `last_assistant_message` — the
+            // text of Claude's final response for this turn.  Use it directly
+            // so we never miss an update due to transcript-file flush timing.
+            let last_assistant_message = body
+                .get("last_assistant_message")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned);
+
             // Optionally a fresh transcript_path in the payload.
             let transcript_path_override = body
                 .get("transcript_path")
@@ -169,14 +178,19 @@ async fn hook_handler(
 
             let mut map = state.hook_state.lock().unwrap();
             if let Some(entry) = map.get_mut(&agent_id) {
+                // Prefer the payload's last_assistant_message (guaranteed
+                // fresh) over the transcript-parsed text.  Fall back to the
+                // transcript value so that tool-use-only turns (no text in
+                // the payload) don't erase the previous response.
+                if last_assistant_message.is_some() {
+                    entry.last_model_response = last_assistant_message;
+                } else if let Some(ref info) = parsed {
+                    if info.last_response_text.is_some() {
+                        entry.last_model_response = info.last_response_text.clone();
+                    }
+                }
                 if let Some(info) = parsed {
                     entry.context_used = Some(info.context_used);
-                    // Only overwrite the last response when we actually have one;
-                    // tool-use-only turns produce no text block and should not
-                    // erase the previous response.
-                    if info.last_response_text.is_some() {
-                        entry.last_model_response = info.last_response_text;
-                    }
                     if info.model_name.is_some() {
                         entry.model_name = info.model_name;
                     }
