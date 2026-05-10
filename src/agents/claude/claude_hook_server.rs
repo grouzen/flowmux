@@ -143,9 +143,19 @@ async fn hook_handler(
             let mut map = state.hook_state.lock().unwrap();
             if let Some(entry) = map.get_mut(&agent_id) {
                 if entry.first_prompt.is_none() {
-                    entry.first_prompt = prompt;
+                    entry.first_prompt = prompt.clone();
                 }
-                entry.status = AgentStatus::Running;
+                // Only set status to Running if this is a real user prompt (not internal scaffolding)
+                let is_real_prompt = prompt.as_ref()
+                    .map(|p| {
+                        let trimmed = p.trim_start();
+                        !trimmed.is_empty() && !trimmed.starts_with('<')
+                    })
+                    .unwrap_or(false);
+
+                if is_real_prompt {
+                    entry.status = AgentStatus::Running;
+                }
             }
         }
 
