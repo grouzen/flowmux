@@ -199,3 +199,12 @@ pub fn is_alive(target: &str) -> bool {
         .map(|o| o.status.success())
         .unwrap_or(false)
 }
+
+/// Kill a tmux window by target (e.g., `mysession:1`).
+pub fn kill_window(target: &str) -> Result<()> {
+    Command::new("tmux")
+        .args(["kill-window", "-t", target])
+        .status()
+        .with_context(|| format!("failed to kill window {}", target))?;
+    Ok(())
+}

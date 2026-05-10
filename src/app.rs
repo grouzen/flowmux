@@ -976,6 +976,16 @@ impl App {
 
     fn remove_agent(&mut self, idx: usize) {
         if idx < self.agents.len() {
+            // Kill the tmux window before removing the agent
+            if let Some(agent_config) = self.config.agents.get(idx) {
+                // Extract window target from pane (e.g., "stable:1.0" -> "stable:1")
+                if let Some(colon_pos) = agent_config.pane.find(':') {
+                    if let Some(dot_pos) = agent_config.pane[colon_pos..].find('.') {
+                        let window_target = &agent_config.pane[..colon_pos + dot_pos];
+                        let _ = tmux::kill_window(window_target);
+                    }
+                }
+            }
             self.agents.remove(idx);
             self.adapters.remove(idx);
             self.config.agents.remove(idx);
