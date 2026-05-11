@@ -83,7 +83,7 @@ impl AgentRunner {
             } => {
                 self.ensure_claude();
                 let runtime = self.claude.as_ref().unwrap();
-                runtime.restore(stable_agent_id, session_id.clone(), transcript_path.clone());
+                runtime.restore(stable_agent_id, session_id.clone(), transcript_path.clone(), Some(&config.directory));
                 Box::new(runtime.make_adapter(stable_agent_id.clone()))
             }
         }

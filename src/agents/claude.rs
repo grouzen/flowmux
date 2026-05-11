@@ -109,6 +109,7 @@ pub fn model_context_window(model: &str) -> Option<u64> {
 
 pub(crate) struct ClaudeRuntime {
     hook_state: HookStateMap,
+    persist_tx: tokio::sync::mpsc::UnboundedSender<claude_hook_server::HookPersistEvent>,
 }
 
 impl ClaudeRuntime {
@@ -120,7 +121,8 @@ impl ClaudeRuntime {
         let (persist_tx, mut persist_rx) =
             tokio::sync::mpsc::unbounded_channel::<claude_hook_server::HookPersistEvent>();
 
-        claude_hook_server::spawn_hook_server(hook_state.clone(), persist_tx, port);
+        let persist_tx_clone = persist_tx.clone();
+        claude_hook_server::spawn_hook_server(hook_state.clone(), persist_tx_clone, port);
 
         // Background task: receive persist events and patch the session config file.
         tokio::spawn(async move {
@@ -148,7 +150,7 @@ impl ClaudeRuntime {
             }
         });
 
-        Self { hook_state }
+        Self { hook_state, persist_tx }
     }
 
     /// Create a `ClaudeAdapter` for a given `stable_agent_id`, pre-inserting
@@ -164,12 +166,25 @@ impl ClaudeRuntime {
 
     /// Pre-populate the hook state from persisted config so that the dashboard
     /// shows meaningful data immediately on startup (before the first hook fires).
+    ///
+    /// If `transcript_path` is absent but `session_id` is known, attempts to
+    /// locate the transcript file under `~/.claude/projects/` using the agent's
+    /// working `directory` as a hint.  When found the path is persisted back to
+    /// the config so subsequent restarts don't need to re-infer it.
     pub(crate) fn restore(
         &self,
         id: &str,
         session_id: Option<String>,
         transcript_path: Option<String>,
+        directory: Option<&str>,
     ) {
+        // If transcript_path is missing but we have a session_id, try to find
+        // the transcript on disk so meta info is available immediately.
+        let transcript_path = transcript_path.or_else(|| {
+            let sid = session_id.as_deref()?;
+            infer_transcript_path(sid, directory)
+        });
+
         let mut map = self.hook_state.lock().unwrap();
         let entry = map
             .entry(id.to_owned())
@@ -192,6 +207,14 @@ impl ClaudeRuntime {
                 }
             }
             entry.status = AgentStatus::WaitingForInput;
+
+            // Persist the (possibly newly inferred) transcript_path back to
+            // the config file so future restarts don't need to re-infer it.
+            let _ = self.persist_tx.send(claude_hook_server::HookPersistEvent {
+                stable_agent_id: id.to_owned(),
+                session_id: entry.session_id.clone(),
+                transcript_path: Some(path.clone()),
+            });
         } else if entry.session_id.is_some() {
             // If we have a session_id but no transcript_path yet (e.g., stable restarted
             // before the first Stop hook), assume the agent is waiting for input.
@@ -208,6 +231,49 @@ impl ClaudeRuntime {
             entry.status = AgentStatus::Unknown;
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Transcript path inference
+// ---------------------------------------------------------------------------
+
+/// Try to locate a Claude Code transcript file for a known `session_id`.
+///
+/// Claude Code stores transcripts at:
+///   `~/.claude/projects/<encoded-dir>/<session_id>.jsonl`
+///
+/// where `<encoded-dir>` is derived from the project directory by replacing
+/// every `/` with `-` (stripping the leading slash).  For example,
+/// `/home/alice/myproject` → `-home-alice-myproject`.
+///
+/// If `directory` is supplied the expected path is constructed directly;
+/// otherwise a glob-style walk of `~/.claude/projects/` is performed to find
+/// the file in any project sub-directory.
+///
+/// Returns `None` if no matching file exists on disk.
+fn infer_transcript_path(session_id: &str, directory: Option<&str>) -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let projects_root = std::path::Path::new(&home).join(".claude").join("projects");
+
+    // Fast path: derive the expected directory encoding from the agent's CWD.
+    if let Some(dir) = directory {
+        let encoded = dir.replace('/', "-");
+        let candidate = projects_root.join(&encoded).join(format!("{session_id}.jsonl"));
+        if candidate.exists() {
+            return candidate.to_str().map(str::to_owned);
+        }
+    }
+
+    // Slow path: scan all project sub-directories for the session file.
+    let read_dir = std::fs::read_dir(&projects_root).ok()?;
+    for entry in read_dir.flatten() {
+        let candidate = entry.path().join(format!("{session_id}.jsonl"));
+        if candidate.exists() {
+            return candidate.to_str().map(str::to_owned);
+        }
+    }
+
+    None
 }
 
 // ---------------------------------------------------------------------------
