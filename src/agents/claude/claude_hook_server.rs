@@ -101,10 +101,6 @@ async fn hook_handler(
 
     match event_name.as_str() {
         "SessionStart" => {
-            let session_id = body
-                .get("session_id")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
             let transcript_path = body
                 .get("transcript_path")
                 .and_then(Value::as_str)
@@ -114,11 +110,21 @@ async fn hook_handler(
                 .and_then(Value::as_str)
                 .map(str::to_owned);
 
-            if let Some(sid) = &session_id {
-                // Signal App to persist session_id + transcript_path to disk.
+            // Prefer session_id from the hook payload; fall back to deriving
+            // it from the transcript filename (the UUID stem is the session ID
+            // used by `claude --resume`).
+            let session_id = body
+                .get("session_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| session_id_from_transcript_path(transcript_path.as_deref()?));
+
+            if session_id.is_some() || transcript_path.is_some() {
+                // Signal the background persist task to save session_id +
+                // transcript_path to the on-disk config for this session.
                 let _ = state.persist_tx.send(HookPersistEvent {
                     stable_agent_id: agent_id.clone(),
-                    session_id: Some(sid.clone()),
+                    session_id: session_id.clone(),
                     transcript_path: transcript_path.clone(),
                 });
             }
@@ -209,6 +215,13 @@ async fn hook_handler(
                 if transcript_path_override.is_some() {
                     entry.transcript_path = transcript_path_override;
                 }
+                // Derive session_id from transcript filename if still unknown.
+                if entry.session_id.is_none() {
+                    entry.session_id = entry
+                        .transcript_path
+                        .as_deref()
+                        .and_then(session_id_from_transcript_path);
+                }
                 entry.status = AgentStatus::WaitingForInput;
 
                 // Persist transcript_path (and session_id if known) so that on
@@ -235,6 +248,29 @@ async fn hook_handler(
     }
 
     StatusCode::OK
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Derive a Claude Code session ID from a transcript file path.
+///
+/// Claude Code names transcript files as `<session-uuid>.jsonl`, so the stem
+/// of the filename is the session ID accepted by `claude --resume`.
+///
+/// Returns `None` if the path has no stem or if the stem doesn't look like a
+/// UUID (36 chars with hyphens).
+fn session_id_from_transcript_path(transcript_path: &str) -> Option<String> {
+    let stem = std::path::Path::new(transcript_path)
+        .file_stem()
+        .and_then(|s| s.to_str())?;
+    // Basic sanity check: UUIDs are 36 chars (32 hex + 4 hyphens).
+    if stem.len() == 36 && stem.chars().filter(|&c| c == '-').count() == 4 {
+        Some(stem.to_owned())
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------

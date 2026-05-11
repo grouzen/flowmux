@@ -174,7 +174,7 @@ impl AgentRunner {
 
             AgentKind::Claude {
                 stable_agent_id,
-                session_id: _,
+                session_id,
                 transcript_path: _,
             } => {
                 // Ensure the hook server is running (may not be if stable
@@ -195,10 +195,16 @@ impl AgentRunner {
                 runtime.reset_status(stable_agent_id);
 
                 // Launch claude, exporting the stable agent ID.
-                tmux::send_keys(
-                    &new_pane,
-                    &format!("STABLE_AGENT_ID={} claude\n", stable_agent_id),
-                )?;
+                // If we have a prior Claude session ID, resume it so the
+                // conversation context is preserved across restarts.
+                let claude_cmd = match session_id {
+                    Some(sid) => format!(
+                        "STABLE_AGENT_ID={} claude --resume {}\n",
+                        stable_agent_id, sid
+                    ),
+                    None => format!("STABLE_AGENT_ID={} claude\n", stable_agent_id),
+                };
+                tmux::send_keys(&new_pane, &claude_cmd)?;
 
                 let adapter = runtime.make_adapter(stable_agent_id.clone());
                 let mut new_config = config.clone();
