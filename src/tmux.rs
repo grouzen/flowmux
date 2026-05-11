@@ -166,6 +166,8 @@ pub fn resize_window(target: &str, width: u16, height: u16) -> Result<()> {
 }
 
 /// Return the cursor position within the pane's visible screen as (col, row).
+/// Returns `None` when the cursor is hidden (`cursor_flag == 0`), matching the
+/// behaviour of a real terminal that respects `\e[?25l` / `\e[?25h`.
 pub fn cursor_position(target: &str) -> Option<(u16, u16)> {
     let output = Command::new("tmux")
         .args([
@@ -173,12 +175,16 @@ pub fn cursor_position(target: &str) -> Option<(u16, u16)> {
             "-t",
             target,
             "-p",
-            "#{cursor_x} #{cursor_y}",
+            "#{cursor_flag} #{cursor_x} #{cursor_y}",
         ])
         .output()
         .ok()?;
     let s = String::from_utf8_lossy(&output.stdout);
     let mut parts = s.trim().split_whitespace();
+    let flag: u8 = parts.next()?.parse().ok()?;
+    if flag == 0 {
+        return None; // cursor explicitly hidden by the running app
+    }
     let x: u16 = parts.next()?.parse().ok()?;
     let y: u16 = parts.next()?.parse().ok()?;
     Some((x, y))
