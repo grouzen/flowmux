@@ -1,5 +1,12 @@
 use crate::config::AgentConfig;
 
+/// Which agent type to create / is running.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AgentType {
+    Opencode,
+    Claude,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum AgentStatus {
     Running,

@@ -456,21 +456,15 @@ async fn fetch_and_store_tail(
     let is_long_session = msgs.len() >= RECENT_LIMIT;
 
     let first_prompt_value: Option<String> = if need_first_prompt {
-        let first_user_in_tail = msgs
-            .iter()
-            .find(|m| msg_role(m) == Some("user"))
-            .and_then(|m| all_text_parts(m));
-
-        if first_user_in_tail.is_some() {
-            if !is_long_session {
-                // Session is short — the tail already starts from message 0.
-                first_user_in_tail
-            } else {
-                // Session is longer than RECENT_LIMIT — do a one-time full fetch.
-                fetch_first_prompt(port, client, session_id).await
-            }
+        if is_long_session {
+            // Session is longer than RECENT_LIMIT — the first user message may
+            // not be in the tail at all, so always do a one-time full fetch.
+            fetch_first_prompt(port, client, session_id).await
         } else {
-            None
+            // Session is short — the tail already starts from message 0.
+            msgs.iter()
+                .find(|m| msg_role(m) == Some("user"))
+                .and_then(|m| all_text_parts(m))
         }
     } else {
         None
@@ -789,7 +783,9 @@ impl AgentAdapter for OpenCodeAdapter {
         }
 
         // Fallback: assistant text before the first user message.
-        let first_turn_start = turn_starts.first().copied().unwrap_or(0);
+        // If there are no user messages in the tail at all, search all tail
+        // messages (unwrap_or(0) would produce an empty slice otherwise).
+        let first_turn_start = turn_starts.first().copied().unwrap_or(messages.len());
         let parts: Vec<String> = messages[..first_turn_start]
             .iter()
             .filter(|m| msg_role(m) == Some("assistant"))

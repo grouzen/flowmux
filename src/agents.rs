@@ -15,4 +15,5 @@ pub trait AgentAdapter: Send + Sync {
     fn get_cached_session_id(&self) -> Option<String>;
 }
 
+pub mod claude;
 pub mod opencode;

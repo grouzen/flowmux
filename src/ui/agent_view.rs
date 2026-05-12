@@ -30,14 +30,29 @@ pub fn render_agent_view(
 
     let viewport_height = content_area.height as usize;
 
-    // Show the last viewport_height lines (live — scrolling is handled by tmux/opencode).
+    // Show the appropriate window of lines based on view_scroll.
+    // view_scroll == 0: live view (last viewport_height lines).
+    // view_scroll > 0: history view (a window offset from the end).
+    //
+    // Clamp effective_scroll here (read-only, no state write) so the renderer
+    // never produces an empty frame when view_scroll overshoots the buffer.
+    // This avoids a flicker cycle that would occur if we mutated state and
+    // triggered a dirty→redraw round-trip.
     let lines = &state.lines;
     let total = lines.len();
+    let max_scroll = total.saturating_sub(viewport_height);
+    let effective_scroll = state.view_scroll.min(max_scroll);
+    let (start, end) = if total == 0 {
+        (0, 0)
+    } else {
+        let end = total.saturating_sub(effective_scroll);
+        let start = end.saturating_sub(viewport_height);
+        (start, end)
+    };
     let visible_text = if total == 0 {
         String::new()
     } else {
-        let start = total.saturating_sub(viewport_height);
-        lines[start..].join("\n")
+        lines[start..end].join("\n")
     };
 
     // Parse ANSI escape sequences into styled ratatui Text
@@ -70,8 +85,8 @@ pub fn render_agent_view(
     let para = Paragraph::new(text).style(base_style);
     f.render_widget(para, content_area);
 
-    // Forward the pane cursor.
-    if !state.show_stopped_overlay {
+    // Forward the pane cursor only when showing live content (not scrolled back).
+    if !state.show_stopped_overlay && state.view_scroll == 0 {
         if let Some((cx, cy)) = state.cursor {
             let screen_x = content_area.x.saturating_add(cx);
             let screen_y = content_area.y.saturating_add(cy);
@@ -130,7 +145,7 @@ pub fn render_agent_view(
         Span::styled(dir_str.as_str(), Style::default().fg(GRAY)),
         Span::styled(format!(" {} ", ICON_AGENT), Style::default().fg(GRAY)),
         Span::styled(
-            agent_entry.config.agent_type.as_str(),
+            agent_entry.config.agent_type_str(),
             Style::default().fg(GRAY),
         ),
     ];
@@ -151,9 +166,35 @@ pub fn render_agent_view(
     ));
     let status_line = Line::from(status_spans);
 
-    let nav = " [Ctrl+g] Dashboard";
     let (brand, brand_width) = brand_line(false);
-    let nav_width = nav.len() as u16;
+
+    // When prefix mode is active, replace the nav hint with a prominent
+    // [PREFIX] badge so the user knows the next key will be forwarded.
+    let (nav_spans, nav_width): (Vec<Span>, u16) = if state.prefix_active {
+        let text = " [PREFIX] ";
+        (
+            vec![Span::styled(
+                text,
+                Style::default()
+                    .fg(ratatui::style::Color::Black)
+                    .bg(YELLOW)
+                    .add_modifier(Modifier::BOLD),
+            )],
+            text.len() as u16,
+        )
+    } else {
+        let text = " [Ctrl+g] Dashboard";
+        (
+            vec![
+                Span::styled(" [", Style::default().fg(BG2)),
+                Span::styled("Ctrl+g", Style::default().fg(ORANGE)),
+                Span::styled("]", Style::default().fg(BG2)),
+                Span::styled(" Dashboard", Style::default().fg(GRAY)),
+            ],
+            text.len() as u16,
+        )
+    };
+
     let status_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -164,15 +205,7 @@ pub fn render_agent_view(
         .split(status_area);
 
     f.render_widget(Paragraph::new(status_line), status_chunks[0]);
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(" [", Style::default().fg(BG2)),
-            Span::styled("Ctrl+g", Style::default().fg(ORANGE)),
-            Span::styled("]", Style::default().fg(BG2)),
-            Span::styled(" Dashboard", Style::default().fg(GRAY)),
-        ])),
-        status_chunks[1],
-    );
+    f.render_widget(Paragraph::new(Line::from(nav_spans)), status_chunks[1]);
     f.render_widget(Paragraph::new(brand), status_chunks[2]);
 
     // Stopped overlay

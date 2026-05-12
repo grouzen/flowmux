@@ -2,10 +2,10 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::time::{interval, Duration};
 
-use crate::agents::opencode::OpenCodeAdapter;
 use crate::agents::AgentAdapter;
-use crate::config::{AgentConfig, Config};
-use crate::models::{AgentEntry, AgentMeta, AgentStatus};
+use crate::config::{AgentKind, Config};
+use crate::models::{AgentEntry, AgentMeta, AgentStatus, AgentType};
+use crate::runner::AgentRunner;
 use crate::tmux;
 use crate::ui::dashboard::grid_layout;
 
@@ -39,15 +39,26 @@ pub enum Event {
 // ---------------------------------------------------------------------------
 
 /// Maximum number of lines retained in memory for the agent view.
-/// Older lines beyond this cap are discarded; the tmux pane itself retains
-/// the full scrollback so copy-mode scrolling is unaffected.
-const MAX_RETAINED_LINES: usize = 2000;
+///
+/// At ~150 bytes/line this costs ≈1.5 MB per agent while scrolled (plus
+/// another ≈1.5 MB for the change-detection buffer in `AgentViewState`).
+/// Going beyond ~20 k starts making the per-tick `capture-pane -S -N`
+/// subprocess noticeably heavier.  Note that tmux's own `history-limit`
+/// (default 2000) also bounds how much history is actually available;
+/// users wanting deep scroll should set `set-option -g history-limit 50000`
+/// (or similar) in their tmux.conf.
+const MAX_RETAINED_LINES: usize = 10_000;
 
 #[derive(Debug, Default)]
 pub struct AgentViewState {
     pub lines: Vec<String>,
     pub last_refresh: Option<std::time::SystemTime>,
     pub show_stopped_overlay: bool,
+    /// Number of lines from the bottom of the captured history to offset the
+    /// displayed window.  0 = live (bottom) view.  When > 0, the tick uses
+    /// `capture_pane_history` to pull scrollback and the renderer shows
+    /// `lines[end-scroll-height..end-scroll]` instead of the last N lines.
+    pub view_scroll: usize,
     /// Cursor position within the pane's visible screen (col, row).
     pub cursor: Option<(u16, u16)>,
     /// Last dimensions sent to tmux resize-window (width, height).  Used to
@@ -67,6 +78,10 @@ pub struct AgentViewState {
     prev_raw_len: usize,
     /// Last raw capture for byte-exact change detection.
     prev_raw: String,
+    /// When true, the next keypress will be forwarded directly to the tmux
+    /// pane instead of being intercepted by the app's hotkey handler.
+    /// Armed by pressing Ctrl-b; shown as a [PREFIX] indicator in the UI.
+    pub prefix_active: bool,
 }
 
 impl AgentViewState {
@@ -100,6 +115,7 @@ impl AgentViewState {
 pub enum CreateField {
     Name,
     Directory,
+    AgentType,
 }
 
 #[derive(Debug)]
@@ -110,6 +126,10 @@ pub struct CreateAgentState {
     pub error: Option<String>,
     pub tab_matches: Vec<String>,
     pub tab_idx: usize,
+    /// Agent types available when the dialog was opened (from runner discovery).
+    pub available_types: Vec<AgentType>,
+    /// Index into `available_types` for the currently selected type.
+    pub selected_type_idx: usize,
 }
 
 impl Default for CreateAgentState {
@@ -121,11 +141,20 @@ impl Default for CreateAgentState {
             error: None,
             tab_matches: Vec::new(),
             tab_idx: 0,
+            available_types: vec![],
+            selected_type_idx: 0,
         }
     }
 }
 
 impl CreateAgentState {
+    pub fn selected_agent_type(&self) -> AgentType {
+        self.available_types
+            .get(self.selected_type_idx)
+            .cloned()
+            .unwrap_or(AgentType::Opencode)
+    }
+
     pub fn is_valid(&self) -> bool {
         !self.name.trim().is_empty() && !self.directory.trim().is_empty()
     }
@@ -202,6 +231,7 @@ pub struct App {
     pub state: AppState,
     pub selected: usize,
     pub config: Config,
+    pub runner: AgentRunner,
     pub agent_view_state: AgentViewState,
     pub create_state: CreateAgentState,
     pub tx: UnboundedSender<Event>,
@@ -221,7 +251,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(config: Config, agents: Vec<AgentEntry>, adapters: Vec<Box<dyn AgentAdapter>>) -> Self {
+    pub fn new(config: Config, agents: Vec<AgentEntry>, adapters: Vec<Box<dyn AgentAdapter>>, runner: AgentRunner) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let card_count = agents.len();
         Self {
@@ -230,6 +260,7 @@ impl App {
             state: AppState::Dashboard,
             selected: 0,
             config,
+            runner,
             agent_view_state: AgentViewState::default(),
             create_state: CreateAgentState::default(),
             tx,
@@ -412,13 +443,26 @@ impl App {
         match mouse.kind {
             MouseEventKind::ScrollUp => {
                 if let Some(entry) = self.agents.get(idx) {
-                    let _ = tmux::send_keys(&entry.config.pane, "PPage");
+                    if matches!(entry.config.kind, AgentKind::Claude { .. }) {
+                        self.agent_view_state.view_scroll =
+                            self.agent_view_state.view_scroll.saturating_add(3)
+                            .min(MAX_RETAINED_LINES);
+                        self.dirty = true;
+                    } else {
+                        let _ = tmux::send_keys(&entry.config.pane, "PPage");
+                    }
                 }
                 return;
             }
             MouseEventKind::ScrollDown => {
                 if let Some(entry) = self.agents.get(idx) {
-                    let _ = tmux::send_keys(&entry.config.pane, "NPage");
+                    if matches!(entry.config.kind, AgentKind::Claude { .. }) {
+                        self.agent_view_state.view_scroll =
+                            self.agent_view_state.view_scroll.saturating_sub(3);
+                        self.dirty = true;
+                    } else {
+                        let _ = tmux::send_keys(&entry.config.pane, "NPage");
+                    }
                 }
                 return;
             }
@@ -556,7 +600,10 @@ impl App {
         match key.code {
             KeyCode::Char('q') => return false,
             KeyCode::Char('n') => {
-                self.create_state = CreateAgentState::default();
+                self.create_state = CreateAgentState {
+                    available_types: self.runner.available_agent_types(),
+                    ..CreateAgentState::default()
+                };
                 self.state = AppState::CreateAgentDialog;
             }
             KeyCode::Char('d') => {
@@ -714,8 +761,8 @@ impl App {
             // correct history immediately on the next startup.
             let session_id = self.adapters[i].get_cached_session_id();
             if let Some(agent_config) = self.config.agents.get_mut(i) {
-                if session_id.is_some() && session_id != agent_config.session_id {
-                    agent_config.session_id = session_id;
+                if session_id.is_some() && session_id.as_deref() != agent_config.session_id() {
+                    agent_config.set_session_id(session_id);
                     config_dirty = true;
                 }
             }
@@ -771,12 +818,37 @@ impl App {
                 return;
             }
 
-            if let Ok(raw) = tmux::capture_pane(&pane) {
+            if let Ok(raw) = if self.agent_view_state.view_scroll > 0 {
+                tmux::capture_pane_history(&pane, MAX_RETAINED_LINES)
+            } else {
+                tmux::capture_pane(&pane)
+            } {
                 // update_lines returns true only when content changed.
                 if self.agent_view_state.update_lines(&raw) {
                     self.dirty = true;
                 }
             }
+
+            // Silently clamp view_scroll to the actual available history so
+            // that scrolling down responds immediately after the user reaches
+            // the top.  We do NOT set dirty here: the renderer already applies
+            // the same clamp for display, so nothing visible changes and there
+            // is no flicker-inducing extra redraw.
+            if self.agent_view_state.view_scroll > 0 {
+                let term_h = crossterm::terminal::size()
+                    .map(|(_, h)| h as usize)
+                    .unwrap_or(24);
+                let viewport_h = term_h.saturating_sub(2);
+                let max_scroll = self
+                    .agent_view_state
+                    .lines
+                    .len()
+                    .saturating_sub(viewport_h);
+                if self.agent_view_state.view_scroll > max_scroll {
+                    self.agent_view_state.view_scroll = max_scroll;
+                }
+            }
+
             let new_cursor = tmux::cursor_position(&pane);
             if new_cursor != self.agent_view_state.cursor {
                 self.agent_view_state.cursor = new_cursor;
@@ -829,6 +901,24 @@ impl App {
     // -----------------------------------------------------------------------
 
     async fn handle_agent_view_key(&mut self, key: KeyEvent, idx: usize) -> bool {
+        // --- Prefix pass-through ---
+        // When prefix_active is true, the next keypress is forwarded directly
+        // to the tmux pane and then prefix mode is disarmed.  This allows the
+        // user to send Ctrl-g (or any other app-intercepted key) through to the
+        // agent by pressing Ctrl-b first.
+        if self.agent_view_state.prefix_active {
+            self.agent_view_state.prefix_active = false;
+            self.dirty = true;
+            if let Some(entry) = self.agents.get(idx) {
+                let pane = entry.config.pane.clone();
+                let keys = key_event_to_tmux(&key);
+                if !keys.is_empty() {
+                    let _ = tmux::send_keys(&pane, &keys);
+                }
+            }
+            return true;
+        }
+
         if self.agent_view_state.show_stopped_overlay {
             match key.code {
                 KeyCode::Char('r') => {
@@ -850,8 +940,47 @@ impl App {
         }
 
         match key.code {
+            // Arm prefix mode: next keypress will be forwarded to the pane
+            // verbatim, bypassing all app hotkeys.  This lets the user send
+            // keys like Ctrl-g to the agent (e.g. Claude Code's editor shortcut)
+            // without triggering the stable dashboard switch.
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.agent_view_state.prefix_active = true;
+                self.dirty = true;
+            }
             KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.state = AppState::Dashboard;
+            }
+            KeyCode::PageUp => {
+                if let Some(entry) = self.agents.get(idx) {
+                    if matches!(entry.config.kind, AgentKind::Claude { .. }) {
+                        let page = crossterm::terminal::size()
+                            .map(|(_, h)| h as usize)
+                            .unwrap_or(24)
+                            .saturating_sub(2);
+                        self.agent_view_state.view_scroll =
+                            self.agent_view_state.view_scroll.saturating_add(page)
+                            .min(MAX_RETAINED_LINES);
+                        self.dirty = true;
+                    } else {
+                        let _ = tmux::send_keys(&entry.config.pane, "PPage");
+                    }
+                }
+            }
+            KeyCode::PageDown => {
+                if let Some(entry) = self.agents.get(idx) {
+                    if matches!(entry.config.kind, AgentKind::Claude { .. }) {
+                        let page = crossterm::terminal::size()
+                            .map(|(_, h)| h as usize)
+                            .unwrap_or(24)
+                            .saturating_sub(2);
+                        self.agent_view_state.view_scroll =
+                            self.agent_view_state.view_scroll.saturating_sub(page);
+                        self.dirty = true;
+                    } else {
+                        let _ = tmux::send_keys(&entry.config.pane, "NPage");
+                    }
+                }
             }
             _ => {
                 // Forward key to tmux pane
@@ -882,26 +1011,46 @@ impl App {
                 }
             }
             KeyCode::Up => {
-                self.create_state.focus = CreateField::Name;
+                self.create_state.focus = match self.create_state.focus {
+                    CreateField::Name => CreateField::Name,
+                    CreateField::Directory => CreateField::Name,
+                    CreateField::AgentType => CreateField::Directory,
+                };
             }
             KeyCode::Down => {
-                self.create_state.focus = CreateField::Directory;
+                self.create_state.focus = match self.create_state.focus {
+                    CreateField::Name => CreateField::Directory,
+                    CreateField::Directory => {
+                        if self.create_state.available_types.len() > 1 {
+                            CreateField::AgentType
+                        } else {
+                            CreateField::Directory
+                        }
+                    }
+                    CreateField::AgentType => CreateField::AgentType,
+                };
+            }
+            // Left / Right cycle agent type when that row is focused.
+            KeyCode::Left | KeyCode::Right
+                if self.create_state.focus == CreateField::AgentType =>
+            {
+                let n = self.create_state.available_types.len();
+                if n > 0 {
+                    let idx = self.create_state.selected_type_idx;
+                    self.create_state.selected_type_idx = if key.code == KeyCode::Right {
+                        (idx + 1) % n
+                    } else {
+                        (idx + n - 1) % n
+                    };
+                }
             }
             KeyCode::Enter => {
                 if self.create_state.is_valid() {
                     let name = tmux::sanitize_name(&self.create_state.name.clone());
                     let dir = self.create_state.directory.clone();
-                    match OpenCodeAdapter::create(&dir, &name).await {
-                        Ok((adapter, window_index)) => {
-                            let pane = format!("{}:{}.0", tmux::session_name(), window_index);
-                            let config = AgentConfig {
-                                name: name.clone(),
-                                pane: pane.clone(),
-                                agent_type: "opencode".to_string(),
-                                directory: dir,
-                                port: adapter.port,
-                                session_id: None,
-                            };
+                    let agent_type = self.create_state.selected_agent_type();
+                    match self.runner.create(&name, &dir, agent_type).await {
+                        Ok((config, adapter)) => {
                             self.config.agents.push(config.clone());
                             let _ = self.config.save();
                             let entry = AgentEntry {
@@ -909,7 +1058,7 @@ impl App {
                                 meta: AgentMeta::default(),
                             };
                             self.agents.push(entry);
-                            self.adapters.push(Box::new(adapter));
+                            self.adapters.push(adapter);
                             let new_idx = self.agents.len() - 1;
                             self.selected = new_idx;
                             self.agent_view_state = AgentViewState::default();
@@ -930,8 +1079,9 @@ impl App {
                         self.create_state.directory.pop();
                         // Invalidate tab matches when user edits
                         self.create_state.tab_matches.clear();
-                        self.create_state.tab_idx = 0;
+                        self.create_state.tab_idx =0;
                     }
+                    CreateField::AgentType => {}
                 }
             }
             KeyCode::Char(c) => {
@@ -945,6 +1095,7 @@ impl App {
                         self.create_state.tab_matches.clear();
                         self.create_state.tab_idx = 0;
                     }
+                    CreateField::AgentType => {}
                 }
             }
             _ => {}
@@ -997,36 +1148,31 @@ impl App {
         }
     }
 
-    /// Restart a stopped agent: scan for a free port, open a new tmux window,
-    /// launch opencode with `--session <id>` to resume the existing session,
-    /// then update the in-memory state and persist the config.
+    /// Restart a stopped agent via AgentRunner, then update in-memory state
+    /// and persist the config.
     pub async fn restart_agent(&mut self, idx: usize) {
-        let (dir, name, session_id) = match self.config.agents.get(idx) {
-            Some(c) => (c.directory.clone(), c.name.clone(), c.session_id.clone()),
+        let config = match self.config.agents.get(idx) {
+            Some(c) => c.clone(),
             None => return,
         };
 
-        match OpenCodeAdapter::restart(&dir, &name, session_id.as_deref()).await {
-            Ok((new_adapter, window_index, new_port)) => {
-                let new_pane = format!("{}:{}.0", tmux::session_name(), window_index);
-
+        match self.runner.restart(&config).await {
+            Ok((new_config, new_adapter)) => {
                 // Update persisted config.
                 if let Some(c) = self.config.agents.get_mut(idx) {
-                    c.pane = new_pane.clone();
-                    c.port = new_port;
+                    *c = new_config.clone();
                 }
                 let _ = self.config.save();
 
                 // Update in-memory agent entry.
                 if let Some(entry) = self.agents.get_mut(idx) {
-                    entry.config.pane = new_pane;
-                    entry.config.port = new_port;
+                    entry.config = new_config;
                     entry.meta.status = AgentStatus::Unknown;
                 }
 
-                // Swap in the new adapter (drops + aborts the old SSE task).
+                // Swap in the new adapter.
                 if idx < self.adapters.len() {
-                    self.adapters[idx] = Box::new(new_adapter);
+                    self.adapters[idx] = new_adapter;
                 }
             }
             Err(_) => {
@@ -1076,27 +1222,36 @@ fn unicode_display_width(s: &str) -> usize {
 }
 
 fn key_event_to_tmux(key: &KeyEvent) -> String {
-    // Ctrl combos
-    if key.modifiers.contains(KeyModifiers::CONTROL) {
-        if let KeyCode::Char(c) = key.code {
-            return format!("C-{}", c);
-        }
-    }
-    match key.code {
-        KeyCode::Char(c) => c.to_string(),
-        KeyCode::Enter => "Enter".to_string(),
-        KeyCode::Backspace => "BSpace".to_string(),
-        KeyCode::Tab => "Tab".to_string(),
-        KeyCode::Esc => "Escape".to_string(),
-        KeyCode::Left => "Left".to_string(),
-        KeyCode::Right => "Right".to_string(),
-        KeyCode::Up => "Up".to_string(),
-        KeyCode::Down => "Down".to_string(),
-        KeyCode::PageUp => "PPage".to_string(),
-        KeyCode::PageDown => "NPage".to_string(),
-        KeyCode::Home => "Home".to_string(),
-        KeyCode::End => "End".to_string(),
-        KeyCode::Delete => "DC".to_string(),
-        _ => String::new(),
-    }
+    let ctrl  = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt   = key.modifiers.contains(KeyModifiers::ALT);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+    // Each arm yields (base_name, apply_shift_prefix).
+    // Char keys encode Shift in the character value (upper/lowercase), and
+    // BackTab encodes Shift implicitly, so neither gets an S- prefix.
+    let (base, apply_shift): (String, bool) = match key.code {
+        KeyCode::BackTab   => ("BTab".into(),   false),
+        KeyCode::Char(c)   => (c.to_string(),   false),
+        KeyCode::Enter     => ("Enter".into(),  true),
+        KeyCode::Backspace => ("BSpace".into(), true),
+        KeyCode::Tab       => ("Tab".into(),    true),
+        KeyCode::Esc       => ("Escape".into(), true),
+        KeyCode::Left      => ("Left".into(),   true),
+        KeyCode::Right     => ("Right".into(),  true),
+        KeyCode::Up        => ("Up".into(),     true),
+        KeyCode::Down      => ("Down".into(),   true),
+        KeyCode::PageUp    => ("PPage".into(),  true),
+        KeyCode::PageDown  => ("NPage".into(),  true),
+        KeyCode::Home      => ("Home".into(),   true),
+        KeyCode::End       => ("End".into(),    true),
+        KeyCode::Delete    => ("DC".into(),     true),
+        _                  => return String::new(),
+    };
+
+    let mut result = String::new();
+    if ctrl              { result.push_str("C-"); }
+    if alt               { result.push_str("M-"); }
+    if shift && apply_shift { result.push_str("S-"); }
+    result.push_str(&base);
+    result
 }
