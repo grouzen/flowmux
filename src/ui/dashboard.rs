@@ -27,6 +27,13 @@ fn count_waiting(agents: &[AgentEntry]) -> usize {
         .count()
 }
 
+fn count_idle(agents: &[AgentEntry]) -> usize {
+    agents
+        .iter()
+        .filter(|a| matches!(a.meta.status, AgentStatus::Idle))
+        .count()
+}
+
 // ---------------------------------------------------------------------------
 // Style helper
 // ---------------------------------------------------------------------------
@@ -189,6 +196,7 @@ fn status_symbol(status: &AgentStatus) -> &'static str {
     match status {
         AgentStatus::Running => ICON_RUN,
         AgentStatus::WaitingForInput => ICON_WAIT,
+        AgentStatus::Idle => ICON_IDLE,
         AgentStatus::Stopped => ICON_STOP,
         AgentStatus::Unknown => "?",
     }
@@ -198,6 +206,7 @@ fn status_label(status: &AgentStatus) -> &'static str {
     match status {
         AgentStatus::Running => "Running",
         AgentStatus::WaitingForInput => "Waiting",
+        AgentStatus::Idle => "Idle",
         AgentStatus::Stopped => "Stopped",
         AgentStatus::Unknown => "Unknown",
     }
@@ -207,6 +216,7 @@ fn status_color(status: &AgentStatus) -> ratatui::style::Color {
     match status {
         AgentStatus::Running => GREEN,
         AgentStatus::WaitingForInput => YELLOW,
+        AgentStatus::Idle => CYAN,
         AgentStatus::Stopped => RED,
         AgentStatus::Unknown => GRAY,
     }
@@ -500,6 +510,7 @@ fn push_keybind<'a>(spans: &mut Vec<Span<'a>>, key: &'a str, action: &'a str, di
 fn render_keybindings_bar(f: &mut Frame, area: Rect, agents: &[AgentEntry], dimmed: bool) {
     let running = count_running(agents);
     let waiting = count_waiting(agents);
+    let idle = count_idle(agents);
 
     let mut spans: Vec<Span> = Vec::new();
 
@@ -526,6 +537,10 @@ fn render_keybindings_bar(f: &mut Frame, area: Rect, agents: &[AgentEntry], dimm
     spans.push(Span::styled(
         format!(" {} {} waiting", ICON_WAIT, waiting),
         ds(dimmed).fg(YELLOW),
+    ));
+    spans.push(Span::styled(
+        format!(" {} {} idle", ICON_IDLE, idle),
+        ds(dimmed).fg(CYAN),
     ));
 
     let status_line = Line::from(spans);

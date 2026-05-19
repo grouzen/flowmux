@@ -82,6 +82,11 @@ impl AgentRunner {
                 transcript_path,
             } => {
                 self.ensure_claude();
+                let port = self.global_config.claude_hook_server_port;
+                // Ensure hooks are up-to-date on every restore so that an
+                // upgrade (new hook events added) takes effect on restart
+                // without requiring the user to create a new agent.
+                let _ = install_hooks(port);
                 let runtime = self.claude.as_ref().unwrap();
                 runtime.restore(stable_agent_id, session_id.clone(), transcript_path.clone(), Some(&config.directory));
                 Box::new(runtime.make_adapter(stable_agent_id.clone()))

@@ -222,7 +222,7 @@ async fn hook_handler(
                         .as_deref()
                         .and_then(session_id_from_transcript_path);
                 }
-                entry.status = AgentStatus::WaitingForInput;
+                entry.status = AgentStatus::Idle;
 
                 // Persist transcript_path (and session_id if known) so that on
                 // the next startup restore() can parse the transcript and show
@@ -241,6 +241,32 @@ async fn hook_handler(
             let mut map = state.hook_state.lock().unwrap();
             if let Some(entry) = map.get_mut(&agent_id) {
                 entry.status = AgentStatus::Stopped;
+            }
+        }
+
+        "PreToolUse" | "PostToolUse" | "SubagentStop" => {
+            let mut map = state.hook_state.lock().unwrap();
+            if let Some(entry) = map.get_mut(&agent_id) {
+                entry.status = AgentStatus::Running;
+            }
+        }
+
+        "PermissionRequest" => {
+            let mut map = state.hook_state.lock().unwrap();
+            if let Some(entry) = map.get_mut(&agent_id) {
+                entry.status = AgentStatus::WaitingForInput;
+            }
+        }
+
+        // `Notification` with `permission_prompt` matcher fires when a permission
+        // dialog appears, including for built-in tools (e.g. `Skill`) that bypass
+        // the `PermissionRequest` hook.  We only register this hook with the
+        // `permission_prompt` matcher so every `Notification` payload we receive
+        // here is guaranteed to be a permission prompt.
+        "Notification" => {
+            let mut map = state.hook_state.lock().unwrap();
+            if let Some(entry) = map.get_mut(&agent_id) {
+                entry.status = AgentStatus::WaitingForInput;
             }
         }
 

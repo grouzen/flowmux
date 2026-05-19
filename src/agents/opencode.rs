@@ -295,7 +295,7 @@ async fn populate_initial(
             if let Ok(body) = resp.json::<Value>().await {
                 if let Some(obj) = body.as_object() {
                     if !obj.is_empty() {
-                        let mut best = AgentStatus::WaitingForInput;
+                        let mut best = AgentStatus::Idle;
                         for entry in obj.values() {
                             match entry.get("status").and_then(Value::as_str).unwrap_or("") {
                                 "busy" | "retry" => {
@@ -320,7 +320,7 @@ async fn populate_initial(
                         }
                         live_cache.write().unwrap().status = best;
                     } else {
-                        live_cache.write().unwrap().status = AgentStatus::WaitingForInput;
+                        live_cache.write().unwrap().status = AgentStatus::Idle;
                     }
                 }
             }
@@ -367,7 +367,7 @@ async fn handle_event(
 
             let new_status = match status_type {
                 "busy" | "retry" => AgentStatus::Running,
-                _ => AgentStatus::WaitingForInput,
+                _ => AgentStatus::Idle,
             };
 
             if !sid.is_empty() {

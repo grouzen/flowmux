@@ -31,6 +31,8 @@ pub const YELLOW: Color = Color::Rgb(215, 153, 33);
 pub const BLUE: Color = Color::Rgb(69, 133, 136);
 /// Orange — keybinding key highlights, modal borders.
 pub const ORANGE: Color = Color::Rgb(214, 93, 14);
+/// Cyan — idle state (turn complete, awaiting next prompt).
+pub const CYAN: Color = Color::Rgb(104, 157, 106); // Gruvbox aqua
 
 // ---------------------------------------------------------------------------
 // Unicode icons  (single-width, no Nerd Fonts required)
@@ -52,6 +54,8 @@ pub const ICON_WAIT: &str = "⏸";
 pub const ICON_STOP: &str = "■";
 /// U+2717 BALLOT X — error indicator.
 pub const ICON_ERR: &str = "✗";
+/// U+25CB WHITE CIRCLE — idle status.
+pub const ICON_IDLE: &str = "○";
 
 // ---------------------------------------------------------------------------
 // Shared helpers

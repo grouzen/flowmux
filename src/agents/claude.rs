@@ -206,7 +206,7 @@ impl ClaudeRuntime {
                     entry.first_prompt = info.first_prompt;
                 }
             }
-            entry.status = AgentStatus::WaitingForInput;
+            entry.status = AgentStatus::Idle;
 
             // Persist the (possibly newly inferred) transcript_path back to
             // the config file so future restarts don't need to re-infer it.
@@ -218,7 +218,7 @@ impl ClaudeRuntime {
         } else if entry.session_id.is_some() {
             // If we have a session_id but no transcript_path yet (e.g., stable restarted
             // before the first Stop hook), assume the agent is waiting for input.
-            entry.status = AgentStatus::WaitingForInput;
+            entry.status = AgentStatus::Idle;
         }
     }
 
@@ -302,17 +302,50 @@ fn build_hooks_block(port: u16) -> Value {
         (event.to_owned(), entry)
     };
 
-    let hooks_map: serde_json::Map<String, Value> = [
+    // `Notification` with matcher `permission_prompt` fires when ANY permission
+    // dialog appears — including for built-in tools like `Skill` that bypass the
+    // `PermissionRequest` hook entirely.
+    let notification_entry = serde_json::json!([{
+        "matcher": "permission_prompt",
+        "hooks": [{
+            "type": "http",
+            "url": url,
+            "headers": { "X-Stable-Agent-Id": "$STABLE_AGENT_ID" },
+            "allowedEnvVars": ["STABLE_AGENT_ID"]
+        }]
+    }]);
+
+    let mut hooks_map: serde_json::Map<String, Value> = [
         make_hook("SessionStart"),
         make_hook("UserPromptSubmit"),
+        make_hook("PreToolUse"),
+        make_hook("PostToolUse"),
+        make_hook("SubagentStop"),
+        make_hook("PermissionRequest"),
         make_hook("Stop"),
         make_hook("SessionEnd"),
     ]
     .into_iter()
     .collect();
 
+    hooks_map.insert("Notification".to_owned(), notification_entry);
+
     Value::Object(hooks_map)
 }
+
+/// The canonical set of hook event names that stable registers.
+/// Changing this list is enough to trigger a re-install on the next run.
+const STABLE_HOOK_EVENTS: &[&str] = &[
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "SubagentStop",
+    "PermissionRequest",
+    "Notification",
+    "Stop",
+    "SessionEnd",
+];
 
 /// Return `true` if `hooks_root` already contains at least one stable hook
 /// entry (identified by a URL ending in `/hook` pointing to `127.0.0.1`).
@@ -331,6 +364,46 @@ fn has_stable_hooks(hooks_root: &Value) -> bool {
         }
     }
     false
+}
+
+/// Return `true` if all events in `STABLE_HOOK_EVENTS` have a stable hook
+/// registered in `hooks_root`.  A `false` return means the installation is
+/// stale (e.g. stable was updated and new events were added) and a re-install
+/// is required.
+fn has_all_stable_hook_events(hooks_root: &Value) -> bool {
+    let Some(obj) = hooks_root.as_object() else { return false };
+    STABLE_HOOK_EVENTS.iter().all(|event| {
+        let Some(arr) = obj.get(*event).and_then(Value::as_array) else { return false };
+        arr.iter().any(|hook_group| {
+            let Some(inner) = hook_group.get("hooks").and_then(Value::as_array) else {
+                return false;
+            };
+            inner.iter().any(|h| {
+                let url = h.get("url").and_then(Value::as_str).unwrap_or("");
+                url.contains("127.0.0.1") && url.ends_with(HOOK_URL_PATH)
+            })
+        })
+    })
+}
+
+/// Remove all stable hook entries from the hooks object (in-place).
+///
+/// A hook group is considered a stable entry when it contains at least one
+/// `http` hook whose URL points to `127.0.0.1` and ends with `/hook`.
+fn remove_stable_hooks(hooks_root: &mut Value) {
+    let Some(obj) = hooks_root.as_object_mut() else { return };
+    for event_val in obj.values_mut() {
+        let Some(arr) = event_val.as_array_mut() else { continue };
+        arr.retain(|hook_group| {
+            let Some(inner) = hook_group.get("hooks").and_then(Value::as_array) else {
+                return true;
+            };
+            !inner.iter().any(|h| {
+                let url = h.get("url").and_then(Value::as_str).unwrap_or("");
+                url.contains("127.0.0.1") && url.ends_with(HOOK_URL_PATH)
+            })
+        });
+    }
 }
 
 fn settings_path() -> Option<std::path::PathBuf> {
@@ -361,9 +434,15 @@ pub fn install_hooks(port: u16) -> Result<()> {
         .entry("hooks")
         .or_insert_with(|| serde_json::json!({}));
 
-    // Nothing to do if stable's hooks are already present.
-    if has_stable_hooks(hooks) {
+    // Nothing to do if all expected hook events are already registered.
+    // If only some events are present (stale install from an older version),
+    // remove the existing stable entries and re-merge the full set.
+    if has_all_stable_hook_events(hooks) {
         return Ok(());
+    }
+    if has_stable_hooks(hooks) {
+        // Partial / stale install — strip old entries before re-merging.
+        remove_stable_hooks(hooks);
     }
 
     // Merge our four-event block into the existing hooks object.
@@ -420,7 +499,10 @@ mod tests {
             .unwrap()
             .entry("hooks")
             .or_insert_with(|| serde_json::json!({}));
-        if !has_stable_hooks(hooks) {
+        if !has_all_stable_hook_events(hooks) {
+            if has_stable_hooks(hooks) {
+                remove_stable_hooks(hooks);
+            }
             let new_block = build_hooks_block(port);
             let hooks_obj = hooks.as_object_mut().unwrap();
             for (event, new_entries) in new_block.as_object().unwrap() {
@@ -440,7 +522,10 @@ mod tests {
     fn install_adds_four_events() {
         let root = make_settings(15100);
         let hooks = root.get("hooks").unwrap().as_object().unwrap();
-        for event in &["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"] {
+        for event in &[
+            "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
+            "SubagentStop", "PermissionRequest", "Notification", "Stop", "SessionEnd",
+        ] {
             assert!(hooks.contains_key(*event), "missing event: {event}");
         }
     }
@@ -483,5 +568,36 @@ mod tests {
         assert_eq!(arr.len(), 1, "user hook was incorrectly removed");
         let inner = arr[0]["hooks"].as_array().unwrap();
         assert_eq!(inner[0]["type"], "command");
+    }
+
+    #[test]
+    fn stale_install_is_upgraded() {
+        // Simulate an old stable install that only has 4 events registered.
+        let old_url = "http://127.0.0.1:15100/hook";
+        let stable_entry = serde_json::json!([{
+            "hooks": [{"type": "http", "url": old_url}]
+        }]);
+        let mut root = serde_json::json!({
+            "hooks": {
+                "SessionStart":     stable_entry.clone(),
+                "UserPromptSubmit": stable_entry.clone(),
+                "Stop":             stable_entry.clone(),
+                "SessionEnd":       stable_entry.clone(),
+            }
+        });
+
+        // The stale root should be detected as incomplete.
+        let hooks = root.get("hooks").unwrap();
+        assert!(has_stable_hooks(hooks), "should detect existing hooks");
+        assert!(!has_all_stable_hook_events(hooks), "should detect stale install");
+
+        // After re-install all 8 events must be present with a single entry each.
+        install_hooks_into(&mut root, 15100);
+        let hooks = root.get("hooks").unwrap().as_object().unwrap();
+        for event in STABLE_HOOK_EVENTS {
+            let arr = hooks.get(*event).and_then(Value::as_array)
+                .unwrap_or_else(|| panic!("missing event after upgrade: {event}"));
+            assert_eq!(arr.len(), 1, "duplicate hook groups for {event}");
+        }
     }
 }

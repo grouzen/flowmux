@@ -109,6 +109,10 @@ pub fn render_agent_view(
         .iter()
         .filter(|a| matches!(a.meta.status, AgentStatus::WaitingForInput))
         .count();
+    let idle = agents
+        .iter()
+        .filter(|a| matches!(a.meta.status, AgentStatus::Idle))
+        .count();
 
     let sep = Span::styled(" │ ", Style::default().fg(BG2));
 
@@ -163,6 +167,10 @@ pub fn render_agent_view(
     status_spans.push(Span::styled(
         format!(" {} {} waiting", ICON_WAIT, waiting),
         Style::default().fg(YELLOW),
+    ));
+    status_spans.push(Span::styled(
+        format!(" {} {} idle", ICON_IDLE, idle),
+        Style::default().fg(CYAN),
     ));
     let status_line = Line::from(status_spans);
 

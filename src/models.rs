@@ -11,6 +11,7 @@ pub enum AgentType {
 pub enum AgentStatus {
     Running,
     WaitingForInput,
+    Idle, // turn finished, ready for next user prompt
     Stopped,
     Unknown,
 }
