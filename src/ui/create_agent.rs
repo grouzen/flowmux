@@ -132,9 +132,7 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
         name_focused,
     );
     if name_focused {
-        let val_width = rows[row]
-            .width
-            .saturating_sub(LABEL_WIDTH + LEFT_PAD as u16);
+        let val_width = rows[row].width.saturating_sub(LABEL_WIDTH + 3);
         let displayed_len = state.name.len().min(val_width as usize) as u16;
         let cx = (rows[row].x + LABEL_WIDTH + displayed_len)
             .min(modal_area.x + modal_area.width.saturating_sub(1));
@@ -145,9 +143,19 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
     // blank
     row += 1;
 
-    // Directory input — append trailing slash to display
+    // Directory input — trailing slash only when `directory` is a valid existing dir
     let dir_focused = state.focus == CreateField::Directory;
-    let dir_display = format!("{}/", state.directory.trim_end_matches('/'));
+    let dir_base = state.directory.trim_end_matches('/');
+    let dir_display = if !state.dir_filter.is_empty() {
+        // User is typing a filter: show base/filter (no trailing slash yet)
+        format!("{}/{}", dir_base, state.dir_filter)
+    } else if std::path::Path::new(dir_base).is_dir() {
+        // Confirmed existing directory: append trailing slash
+        format!("{}/", dir_base)
+    } else {
+        // Unknown/empty path: show as-is
+        dir_base.to_string()
+    };
     render_field_row(
         f,
         rows[row],
@@ -157,9 +165,7 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
         dir_focused,
     );
     if dir_focused {
-        let val_width = rows[row]
-            .width
-            .saturating_sub(LABEL_WIDTH + LEFT_PAD as u16);
+        let val_width = rows[row].width.saturating_sub(LABEL_WIDTH + 3);
         let displayed_len = dir_display.len().min(val_width as usize) as u16;
         let cx = (rows[row].x + LABEL_WIDTH + displayed_len)
             .min(modal_area.x + modal_area.width.saturating_sub(1));
@@ -196,8 +202,8 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
             };
 
             let selected = abs_idx == state.dir_selected_idx && dir_focused;
-            // Display only the last path component (directory name)
-            let display = last_component(suggestion);
+            // dir_matches already contains bare directory names
+            let display = suggestion.as_str();
 
             // Scrollbar character for this row
             let scrollbar_char = if needs_scrollbar {
@@ -206,17 +212,16 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
                 ' '
             };
 
-            let inner_width = modal_width.saturating_sub(2 + LEFT_PAD as u16) as usize;
+            let inner_width = modal_width.saturating_sub(LABEL_WIDTH + 4) as usize; // label + "● " + right margin
 
             let line = if selected {
-                // Inverted highlight: dark text on FG background, filled dot prefix
                 Line::from(vec![
-                    Span::raw(left_pad()),
+                    Span::raw(label_pad()),
                     Span::styled(
                         format!(
-                            "● {:<width$}",
+                            " ● {:<width$}",
                             display,
-                            width = inner_width.saturating_sub(2)
+                            width = inner_width.saturating_sub(3)
                         ),
                         Style::default().fg(BG).bg(FG).add_modifier(Modifier::BOLD),
                     ),
@@ -224,15 +229,8 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
                 ])
             } else {
                 Line::from(vec![
-                    Span::raw(left_pad()),
-                    Span::styled(
-                        format!(
-                            "  {:<width$}",
-                            display,
-                            width = inner_width.saturating_sub(2)
-                        ),
-                        Style::default().fg(GRAY),
-                    ),
+                    Span::raw(label_pad()),
+                    Span::styled(format!("   {}", display), Style::default().fg(GRAY)),
                     Span::styled(scrollbar_char.to_string(), Style::default().fg(BG2).bg(BG1)),
                 ])
             };
@@ -447,14 +445,6 @@ fn left_pad() -> &'static str {
 /// Padding that aligns content to the value column (LEFT_PAD + label width = 13 chars).
 fn label_pad() -> &'static str {
     "             " // 13 spaces
-}
-
-/// Returns the last path component of a path string.
-fn last_component(path: &str) -> &str {
-    path.trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .unwrap_or(path)
 }
 
 fn truncate_left(s: &str, max: usize) -> String {

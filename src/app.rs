@@ -124,10 +124,14 @@ pub const MAX_DIR_VISIBLE: usize = 6;
 #[derive(Debug)]
 pub struct CreateAgentState {
     pub name: String,
+    /// The confirmed base directory (always an existing dir or empty).
     pub directory: String,
+    /// The filter prefix the user is currently typing within `directory`.
+    pub dir_filter: String,
     pub focus: CreateField,
     pub error: Option<String>,
-    /// Up to 10 alphabetically sorted subdirectory suggestions for the directory field.
+    /// Alphabetically sorted subdirectory name suggestions (up to 10).
+    /// Contains bare directory names, not full paths.
     pub dir_matches: Vec<String>,
     /// Index of the currently highlighted suggestion in `dir_matches`.
     pub dir_selected_idx: usize,
@@ -144,6 +148,7 @@ impl Default for CreateAgentState {
         Self {
             name: String::new(),
             directory: String::new(),
+            dir_filter: String::new(),
             focus: CreateField::Name,
             error: None,
             dir_matches: Vec::new(),
@@ -167,49 +172,35 @@ impl CreateAgentState {
         !self.name.trim().is_empty() && !self.directory.trim().is_empty()
     }
 
-    /// Rebuild the directory suggestion list from the current `directory` value.
+    /// Rebuild the directory suggestion list.
     ///
-    /// If `directory` is a valid directory, lists its direct subdirectories.
-    /// Otherwise treats it as a partial path: lists subdirectories of the parent
-    /// that start with the last path component as a prefix filter.
-    /// Results are sorted alphabetically and capped at 10.
+    /// Lists non-hidden subdirectories of `self.directory` whose names start
+    /// with `self.dir_filter`. Results are sorted alphabetically, capped at 10,
+    /// and stored as bare names (not full paths).
     pub fn refresh_dir_matches(&mut self) {
-        let current = self.directory.trim_end_matches('/').to_string();
-        let path = std::path::Path::new(&current);
+        let base = self.directory.trim_end_matches('/');
+        let base_path = std::path::Path::new(base);
 
-        // Determine (base_dir_to_list, prefix_filter)
-        let (list_dir, prefix) = if current.is_empty() {
-            // Empty input: list CWD's subdirs
-            let cwd = std::env::current_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
-            (cwd, String::new())
-        } else if path.is_dir() {
-            // Exact directory: list its subdirs, no filter
-            (path.to_path_buf(), String::new())
-        } else {
-            // Partial path: parent dir + last component as filter
-            let parent = path
-                .parent()
-                .unwrap_or(std::path::Path::new("."))
-                .to_path_buf();
-            let fname = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-                .to_string();
-            (parent, fname)
-        };
+        if !base_path.is_dir() {
+            self.dir_matches.clear();
+            self.dir_selected_idx = 0;
+            self.dir_scroll_offset = 0;
+            return;
+        }
 
-        let mut matches: Vec<String> = std::fs::read_dir(&list_dir)
+        let prefix = &self.dir_filter;
+        let mut matches: Vec<String> = std::fs::read_dir(base_path)
             .into_iter()
             .flatten()
             .flatten()
             .filter_map(|e| {
                 let name = e.file_name().into_string().ok()?;
-                if e.file_type().ok()?.is_dir() && name.starts_with(&prefix) {
-                    let full = list_dir.join(&name);
-                    let canonical = full.canonicalize().unwrap_or(full);
-                    Some(canonical.to_string_lossy().to_string())
+                // Skip hidden directories
+                if name.starts_with('.') {
+                    return None;
+                }
+                if e.file_type().ok()?.is_dir() && name.starts_with(prefix.as_str()) {
+                    Some(name)
                 } else {
                     None
                 }
@@ -1077,11 +1068,16 @@ impl App {
             },
 
             KeyCode::Enter => {
-                // When Directory focused: commit the highlighted suggestion
+                // When Directory focused: commit the highlighted suggestion name
                 if self.create_state.focus == CreateField::Directory {
-                    let idx = self.create_state.dir_selected_idx;
-                    if let Some(selected) = self.create_state.dir_matches.get(idx).cloned() {
-                        self.create_state.directory = selected;
+                    if let Some(name) = self.create_state
+                        .dir_matches
+                        .get(self.create_state.dir_selected_idx)
+                        .cloned()
+                    {
+                        let base = self.create_state.directory.trim_end_matches('/').to_string();
+                        self.create_state.directory = format!("{}/{}", base, name);
+                        self.create_state.dir_filter.clear();
                         self.create_state.refresh_dir_matches();
                     }
                 } else if self.create_state.is_valid() {
@@ -1117,7 +1113,11 @@ impl App {
                         ctrl_w_delete(&mut self.create_state.name);
                     }
                     CreateField::Directory => {
-                        ctrl_w_delete_path(&mut self.create_state.directory);
+                        if !self.create_state.dir_filter.is_empty() {
+                            self.create_state.dir_filter.clear();
+                        } else {
+                            ctrl_w_delete_path(&mut self.create_state.directory);
+                        }
                         self.create_state.refresh_dir_matches();
                     }
                     CreateField::AgentType => {}
@@ -1131,7 +1131,11 @@ impl App {
                         ctrl_w_delete(&mut self.create_state.name);
                     }
                     CreateField::Directory => {
-                        ctrl_w_delete_path(&mut self.create_state.directory);
+                        if !self.create_state.dir_filter.is_empty() {
+                            self.create_state.dir_filter.clear();
+                        } else {
+                            ctrl_w_delete_path(&mut self.create_state.directory);
+                        }
                         self.create_state.refresh_dir_matches();
                     }
                     CreateField::AgentType => {}
@@ -1144,7 +1148,18 @@ impl App {
                         self.create_state.name.pop();
                     }
                     CreateField::Directory => {
-                        self.create_state.directory.pop();
+                        if !self.create_state.dir_filter.is_empty() {
+                            // Delete from the filter first
+                            self.create_state.dir_filter.pop();
+                        } else {
+                            // Filter empty: go up one directory level
+                            let d = self.create_state.directory.trim_end_matches('/').to_string();
+                            if let Some(pos) = d.rfind('/') {
+                                self.create_state.directory = d[..pos].to_string();
+                            } else {
+                                self.create_state.directory.clear();
+                            }
+                        }
                         self.create_state.refresh_dir_matches();
                     }
                     CreateField::AgentType => {}
@@ -1157,7 +1172,7 @@ impl App {
                         self.create_state.name.push(c);
                     }
                     CreateField::Directory => {
-                        self.create_state.directory.push(c);
+                        self.create_state.dir_filter.push(c);
                         self.create_state.refresh_dir_matches();
                     }
                     CreateField::AgentType => {}
