@@ -118,6 +118,9 @@ pub enum CreateField {
     AgentType,
 }
 
+/// Maximum number of directory suggestions visible at once in the list.
+pub const MAX_DIR_VISIBLE: usize = 6;
+
 #[derive(Debug)]
 pub struct CreateAgentState {
     pub name: String,
@@ -128,6 +131,8 @@ pub struct CreateAgentState {
     pub dir_matches: Vec<String>,
     /// Index of the currently highlighted suggestion in `dir_matches`.
     pub dir_selected_idx: usize,
+    /// First visible row index for the directory suggestion list (scroll offset).
+    pub dir_scroll_offset: usize,
     /// Agent types available when the dialog was opened (from runner discovery).
     pub available_types: Vec<AgentType>,
     /// Index into `available_types` for the currently selected type.
@@ -143,6 +148,7 @@ impl Default for CreateAgentState {
             error: None,
             dir_matches: Vec::new(),
             dir_selected_idx: 0,
+            dir_scroll_offset: 0,
             available_types: vec![],
             selected_type_idx: 0,
         }
@@ -214,6 +220,7 @@ impl CreateAgentState {
         matches.truncate(10);
         self.dir_matches = matches;
         self.dir_selected_idx = 0;
+        self.dir_scroll_offset = 0;
     }
 }
 
@@ -1029,8 +1036,12 @@ impl App {
                 CreateField::Directory => {
                     let n = self.create_state.dir_matches.len();
                     if n > 0 {
-                        self.create_state.dir_selected_idx =
-                            self.create_state.dir_selected_idx.saturating_sub(1);
+                        let new_idx = self.create_state.dir_selected_idx.saturating_sub(1);
+                        self.create_state.dir_selected_idx = new_idx;
+                        // Scroll up if needed
+                        if new_idx < self.create_state.dir_scroll_offset {
+                            self.create_state.dir_scroll_offset = new_idx;
+                        }
                     }
                 }
                 CreateField::AgentType => {
@@ -1046,8 +1057,13 @@ impl App {
                 CreateField::Directory => {
                     let n = self.create_state.dir_matches.len();
                     if n > 0 {
-                        let idx = self.create_state.dir_selected_idx;
-                        self.create_state.dir_selected_idx = (idx + 1).min(n - 1);
+                        let new_idx = (self.create_state.dir_selected_idx + 1).min(n - 1);
+                        self.create_state.dir_selected_idx = new_idx;
+                        // Scroll down if needed
+                        if new_idx >= self.create_state.dir_scroll_offset + MAX_DIR_VISIBLE {
+                            self.create_state.dir_scroll_offset =
+                                new_idx + 1 - MAX_DIR_VISIBLE;
+                        }
                     }
                 }
                 CreateField::AgentType => {
@@ -1091,6 +1107,34 @@ impl App {
                             self.create_state.error = Some(e.to_string());
                         }
                     }
+                }
+            }
+
+            KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+W: delete back to the last word boundary (unix shell style)
+                match self.create_state.focus {
+                    CreateField::Name => {
+                        ctrl_w_delete(&mut self.create_state.name);
+                    }
+                    CreateField::Directory => {
+                        ctrl_w_delete_path(&mut self.create_state.directory);
+                        self.create_state.refresh_dir_matches();
+                    }
+                    CreateField::AgentType => {}
+                }
+            }
+
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+W: delete back to the last word boundary (unix shell style)
+                match self.create_state.focus {
+                    CreateField::Name => {
+                        ctrl_w_delete(&mut self.create_state.name);
+                    }
+                    CreateField::Directory => {
+                        ctrl_w_delete_path(&mut self.create_state.directory);
+                        self.create_state.refresh_dir_matches();
+                    }
+                    CreateField::AgentType => {}
                 }
             }
 
@@ -1276,4 +1320,32 @@ fn key_event_to_tmux(key: &KeyEvent) -> String {
     if shift && apply_shift { result.push_str("S-"); }
     result.push_str(&base);
     result
+}
+
+// ---------------------------------------------------------------------------
+// Ctrl+W helpers
+// ---------------------------------------------------------------------------
+
+/// Deletes the last "word" from a generic string (space-delimited).
+fn ctrl_w_delete(s: &mut String) {
+    // Trim trailing spaces, then remove back to the next space
+    let trimmed_len = s.trim_end().len();
+    s.truncate(trimmed_len);
+    if let Some(pos) = s.rfind(|c: char| c == ' ') {
+        s.truncate(pos + 1);
+    } else {
+        s.clear();
+    }
+}
+
+/// Deletes the last path component from a directory string.
+/// Behaves like Ctrl+W in a unix shell: removes back to the last `/`.
+fn ctrl_w_delete_path(s: &mut String) {
+    // Strip trailing slash first, then remove back to the previous slash
+    let trimmed = s.trim_end_matches('/');
+    if let Some(pos) = trimmed.rfind('/') {
+        s.truncate(pos + 1); // keep the slash
+    } else {
+        s.clear();
+    }
 }

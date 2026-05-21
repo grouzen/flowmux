@@ -223,14 +223,14 @@ pub fn render_agent_view(
 }
 
 fn render_stopped_overlay(f: &mut Frame, area: Rect) {
-    // blank + title + blank + message + blank + buttons + blank = 7 rows
-    let overlay_width = 56u16.min(area.width);
+    let overlay_width = ((area.width as u32 * 40 / 100) as u16)
+        .max(44)
+        .min(area.width);
     let overlay_height = 7u16.min(area.height);
     let x = area.x + area.width.saturating_sub(overlay_width) / 2;
     let y = area.y + area.height.saturating_sub(overlay_height) / 2;
     let overlay_area = Rect::new(x, y, overlay_width, overlay_height);
 
-    // Clear + BG1 fill, no border
     f.render_widget(Clear, overlay_area);
     f.render_widget(
         Block::default().style(Style::default().bg(BG1)),
@@ -253,7 +253,7 @@ fn render_stopped_overlay(f: &mut Frame, area: Rect) {
     // Title
     f.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::raw("  "),
+            Span::raw("   "),
             Span::styled(
                 "Agent stopped",
                 Style::default().fg(RED).add_modifier(Modifier::BOLD),
@@ -266,17 +266,17 @@ fn render_stopped_overlay(f: &mut Frame, area: Rect) {
     // Message
     f.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::raw("  "),
+            Span::raw("   "),
             Span::styled("The agent process has exited.", Style::default().fg(GRAY)),
         ]))
         .style(Style::default().bg(BG1)),
         rows[3],
     );
 
-    // Buttons — solid rectangles with gray tip text
+    // Buttons
     f.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::raw("  "),
+            Span::raw("   "),
             Span::styled(
                 " Restart ",
                 Style::default()

@@ -9,8 +9,10 @@ use ratatui::{
 use crate::ui::theme::*;
 
 pub fn render_remove_agent(f: &mut Frame, area: Rect, agent_name: &str) {
-    let dialog_width = 56u16.min(area.width.saturating_sub(4));
-    // blank + title + blank + question + blank + buttons + blank
+    let dialog_width = ((area.width as u32 * 40 / 100) as u16)
+        .max(44)
+        .min(area.width.saturating_sub(4));
+    // blank + title + blank + question + blank + buttons + blank = 7 rows
     let dialog_height = 7u16;
 
     let dialog_x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
@@ -23,7 +25,6 @@ pub fn render_remove_agent(f: &mut Frame, area: Rect, agent_name: &str) {
         height: dialog_height,
     };
 
-    // Clear + BG1 fill, no border
     f.render_widget(Clear, dialog_area);
     f.render_widget(
         Block::default().style(Style::default().bg(BG1)),
@@ -46,7 +47,7 @@ pub fn render_remove_agent(f: &mut Frame, area: Rect, agent_name: &str) {
     // Title
     f.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::raw("  "),
+            Span::raw("   "),
             Span::styled(
                 "Remove agent",
                 Style::default().fg(RED).add_modifier(Modifier::BOLD),
@@ -59,7 +60,7 @@ pub fn render_remove_agent(f: &mut Frame, area: Rect, agent_name: &str) {
     // Question
     f.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::raw("  "),
+            Span::raw("   "),
             Span::styled("Remove ", Style::default().fg(GRAY)),
             Span::styled(
                 agent_name,
@@ -71,10 +72,10 @@ pub fn render_remove_agent(f: &mut Frame, area: Rect, agent_name: &str) {
         rows[3],
     );
 
-    // Buttons — solid rectangles with gray tip text
+    // Buttons
     f.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::raw("  "),
+            Span::raw("   "),
             Span::styled(
                 " Confirm ",
                 Style::default().bg(RED).fg(FG).add_modifier(Modifier::BOLD),
