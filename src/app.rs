@@ -205,7 +205,6 @@ impl CreateAgentState {
             .collect();
 
         matches.sort();
-        matches.truncate(10);
         self.dir_matches = matches;
         self.dir_selected_idx = 0;
         self.dir_scroll_offset = 0;

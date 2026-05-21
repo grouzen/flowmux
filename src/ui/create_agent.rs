@@ -212,17 +212,16 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
                 ' '
             };
 
-            let inner_width = modal_width.saturating_sub(LABEL_WIDTH + 4) as usize; // label + "● " + right margin
+            // Content width = row width minus label pad (13) minus 1 for scrollbar column.
+            // Prefix " ● " / "   " = 3 chars; name fills the rest.
+            let content_width = rows[row].width.saturating_sub(LABEL_WIDTH + 1) as usize;
+            let name_width = content_width.saturating_sub(3);
 
             let line = if selected {
                 Line::from(vec![
                     Span::raw(label_pad()),
                     Span::styled(
-                        format!(
-                            " ● {:<width$}",
-                            display,
-                            width = inner_width.saturating_sub(3)
-                        ),
+                        format!(" ● {:<width$}", display, width = name_width),
                         Style::default().fg(BG).bg(FG).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(scrollbar_char.to_string(), Style::default().fg(BG2).bg(BG1)),
@@ -230,7 +229,10 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
             } else {
                 Line::from(vec![
                     Span::raw(label_pad()),
-                    Span::styled(format!("   {}", display), Style::default().fg(GRAY)),
+                    Span::styled(
+                        format!("   {:<width$}", display, width = name_width),
+                        Style::default().fg(GRAY),
+                    ),
                     Span::styled(scrollbar_char.to_string(), Style::default().fg(BG2).bg(BG1)),
                 ])
             };
