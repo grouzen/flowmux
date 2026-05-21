@@ -1,9 +1,9 @@
 use ansi_to_tui::IntoText;
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph},
+    widgets::{Block, Clear, Paragraph},
     Frame,
 };
 use std::collections::HashMap;
@@ -223,52 +223,82 @@ pub fn render_agent_view(
 }
 
 fn render_stopped_overlay(f: &mut Frame, area: Rect) {
-    // Compute a centered box: 58 wide, 7 tall
-    let overlay_width = 58u16.min(area.width);
+    // blank + title + blank + message + blank + buttons + blank = 7 rows
+    let overlay_width = 56u16.min(area.width);
     let overlay_height = 7u16.min(area.height);
     let x = area.x + area.width.saturating_sub(overlay_width) / 2;
     let y = area.y + area.height.saturating_sub(overlay_height) / 2;
     let overlay_area = Rect::new(x, y, overlay_width, overlay_height);
 
+    // Clear + BG1 fill, no border
     f.render_widget(Clear, overlay_area);
+    f.render_widget(
+        Block::default().style(Style::default().bg(BG1)),
+        overlay_area,
+    );
 
-    let block = Block::default()
-        .title(Span::styled(
-            " Agent Stopped ",
-            Style::default().fg(RED).add_modifier(Modifier::BOLD),
-        ))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(RED));
-    let inner = block.inner(overlay_area);
-    f.render_widget(block, overlay_area);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // blank
+            Constraint::Length(1), // title
+            Constraint::Length(1), // blank
+            Constraint::Length(1), // message
+            Constraint::Length(1), // blank
+            Constraint::Length(1), // buttons
+            Constraint::Length(1), // blank
+        ])
+        .split(overlay_area);
 
-    // Content lines inside the box
-    let lines = vec![
-        Line::from(""),
-        Line::from(Span::styled(
-            "The agent process has exited.",
-            Style::default().fg(GRAY),
-        )),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("[", Style::default().fg(BG2)),
-            Span::styled("r", Style::default().fg(ORANGE)),
-            Span::styled("]", Style::default().fg(BG2)),
-            Span::styled(" Restart", Style::default().fg(FG)),
+    // Title
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "Agent stopped",
+                Style::default().fg(RED).add_modifier(Modifier::BOLD),
+            ),
+        ]))
+        .style(Style::default().bg(BG1)),
+        rows[1],
+    );
+
+    // Message
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("The agent process has exited.", Style::default().fg(GRAY)),
+        ]))
+        .style(Style::default().bg(BG1)),
+        rows[3],
+    );
+
+    // Buttons — solid rectangles with gray tip text
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                " Restart ",
+                Style::default()
+                    .bg(ORANGE)
+                    .fg(FG)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" r", Style::default().fg(GRAY)),
             Span::raw("   "),
-            Span::styled("[", Style::default().fg(BG2)),
-            Span::styled("d", Style::default().fg(ORANGE)),
-            Span::styled("]", Style::default().fg(BG2)),
-            Span::styled(" Remove", Style::default().fg(FG)),
+            Span::styled(
+                " Remove ",
+                Style::default().bg(RED).fg(FG).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" d", Style::default().fg(GRAY)),
             Span::raw("   "),
-            Span::styled("[", Style::default().fg(BG2)),
-            Span::styled("Ctrl-g", Style::default().fg(ORANGE)),
-            Span::styled("]", Style::default().fg(BG2)),
-            Span::styled(" Dashboard", Style::default().fg(FG)),
-        ]),
-    ];
-
-    let para = Paragraph::new(lines).alignment(Alignment::Center);
-    f.render_widget(para, inner);
+            Span::styled(
+                " Dashboard ",
+                Style::default().bg(BG2).fg(FG).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" ctrl-g", Style::default().fg(GRAY)),
+        ]))
+        .style(Style::default().bg(BG1)),
+        rows[5],
+    );
 }

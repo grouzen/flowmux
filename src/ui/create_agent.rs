@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph},
+    widgets::{Block, Clear, Paragraph},
     Frame,
 };
 
@@ -11,81 +11,81 @@ use crate::models::AgentType;
 use crate::ui::theme::*;
 
 // ---------------------------------------------------------------------------
+// Layout constants
+// ---------------------------------------------------------------------------
+
+/// Width of the "  Label     " prefix in input rows (2 spaces + 10-char padded label).
+const LABEL_WIDTH: u16 = 12;
+
+// ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
 pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) {
     let modal_width = 56u16;
 
-    let dir_rows = state.dir_matches.len() as u16;
-    let agent_rows = state.available_types.len().max(1) as u16;
-    let error_rows: u16 = if state.error.is_some() { 1 } else { 0 };
+    // Directory section: only shown when there are matches
+    let dir_section_rows: u16 = if state.dir_matches.is_empty() {
+        0
+    } else {
+        1 + 1 + state.dir_matches.len() as u16 // blank + "Suggested" label + items
+    };
 
-    // Layout rows:
-    //  1  blank
-    //  1  Name input
-    //  1  blank
-    //  1  Directory input
-    //  N  dir suggestions
-    //  1  blank
-    //  1  "Agent" label (only if multiple types)
-    //  M  agent type list
-    //  1  blank
-    //  E  error (0 or 1)
-    //  1  buttons row
-    //  1  blank
+    let agent_rows = state.available_types.len().max(1) as u16;
     let agent_label_row: u16 = if state.available_types.len() > 1 {
         1
     } else {
         0
     };
-    let modal_height =
-        1 + 1 + 1 + 1 + dir_rows + 1 + agent_label_row + agent_rows + 1 + error_rows + 1 + 1 + 2; // border
+    let error_rows: u16 = if state.error.is_some() { 1 } else { 0 };
+
+    // Rows: blank + title + blank + Name + blank + Directory
+    //       + dir_section + blank + [agent_label] + agent_rows + blank + [error] + buttons + blank
+    let modal_height = 3
+        + 1
+        + 1
+        + 1
+        + dir_section_rows
+        + 1
+        + agent_label_row
+        + agent_rows
+        + 1
+        + error_rows
+        + 1
+        + 1;
 
     let modal_area = centered_rect(modal_width, modal_height, area);
 
-    // Clear the area behind the modal
+    // Clear behind the modal, then fill with BG1 background (no border)
     f.render_widget(Clear, modal_area);
+    f.render_widget(Block::default().style(Style::default().bg(BG1)), modal_area);
 
-    // Filled background (BG1 — brighter than app BG)
-    let bg_block = Block::default()
-        .style(Style::default().bg(BG1))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(ORANGE))
-        .title(Span::styled(
-            " New Agent ",
-            Style::default().fg(FG).add_modifier(Modifier::BOLD),
-        ));
-    f.render_widget(bg_block, modal_area);
-
-    let inner = Rect {
-        x: modal_area.x + 1,
-        y: modal_area.y + 1,
-        width: modal_area.width.saturating_sub(2),
-        height: modal_area.height.saturating_sub(2),
-    };
-
-    // Build constraint list dynamically
+    // Build layout constraints
     let mut constraints: Vec<Constraint> = vec![
         Constraint::Length(1), // blank
-        Constraint::Length(1), // Name
+        Constraint::Length(1), // title "Launch agent"
         Constraint::Length(1), // blank
-        Constraint::Length(1), // Directory
+        Constraint::Length(1), // Name input
+        Constraint::Length(1), // blank
+        Constraint::Length(1), // Directory input
     ];
-    for _ in 0..dir_rows {
-        constraints.push(Constraint::Length(1)); // each suggestion
+    if !state.dir_matches.is_empty() {
+        constraints.push(Constraint::Length(1)); // blank gap
+        constraints.push(Constraint::Length(1)); // "Suggested" label
+        for _ in 0..state.dir_matches.len() {
+            constraints.push(Constraint::Length(1));
+        }
     }
     constraints.push(Constraint::Length(1)); // blank
     if state.available_types.len() > 1 {
         constraints.push(Constraint::Length(1)); // "Agent" label
     }
     for _ in 0..agent_rows {
-        constraints.push(Constraint::Length(1)); // each agent type
+        constraints.push(Constraint::Length(1));
     }
     constraints.push(Constraint::Length(1)); // blank
     if state.error.is_some() {
-        constraints.push(Constraint::Length(1)); // error
+        constraints.push(Constraint::Length(1));
     }
     constraints.push(Constraint::Length(1)); // buttons
     constraints.push(Constraint::Min(0)); // trailing padding
@@ -93,76 +93,136 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
-        .split(inner);
+        .split(modal_area);
 
     let mut row = 0usize;
 
     // blank
     row += 1;
 
+    // Title row — "Launch agent" top-left, bold
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "Launch agent",
+                Style::default().fg(FG).add_modifier(Modifier::BOLD),
+            ),
+        ]))
+        .style(Style::default().bg(BG1)),
+        rows[row],
+    );
+    row += 1;
+
+    // blank
+    row += 1;
+
     // Name input
+    let name_focused = state.focus == CreateField::Name;
     render_field_row(
         f,
         rows[row],
         "Name",
         &state.name,
         "type a name...",
-        state.focus == CreateField::Name,
+        name_focused,
     );
+    if name_focused {
+        let cx = rows[row].x
+            + LABEL_WIDTH
+            + state
+                .name
+                .len()
+                .min(rows[row].width.saturating_sub(LABEL_WIDTH) as usize) as u16;
+        f.set_cursor_position((cx, rows[row].y));
+    }
     row += 1;
 
     // blank
     row += 1;
 
     // Directory input
+    let dir_focused = state.focus == CreateField::Directory;
     render_field_row(
         f,
         rows[row],
         "Directory",
         &state.directory,
         "type a path...",
-        state.focus == CreateField::Directory,
+        dir_focused,
     );
+    if dir_focused {
+        let val_width = rows[row].width.saturating_sub(LABEL_WIDTH);
+        let displayed_len = state.directory.len().min(val_width as usize);
+        let cx = rows[row].x + LABEL_WIDTH + displayed_len as u16;
+        f.set_cursor_position((cx, rows[row].y));
+    }
     row += 1;
 
-    // Directory suggestions
-    for (i, suggestion) in state.dir_matches.iter().enumerate() {
-        let selected = i == state.dir_selected_idx;
-        let focused = state.focus == CreateField::Directory;
-        let style = if selected && focused {
-            Style::default().fg(YELLOW).add_modifier(Modifier::BOLD)
-        } else if selected {
-            Style::default().fg(FG)
-        } else {
-            Style::default().fg(GRAY)
-        };
-        let prefix = if selected && focused { "▶ " } else { "  " };
-        let line = Line::from(vec![
-            Span::raw("    "),
-            Span::styled(format!("{}{}", prefix, suggestion), style),
-        ]);
+    // Directory suggestions section
+    if !state.dir_matches.is_empty() {
+        // blank gap
+        row += 1;
+
+        // "Suggested" label
         f.render_widget(
-            Paragraph::new(line).style(Style::default().bg(BG1)),
+            Paragraph::new(Line::from(vec![
+                Span::raw("  "),
+                Span::styled("Suggested", Style::default().fg(GRAY)),
+            ]))
+            .style(Style::default().bg(BG1)),
             rows[row],
         );
         row += 1;
+
+        // Suggestion items
+        let base = &state.directory;
+        for (i, suggestion) in state.dir_matches.iter().enumerate() {
+            let selected = i == state.dir_selected_idx && dir_focused;
+
+            // Show relative part only (strip base directory prefix)
+            let display = relative_path(suggestion, base);
+
+            let line = if selected {
+                // Inverted: BG as text fg, FG as background — highlight entire row
+                Line::from(vec![Span::styled(
+                    format!(
+                        "  {:<width$}",
+                        display,
+                        width = (modal_width as usize).saturating_sub(2)
+                    ),
+                    Style::default().fg(BG).bg(FG).add_modifier(Modifier::BOLD),
+                )])
+            } else {
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(&display, Style::default().fg(GRAY)),
+                ])
+            };
+            f.render_widget(
+                Paragraph::new(line).style(Style::default().bg(BG1)),
+                rows[row],
+            );
+            row += 1;
+        }
     }
 
     // blank
     row += 1;
 
-    // Agent type section
+    // Agent section
     if state.available_types.len() > 1 {
-        // "Agent" label row
-        let label_line = Line::from(vec![Span::styled("  Agent", Style::default().fg(GRAY))]);
         f.render_widget(
-            Paragraph::new(label_line).style(Style::default().bg(BG1)),
+            Paragraph::new(Line::from(vec![
+                Span::raw("  "),
+                Span::styled("Agent", Style::default().fg(GRAY)),
+            ]))
+            .style(Style::default().bg(BG1)),
             rows[row],
         );
         row += 1;
     }
 
-    // Agent type list items
     render_agent_type_list(f, &rows[row..row + agent_rows as usize], state);
     row += agent_rows as usize;
 
@@ -171,35 +231,38 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
 
     // Error row
     if let Some(err) = &state.error {
-        let err_line = Line::from(vec![
-            Span::raw("  "),
-            Span::styled(format!("{} ", ICON_ERR), Style::default().fg(RED)),
-            Span::styled(err.as_str(), Style::default().fg(RED)),
-        ]);
         f.render_widget(
-            Paragraph::new(err_line).style(Style::default().bg(BG1)),
+            Paragraph::new(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(format!("{} ", ICON_ERR), Style::default().fg(RED)),
+                Span::styled(err.as_str(), Style::default().fg(RED)),
+            ]))
+            .style(Style::default().bg(BG1)),
             rows[row],
         );
         row += 1;
     }
 
-    // Buttons row — solid rectangles
-    let launch_btn = Span::styled(
-        " Launch ",
-        Style::default()
-            .bg(ORANGE)
-            .fg(BG)
-            .add_modifier(Modifier::BOLD),
-    );
-    let cancel_btn = Span::styled(" Cancel ", Style::default().bg(BG2).fg(FG));
-    let btn_line = Line::from(vec![
-        Span::raw("  "),
-        launch_btn,
-        Span::raw("  "),
-        cancel_btn,
-    ]);
+    // Buttons row: solid rect + gray tip text
     f.render_widget(
-        Paragraph::new(btn_line).style(Style::default().bg(BG1)),
+        Paragraph::new(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                " Launch ",
+                Style::default()
+                    .bg(ORANGE)
+                    .fg(FG)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" enter", Style::default().fg(GRAY)),
+            Span::raw("   "),
+            Span::styled(
+                " Cancel ",
+                Style::default().bg(BG2).fg(FG).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" esc", Style::default().fg(GRAY)),
+        ]))
+        .style(Style::default().bg(BG1)),
         rows[row],
     );
 }
@@ -220,13 +283,15 @@ fn render_agent_type_list(f: &mut Frame, areas: &[Rect], state: &CreateAgentStat
     let types = &state.available_types;
 
     if types.is_empty() {
-        // Fallback: show static opencode
-        let line = Line::from(vec![Span::styled(
-            format!("  {} opencode", ICON_AGENT),
-            Style::default().fg(GREEN),
-        )]);
         if let Some(area) = areas.first() {
-            f.render_widget(Paragraph::new(line).style(Style::default().bg(BG1)), *area);
+            f.render_widget(
+                Paragraph::new(Line::from(vec![Span::styled(
+                    format!("    {} opencode", ICON_AGENT),
+                    Style::default().fg(GREEN),
+                )]))
+                .style(Style::default().bg(BG1)),
+                *area,
+            );
         }
         return;
     }
@@ -244,16 +309,19 @@ fn render_agent_type_list(f: &mut Frame, areas: &[Rect], state: &CreateAgentStat
             Style::default().fg(GRAY)
         };
 
-        let line = Line::from(vec![
-            Span::raw("    "),
-            Span::styled(format!("{} {}", radio, agent_type_label(t)), style),
-        ]);
-        f.render_widget(Paragraph::new(line).style(Style::default().bg(BG1)), *area);
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::raw("    "),
+                Span::styled(format!("{} {}", radio, agent_type_label(t)), style),
+            ]))
+            .style(Style::default().bg(BG1)),
+            *area,
+        );
     }
 }
 
 // ---------------------------------------------------------------------------
-// Input field renderer — no brackets, cursor + tip text as indicators
+// Input field renderer
 // ---------------------------------------------------------------------------
 
 fn render_field_row(
@@ -264,35 +332,26 @@ fn render_field_row(
     placeholder: &str,
     focused: bool,
 ) {
-    // Reserve space: "  Label   " prefix + rest for value
     let label_text = format!("  {:<10}", label);
-    let value_width = area.width.saturating_sub(label_text.len() as u16 + 1);
-    let displayed = truncate_left(value, value_width as usize);
+    let val_width = area.width.saturating_sub(LABEL_WIDTH);
+    let displayed = truncate_left(value, val_width as usize);
 
     let spans: Vec<Span> = if focused {
-        // Focused: bright label, bright value, block cursor
         vec![
-            Span::styled(&label_text, Style::default().fg(FG)),
+            Span::styled(label_text, Style::default().fg(FG)),
             Span::styled(
-                format!(
-                    "{:<width$}",
-                    displayed,
-                    width = value_width.saturating_sub(1) as usize
-                ),
+                displayed,
                 Style::default().fg(FG).add_modifier(Modifier::BOLD),
             ),
-            Span::styled("▌", Style::default().fg(YELLOW)),
         ]
     } else if value.is_empty() {
-        // Unfocused, empty: dim label + placeholder tip
         vec![
-            Span::styled(&label_text, Style::default().fg(GRAY)),
+            Span::styled(label_text, Style::default().fg(GRAY)),
             Span::styled(placeholder, Style::default().fg(BG2)),
         ]
     } else {
-        // Unfocused, has value: dim label + dim value
         vec![
-            Span::styled(&label_text, Style::default().fg(GRAY)),
+            Span::styled(label_text, Style::default().fg(GRAY)),
             Span::styled(displayed, Style::default().fg(GRAY)),
         ]
     };
@@ -306,6 +365,17 @@ fn render_field_row(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Returns the part of `path` that comes after `base`, or the full path if
+/// stripping fails. Strips a leading `/` from the result.
+fn relative_path(path: &str, base: &str) -> String {
+    let base_clean = base.trim_end_matches('/');
+    if let Some(rest) = path.strip_prefix(base_clean) {
+        rest.trim_start_matches('/').to_string()
+    } else {
+        path.to_string()
+    }
+}
 
 fn truncate_left(s: &str, max: usize) -> String {
     if max == 0 {
