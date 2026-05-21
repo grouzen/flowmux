@@ -124,8 +124,10 @@ pub struct CreateAgentState {
     pub directory: String,
     pub focus: CreateField,
     pub error: Option<String>,
-    pub tab_matches: Vec<String>,
-    pub tab_idx: usize,
+    /// Up to 10 alphabetically sorted subdirectory suggestions for the directory field.
+    pub dir_matches: Vec<String>,
+    /// Index of the currently highlighted suggestion in `dir_matches`.
+    pub dir_selected_idx: usize,
     /// Agent types available when the dialog was opened (from runner discovery).
     pub available_types: Vec<AgentType>,
     /// Index into `available_types` for the currently selected type.
@@ -139,8 +141,8 @@ impl Default for CreateAgentState {
             directory: String::new(),
             focus: CreateField::Name,
             error: None,
-            tab_matches: Vec::new(),
-            tab_idx: 0,
+            dir_matches: Vec::new(),
+            dir_selected_idx: 0,
             available_types: vec![],
             selected_type_idx: 0,
         }
@@ -159,65 +161,59 @@ impl CreateAgentState {
         !self.name.trim().is_empty() && !self.directory.trim().is_empty()
     }
 
-    /// Perform Tab completion on the Directory field.
-    pub fn handle_tab(&mut self) {
-        let current = self.directory.clone();
+    /// Rebuild the directory suggestion list from the current `directory` value.
+    ///
+    /// If `directory` is a valid directory, lists its direct subdirectories.
+    /// Otherwise treats it as a partial path: lists subdirectories of the parent
+    /// that start with the last path component as a prefix filter.
+    /// Results are sorted alphabetically and capped at 10.
+    pub fn refresh_dir_matches(&mut self) {
+        let current = self.directory.trim_end_matches('/').to_string();
         let path = std::path::Path::new(&current);
 
-        let (parent, prefix) = if current.ends_with('/') || current.is_empty() {
-            (
-                if current.is_empty() {
-                    std::path::PathBuf::from(".")
-                } else {
-                    std::path::PathBuf::from(&current)
-                },
-                String::new(),
-            )
+        // Determine (base_dir_to_list, prefix_filter)
+        let (list_dir, prefix) = if current.is_empty() {
+            // Empty input: list CWD's subdirs
+            let cwd = std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            (cwd, String::new())
+        } else if path.is_dir() {
+            // Exact directory: list its subdirs, no filter
+            (path.to_path_buf(), String::new())
         } else {
-            let p = path.parent().unwrap_or(std::path::Path::new("."));
+            // Partial path: parent dir + last component as filter
+            let parent = path
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .to_path_buf();
             let fname = path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("")
                 .to_string();
-            (p.to_path_buf(), fname)
+            (parent, fname)
         };
 
-        // If no matches cached (or prefix changed), rebuild
-        if self.tab_matches.is_empty() {
-            if let Ok(rd) = std::fs::read_dir(&parent) {
-                let mut matches: Vec<String> = rd
-                    .flatten()
-                    .filter_map(|e| {
-                        let name = e.file_name().into_string().ok()?;
-                        if name.starts_with(&prefix) && e.file_type().ok()?.is_dir() {
-                            let mut full = parent.join(&name);
-                            // Canonicalize for nicer display
-                            if let Ok(c) = full.canonicalize() {
-                                full = c;
-                            }
-                            Some(full.to_string_lossy().to_string())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                matches.sort();
-                if current.is_empty() {
-                    if let Ok(cwd) = std::env::current_dir() {
-                        matches.insert(0, cwd.to_string_lossy().to_string());
-                    }
+        let mut matches: Vec<String> = std::fs::read_dir(&list_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().into_string().ok()?;
+                if e.file_type().ok()?.is_dir() && name.starts_with(&prefix) {
+                    let full = list_dir.join(&name);
+                    let canonical = full.canonicalize().unwrap_or(full);
+                    Some(canonical.to_string_lossy().to_string())
+                } else {
+                    None
                 }
-                self.tab_matches = matches;
-                self.tab_idx = 0;
-            }
-        } else {
-            self.tab_idx = (self.tab_idx + 1) % self.tab_matches.len().max(1);
-        }
+            })
+            .collect();
 
-        if let Some(m) = self.tab_matches.get(self.tab_idx) {
-            self.directory = m.clone();
-        }
+        matches.sort();
+        matches.truncate(10);
+        self.dir_matches = matches;
+        self.dir_selected_idx = 0;
     }
 }
 
@@ -600,10 +596,17 @@ impl App {
         match key.code {
             KeyCode::Char('q') => return false,
             KeyCode::Char('n') => {
-                self.create_state = CreateAgentState {
+                let cwd = std::env::current_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                    .to_string_lossy()
+                    .to_string();
+                let mut cs = CreateAgentState {
                     available_types: self.runner.available_agent_types(),
+                    directory: cwd,
                     ..CreateAgentState::default()
                 };
+                cs.refresh_dir_matches();
+                self.create_state = cs;
                 self.state = AppState::CreateAgentDialog;
             }
             KeyCode::Char('d') => {
@@ -1005,47 +1008,67 @@ impl App {
             KeyCode::Esc => {
                 self.state = AppState::Dashboard;
             }
+
+            // Tab cycles focus: Name → Directory → AgentType → Name
             KeyCode::Tab => {
-                if self.create_state.focus == CreateField::Directory {
-                    self.create_state.handle_tab();
-                }
-            }
-            KeyCode::Up => {
-                self.create_state.focus = match self.create_state.focus {
-                    CreateField::Name => CreateField::Name,
-                    CreateField::Directory => CreateField::Name,
-                    CreateField::AgentType => CreateField::Directory,
-                };
-            }
-            KeyCode::Down => {
                 self.create_state.focus = match self.create_state.focus {
                     CreateField::Name => CreateField::Directory,
                     CreateField::Directory => {
                         if self.create_state.available_types.len() > 1 {
                             CreateField::AgentType
                         } else {
-                            CreateField::Directory
+                            CreateField::Name
                         }
                     }
-                    CreateField::AgentType => CreateField::AgentType,
+                    CreateField::AgentType => CreateField::Name,
                 };
             }
-            // Left / Right cycle agent type when that row is focused.
-            KeyCode::Left | KeyCode::Right
-                if self.create_state.focus == CreateField::AgentType =>
-            {
-                let n = self.create_state.available_types.len();
-                if n > 0 {
-                    let idx = self.create_state.selected_type_idx;
-                    self.create_state.selected_type_idx = if key.code == KeyCode::Right {
-                        (idx + 1) % n
-                    } else {
-                        (idx + n - 1) % n
-                    };
+
+            // Up / Down navigate within-field (directory suggestions or agent list)
+            KeyCode::Up => match self.create_state.focus {
+                CreateField::Directory => {
+                    let n = self.create_state.dir_matches.len();
+                    if n > 0 {
+                        self.create_state.dir_selected_idx =
+                            self.create_state.dir_selected_idx.saturating_sub(1);
+                    }
                 }
-            }
+                CreateField::AgentType => {
+                    let n = self.create_state.available_types.len();
+                    if n > 0 {
+                        let idx = self.create_state.selected_type_idx;
+                        self.create_state.selected_type_idx = idx.saturating_sub(1);
+                    }
+                }
+                CreateField::Name => {}
+            },
+            KeyCode::Down => match self.create_state.focus {
+                CreateField::Directory => {
+                    let n = self.create_state.dir_matches.len();
+                    if n > 0 {
+                        let idx = self.create_state.dir_selected_idx;
+                        self.create_state.dir_selected_idx = (idx + 1).min(n - 1);
+                    }
+                }
+                CreateField::AgentType => {
+                    let n = self.create_state.available_types.len();
+                    if n > 0 {
+                        let idx = self.create_state.selected_type_idx;
+                        self.create_state.selected_type_idx = (idx + 1).min(n - 1);
+                    }
+                }
+                CreateField::Name => {}
+            },
+
             KeyCode::Enter => {
-                if self.create_state.is_valid() {
+                // When Directory focused: commit the highlighted suggestion
+                if self.create_state.focus == CreateField::Directory {
+                    let idx = self.create_state.dir_selected_idx;
+                    if let Some(selected) = self.create_state.dir_matches.get(idx).cloned() {
+                        self.create_state.directory = selected;
+                        self.create_state.refresh_dir_matches();
+                    }
+                } else if self.create_state.is_valid() {
                     let name = tmux::sanitize_name(&self.create_state.name.clone());
                     let dir = self.create_state.directory.clone();
                     let agent_type = self.create_state.selected_agent_type();
@@ -1070,6 +1093,7 @@ impl App {
                     }
                 }
             }
+
             KeyCode::Backspace => {
                 match self.create_state.focus {
                     CreateField::Name => {
@@ -1077,13 +1101,12 @@ impl App {
                     }
                     CreateField::Directory => {
                         self.create_state.directory.pop();
-                        // Invalidate tab matches when user edits
-                        self.create_state.tab_matches.clear();
-                        self.create_state.tab_idx =0;
+                        self.create_state.refresh_dir_matches();
                     }
                     CreateField::AgentType => {}
                 }
             }
+
             KeyCode::Char(c) => {
                 match self.create_state.focus {
                     CreateField::Name => {
@@ -1091,13 +1114,12 @@ impl App {
                     }
                     CreateField::Directory => {
                         self.create_state.directory.push(c);
-                        // Invalidate tab matches when user edits
-                        self.create_state.tab_matches.clear();
-                        self.create_state.tab_idx = 0;
+                        self.create_state.refresh_dir_matches();
                     }
                     CreateField::AgentType => {}
                 }
             }
+
             _ => {}
         }
         true
