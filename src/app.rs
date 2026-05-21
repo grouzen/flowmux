@@ -195,10 +195,7 @@ impl CreateAgentState {
             .flatten()
             .filter_map(|e| {
                 let name = e.file_name().into_string().ok()?;
-                // Skip hidden directories
-                if name.starts_with('.') {
-                    return None;
-                }
+
                 if e.file_type().ok()?.is_dir() && name.starts_with(prefix.as_str()) {
                     Some(name)
                 } else {
