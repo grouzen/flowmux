@@ -499,12 +499,14 @@ fn render_card(
 // Keybindings bar
 // ---------------------------------------------------------------------------
 
-/// Renders a styled `[key]` + ` action` pair as spans into the given vec.
+/// Renders a styled ` key  action` pair as spans into the given vec.
+/// The key is shown on an orange background with bright white text; no brackets.
 fn push_keybind<'a>(spans: &mut Vec<Span<'a>>, key: &'a str, action: &'a str, dimmed: bool) {
-    spans.push(Span::styled("[", ds(dimmed).fg(BG2)));
-    spans.push(Span::styled(key, ds(dimmed).fg(ORANGE)));
-    spans.push(Span::styled("]", ds(dimmed).fg(BG2)));
-    spans.push(Span::styled(action, ds(dimmed).fg(GRAY)));
+    spans.push(Span::styled(
+        format!(" {} ", key),
+        ds(dimmed).fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::styled(format!(" {}", action), ds(dimmed).fg(FG)));
 }
 
 fn render_keybindings_bar(f: &mut Frame, area: Rect, agents: &[AgentEntry], dimmed: bool) {
@@ -512,45 +514,55 @@ fn render_keybindings_bar(f: &mut Frame, area: Rect, agents: &[AgentEntry], dimm
     let waiting = count_waiting(agents);
     let idle = count_idle(agents);
 
+    // Left: hotkeys
     let mut spans: Vec<Span> = Vec::new();
+    spans.push(Span::raw(" "));
+    push_keybind(&mut spans, "n", "new", dimmed);
+    spans.push(Span::raw(" "));
+    push_keybind(&mut spans, "d", "delete", dimmed);
+    spans.push(Span::raw(" "));
+    push_keybind(&mut spans, "enter", "open", dimmed);
+    spans.push(Span::raw(" "));
+    push_keybind(&mut spans, "ctrl+arrows", "move", dimmed);
+    spans.push(Span::raw(" "));
+    push_keybind(&mut spans, "pgup/pgdown", "scroll", dimmed);
+    spans.push(Span::raw(" "));
+    push_keybind(&mut spans, "q", "quit", dimmed);
 
-    push_keybind(&mut spans, "n", " New", dimmed);
-    spans.push(Span::raw(" "));
-    push_keybind(&mut spans, "d", " Del", dimmed);
-    spans.push(Span::raw(" "));
-    push_keybind(&mut spans, "Enter", " Open", dimmed);
-    spans.push(Span::raw(" "));
-    push_keybind(&mut spans, "←↓↑→", " Navigate", dimmed);
-    spans.push(Span::raw(" "));
-    push_keybind(&mut spans, "Ctrl+←↓↑→", " Move", dimmed);
-    spans.push(Span::raw(" "));
-    push_keybind(&mut spans, "PgUp/Dn", " Scroll", dimmed);
-    spans.push(Span::raw(" "));
-    push_keybind(&mut spans, "q", " Quit", dimmed);
-
-    // Status counts
-    spans.push(Span::styled(" │ ", ds(dimmed).fg(BG2)));
-    spans.push(Span::styled(
-        format!("{} {} running", ICON_RUN, running),
-        ds(dimmed).fg(GREEN),
-    ));
-    spans.push(Span::styled(
-        format!(" {} {} waiting", ICON_WAIT, waiting),
-        ds(dimmed).fg(YELLOW),
-    ));
-    spans.push(Span::styled(
-        format!(" {} {} idle", ICON_IDLE, idle),
-        ds(dimmed).fg(CYAN),
-    ));
-
-    let status_line = Line::from(spans);
+    // Right: agent status counts (leading space separates from middle chunk; trailing space before brand)
+    let status_width = format!(
+        " {} {} running {} {} waiting {} {} idle ",
+        ICON_RUN, running, ICON_WAIT, waiting, ICON_IDLE, idle
+    )
+    .chars()
+    .count() as u16;
+    let status_spans: Vec<Span> = vec![
+        Span::styled(
+            format!(" {} {} running", ICON_RUN, running),
+            ds(dimmed).fg(GREEN),
+        ),
+        Span::styled(
+            format!(" {} {} waiting", ICON_WAIT, waiting),
+            ds(dimmed).fg(YELLOW),
+        ),
+        Span::styled(
+            format!(" {} {} idle ", ICON_IDLE, idle),
+            ds(dimmed).fg(CYAN),
+        ),
+    ];
 
     let (brand, brand_width) = brand_line(dimmed);
+
     let bar_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(0), Constraint::Length(brand_width)])
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(status_width),
+            Constraint::Length(brand_width),
+        ])
         .split(area);
 
-    f.render_widget(Paragraph::new(status_line), bar_chunks[0]);
-    f.render_widget(Paragraph::new(brand), bar_chunks[1]);
+    f.render_widget(Paragraph::new(Line::from(spans)), bar_chunks[0]);
+    f.render_widget(Paragraph::new(Line::from(status_spans)), bar_chunks[1]);
+    f.render_widget(Paragraph::new(brand), bar_chunks[2]);
 }
