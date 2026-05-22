@@ -114,8 +114,6 @@ pub fn render_agent_view(
         .filter(|a| matches!(a.meta.status, AgentStatus::Idle))
         .count();
 
-    let sep = Span::styled(" │ ", Style::default().fg(BG2));
-
     let ctx_text = if let Some(ctx) = &agent_entry.meta.context {
         let used = format_tokens(ctx.used);
         if let Some(total) = ctx.total {
@@ -133,18 +131,40 @@ pub fn render_agent_view(
         "< 1s".to_string()
     };
 
-    let mut status_spans = vec![
+    // --- Left: hotkey hints (ctrl+g dashboard, ctrl+b prefix) ---
+    let ctrlg_key = " ctrl+g ";
+    let ctrlb_key = " ctrl+b ";
+    let nav_width = (ctrlg_key.len() + " dashboard".len()
+        + 1  // space between hints
+        + ctrlb_key.len() + " prefix".len()) as u16;
+    let nav_spans: Vec<Span> = vec![
         Span::styled(
-            format!(" {}", agent_entry.config.name),
+            ctrlg_key,
+            Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" dashboard", Style::default().fg(FG)),
+        Span::raw(" "),
+        Span::styled(
+            ctrlb_key,
+            Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" prefix", Style::default().fg(FG)),
+    ];
+
+    // --- Middle: agent meta info ---
+    let mut status_spans = vec![
+        Span::raw(" "),
+        Span::styled(
+            format!("{}", agent_entry.config.name),
             Style::default().fg(FG).add_modifier(Modifier::BOLD),
         ),
-        sep.clone(),
+        Span::raw(" "),
         Span::styled(ctx_text, Style::default().fg(GRAY)),
         Span::styled(
             format!(" {} {}", ICON_TIME, work_str),
             Style::default().fg(GRAY),
         ),
-        sep.clone(),
+        Span::raw(" "),
         Span::styled(format!("{} ", ICON_DIR), Style::default().fg(GRAY)),
         Span::styled(dir_str.as_str(), Style::default().fg(GRAY)),
         Span::styled(format!(" {} ", ICON_AGENT), Style::default().fg(GRAY)),
@@ -159,62 +179,74 @@ pub fn render_agent_view(
             Style::default().fg(GRAY),
         ));
     }
-    status_spans.push(sep.clone());
-    status_spans.push(Span::styled(
-        format!("{} {} running", ICON_RUN, running),
-        Style::default().fg(GREEN),
-    ));
-    status_spans.push(Span::styled(
-        format!(" {} {} waiting", ICON_WAIT, waiting),
-        Style::default().fg(YELLOW),
-    ));
-    status_spans.push(Span::styled(
-        format!(" {} {} idle", ICON_IDLE, idle),
-        Style::default().fg(CYAN),
-    ));
-    let status_line = Line::from(status_spans);
 
+    // --- Right: PREFIX badge (conditional) + agent statuses + brand ---
     let (brand, brand_width) = brand_line(false);
 
-    // When prefix mode is active, replace the nav hint with a prominent
-    // [PREFIX] badge so the user knows the next key will be forwarded.
-    let (nav_spans, nav_width): (Vec<Span>, u16) = if state.prefix_active {
-        let text = " [PREFIX] ";
-        (
-            vec![Span::styled(
-                text,
+    let agent_status_spans: Vec<Span> = vec![
+        Span::styled(
+            format!(" {} {} running", ICON_RUN, running),
+            Style::default().fg(GREEN),
+        ),
+        Span::styled(
+            format!(" {} {} waiting", ICON_WAIT, waiting),
+            Style::default().fg(YELLOW),
+        ),
+        Span::styled(
+            format!(" {} {} idle", ICON_IDLE, idle),
+            Style::default().fg(CYAN),
+        ),
+        Span::raw(" "),
+    ];
+    let status_width = format!(
+        " {} {} running {} {} waiting {} {} idle ",
+        ICON_RUN, running, ICON_WAIT, waiting, ICON_IDLE, idle
+    )
+    .chars()
+    .count() as u16;
+
+    if state.prefix_active {
+        let prefix_text = " PREFIX ";
+        let prefix_width = prefix_text.len() as u16;
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(nav_width),
+                Constraint::Min(0),
+                Constraint::Length(prefix_width),
+                Constraint::Length(status_width),
+                Constraint::Length(brand_width),
+            ])
+            .split(status_area);
+        f.render_widget(Paragraph::new(Line::from(nav_spans)), chunks[0]);
+        f.render_widget(Paragraph::new(Line::from(status_spans)), chunks[1]);
+        f.render_widget(
+            Paragraph::new(Line::from(vec![Span::styled(
+                prefix_text,
                 Style::default()
                     .fg(ratatui::style::Color::Black)
                     .bg(YELLOW)
                     .add_modifier(Modifier::BOLD),
-            )],
-            text.len() as u16,
-        )
+            )])),
+            chunks[2],
+        );
+        f.render_widget(Paragraph::new(Line::from(agent_status_spans)), chunks[3]);
+        f.render_widget(Paragraph::new(brand), chunks[4]);
     } else {
-        let text = " [Ctrl+g] Dashboard";
-        (
-            vec![
-                Span::styled(" [", Style::default().fg(BG2)),
-                Span::styled("Ctrl+g", Style::default().fg(ORANGE)),
-                Span::styled("]", Style::default().fg(BG2)),
-                Span::styled(" Dashboard", Style::default().fg(GRAY)),
-            ],
-            text.len() as u16,
-        )
-    };
-
-    let status_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Min(0),
-            Constraint::Length(nav_width),
-            Constraint::Length(brand_width),
-        ])
-        .split(status_area);
-
-    f.render_widget(Paragraph::new(status_line), status_chunks[0]);
-    f.render_widget(Paragraph::new(Line::from(nav_spans)), status_chunks[1]);
-    f.render_widget(Paragraph::new(brand), status_chunks[2]);
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(nav_width),
+                Constraint::Min(0),
+                Constraint::Length(status_width),
+                Constraint::Length(brand_width),
+            ])
+            .split(status_area);
+        f.render_widget(Paragraph::new(Line::from(nav_spans)), chunks[0]);
+        f.render_widget(Paragraph::new(Line::from(status_spans)), chunks[1]);
+        f.render_widget(Paragraph::new(Line::from(agent_status_spans)), chunks[2]);
+        f.render_widget(Paragraph::new(brand), chunks[3]);
+    }
 
     // Stopped overlay
     if state.show_stopped_overlay {
