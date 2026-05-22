@@ -194,7 +194,7 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
         // "Suggested" label in cyan
         f.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::raw(left_pad()),
+                Span::raw(label_pad()),
                 Span::styled("Suggested", Style::default().fg(CYAN)),
             ]))
             .style(Style::default().bg(BG1)),
@@ -225,14 +225,15 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
                 ' '
             };
 
-            // Content width = row width minus label pad (13) minus 1 for scrollbar column.
+            // Content width = row width minus left pad (3) minus 1 for scrollbar column.
             // Prefix " ● " / "   " = 3 chars; name fills the rest.
-            let content_width = rows[row].width.saturating_sub(LABEL_WIDTH + 1) as usize;
+            // Content width = row width minus 10-char pad minus 1 for scrollbar column.
+            let content_width = rows[row].width.saturating_sub(11) as usize;
             let name_width = content_width.saturating_sub(3);
 
             let line = if selected {
                 Line::from(vec![
-                    Span::raw(label_pad()),
+                    Span::raw("          "),
                     Span::styled(
                         format!(" ● {:<width$}", display, width = name_width),
                         Style::default().fg(BG).bg(FG).add_modifier(Modifier::BOLD),
@@ -241,7 +242,7 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
                 ])
             } else {
                 Line::from(vec![
-                    Span::raw(label_pad()),
+                    Span::raw("          "),
                     Span::styled(
                         format!("   {:<width$}", display, width = name_width),
                         Style::default().fg(GRAY),
