@@ -118,14 +118,25 @@ pub enum CreateField {
     AgentType,
 }
 
+/// Maximum number of directory suggestions visible at once in the list.
+pub const MAX_DIR_VISIBLE: usize = 6;
+
 #[derive(Debug)]
 pub struct CreateAgentState {
     pub name: String,
+    /// The confirmed base directory (always an existing dir or empty).
     pub directory: String,
+    /// The filter prefix the user is currently typing within `directory`.
+    pub dir_filter: String,
     pub focus: CreateField,
     pub error: Option<String>,
-    pub tab_matches: Vec<String>,
-    pub tab_idx: usize,
+    /// Alphabetically sorted subdirectory name suggestions (up to 10).
+    /// Contains bare directory names, not full paths.
+    pub dir_matches: Vec<String>,
+    /// Index of the currently highlighted suggestion in `dir_matches`.
+    pub dir_selected_idx: usize,
+    /// First visible row index for the directory suggestion list (scroll offset).
+    pub dir_scroll_offset: usize,
     /// Agent types available when the dialog was opened (from runner discovery).
     pub available_types: Vec<AgentType>,
     /// Index into `available_types` for the currently selected type.
@@ -137,10 +148,12 @@ impl Default for CreateAgentState {
         Self {
             name: String::new(),
             directory: String::new(),
+            dir_filter: String::new(),
             focus: CreateField::Name,
             error: None,
-            tab_matches: Vec::new(),
-            tab_idx: 0,
+            dir_matches: Vec::new(),
+            dir_selected_idx: 0,
+            dir_scroll_offset: 0,
             available_types: vec![],
             selected_type_idx: 0,
         }
@@ -159,65 +172,52 @@ impl CreateAgentState {
         !self.name.trim().is_empty() && !self.directory.trim().is_empty()
     }
 
-    /// Perform Tab completion on the Directory field.
-    pub fn handle_tab(&mut self) {
-        let current = self.directory.clone();
-        let path = std::path::Path::new(&current);
-
-        let (parent, prefix) = if current.ends_with('/') || current.is_empty() {
-            (
-                if current.is_empty() {
-                    std::path::PathBuf::from(".")
-                } else {
-                    std::path::PathBuf::from(&current)
-                },
-                String::new(),
-            )
+    /// Rebuild the directory suggestion list.
+    ///
+    /// Lists non-hidden subdirectories of `self.directory` whose names start
+    /// with `self.dir_filter`. Results are sorted alphabetically, capped at 10,
+    /// and stored as bare names (not full paths).
+    pub fn refresh_dir_matches(&mut self) {
+        // Always floor directory at "/" so it is never empty.
+        if self.directory.is_empty() {
+            self.directory = "/".to_string();
+        }
+        // For root "/" trimming all slashes gives "" which is not a valid path,
+        // so use the directory string as-is when it equals "/".
+        let base: &str = if self.directory == "/" {
+            "/"
         } else {
-            let p = path.parent().unwrap_or(std::path::Path::new("."));
-            let fname = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-                .to_string();
-            (p.to_path_buf(), fname)
+            self.directory.trim_end_matches('/')
         };
+        let base_path = std::path::Path::new(base);
 
-        // If no matches cached (or prefix changed), rebuild
-        if self.tab_matches.is_empty() {
-            if let Ok(rd) = std::fs::read_dir(&parent) {
-                let mut matches: Vec<String> = rd
-                    .flatten()
-                    .filter_map(|e| {
-                        let name = e.file_name().into_string().ok()?;
-                        if name.starts_with(&prefix) && e.file_type().ok()?.is_dir() {
-                            let mut full = parent.join(&name);
-                            // Canonicalize for nicer display
-                            if let Ok(c) = full.canonicalize() {
-                                full = c;
-                            }
-                            Some(full.to_string_lossy().to_string())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                matches.sort();
-                if current.is_empty() {
-                    if let Ok(cwd) = std::env::current_dir() {
-                        matches.insert(0, cwd.to_string_lossy().to_string());
-                    }
+        if !base_path.is_dir() {
+            self.dir_matches.clear();
+            self.dir_selected_idx = 0;
+            self.dir_scroll_offset = 0;
+            return;
+        }
+
+        let prefix = &self.dir_filter;
+        let mut matches: Vec<String> = std::fs::read_dir(base_path)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().into_string().ok()?;
+
+                if e.file_type().ok()?.is_dir() && name.starts_with(prefix.as_str()) {
+                    Some(name)
+                } else {
+                    None
                 }
-                self.tab_matches = matches;
-                self.tab_idx = 0;
-            }
-        } else {
-            self.tab_idx = (self.tab_idx + 1) % self.tab_matches.len().max(1);
-        }
+            })
+            .collect();
 
-        if let Some(m) = self.tab_matches.get(self.tab_idx) {
-            self.directory = m.clone();
-        }
+        matches.sort();
+        self.dir_matches = matches;
+        self.dir_selected_idx = 0;
+        self.dir_scroll_offset = 0;
     }
 }
 
@@ -600,10 +600,17 @@ impl App {
         match key.code {
             KeyCode::Char('q') => return false,
             KeyCode::Char('n') => {
-                self.create_state = CreateAgentState {
+                let cwd = std::env::current_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                    .to_string_lossy()
+                    .to_string();
+                let mut cs = CreateAgentState {
                     available_types: self.runner.available_agent_types(),
+                    directory: cwd,
                     ..CreateAgentState::default()
                 };
+                cs.refresh_dir_matches();
+                self.create_state = cs;
                 self.state = AppState::CreateAgentDialog;
             }
             KeyCode::Char('d') => {
@@ -1005,47 +1012,81 @@ impl App {
             KeyCode::Esc => {
                 self.state = AppState::Dashboard;
             }
+
+            // Tab cycles focus: Name → Directory → AgentType → Name
             KeyCode::Tab => {
-                if self.create_state.focus == CreateField::Directory {
-                    self.create_state.handle_tab();
-                }
-            }
-            KeyCode::Up => {
-                self.create_state.focus = match self.create_state.focus {
-                    CreateField::Name => CreateField::Name,
-                    CreateField::Directory => CreateField::Name,
-                    CreateField::AgentType => CreateField::Directory,
-                };
-            }
-            KeyCode::Down => {
                 self.create_state.focus = match self.create_state.focus {
                     CreateField::Name => CreateField::Directory,
                     CreateField::Directory => {
                         if self.create_state.available_types.len() > 1 {
                             CreateField::AgentType
                         } else {
-                            CreateField::Directory
+                            CreateField::Name
                         }
                     }
-                    CreateField::AgentType => CreateField::AgentType,
+                    CreateField::AgentType => CreateField::Name,
                 };
             }
-            // Left / Right cycle agent type when that row is focused.
-            KeyCode::Left | KeyCode::Right
-                if self.create_state.focus == CreateField::AgentType =>
-            {
-                let n = self.create_state.available_types.len();
-                if n > 0 {
-                    let idx = self.create_state.selected_type_idx;
-                    self.create_state.selected_type_idx = if key.code == KeyCode::Right {
-                        (idx + 1) % n
-                    } else {
-                        (idx + n - 1) % n
-                    };
+
+            // Up / Down navigate within-field (directory suggestions or agent list)
+            KeyCode::Up => match self.create_state.focus {
+                CreateField::Directory => {
+                    let n = self.create_state.dir_matches.len();
+                    if n > 0 {
+                        let new_idx = self.create_state.dir_selected_idx.saturating_sub(1);
+                        self.create_state.dir_selected_idx = new_idx;
+                        // Scroll up if needed
+                        if new_idx < self.create_state.dir_scroll_offset {
+                            self.create_state.dir_scroll_offset = new_idx;
+                        }
+                    }
                 }
-            }
+                CreateField::AgentType => {
+                    let n = self.create_state.available_types.len();
+                    if n > 0 {
+                        let idx = self.create_state.selected_type_idx;
+                        self.create_state.selected_type_idx = idx.saturating_sub(1);
+                    }
+                }
+                CreateField::Name => {}
+            },
+            KeyCode::Down => match self.create_state.focus {
+                CreateField::Directory => {
+                    let n = self.create_state.dir_matches.len();
+                    if n > 0 {
+                        let new_idx = (self.create_state.dir_selected_idx + 1).min(n - 1);
+                        self.create_state.dir_selected_idx = new_idx;
+                        // Scroll down if needed
+                        if new_idx >= self.create_state.dir_scroll_offset + MAX_DIR_VISIBLE {
+                            self.create_state.dir_scroll_offset =
+                                new_idx + 1 - MAX_DIR_VISIBLE;
+                        }
+                    }
+                }
+                CreateField::AgentType => {
+                    let n = self.create_state.available_types.len();
+                    if n > 0 {
+                        let idx = self.create_state.selected_type_idx;
+                        self.create_state.selected_type_idx = (idx + 1).min(n - 1);
+                    }
+                }
+                CreateField::Name => {}
+            },
+
             KeyCode::Enter => {
-                if self.create_state.is_valid() {
+                // When Directory focused: commit the highlighted suggestion name
+                if self.create_state.focus == CreateField::Directory {
+                    if let Some(name) = self.create_state
+                        .dir_matches
+                        .get(self.create_state.dir_selected_idx)
+                        .cloned()
+                    {
+                        let base = self.create_state.directory.trim_end_matches('/').to_string();
+                        self.create_state.directory = format!("{}/{}", base, name);
+                        self.create_state.dir_filter.clear();
+                        self.create_state.refresh_dir_matches();
+                    }
+                } else if self.create_state.is_valid() {
                     let name = tmux::sanitize_name(&self.create_state.name.clone());
                     let dir = self.create_state.directory.clone();
                     let agent_type = self.create_state.selected_agent_type();
@@ -1070,34 +1111,82 @@ impl App {
                     }
                 }
             }
+
+            KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+W: delete back to the last word boundary (unix shell style)
+                match self.create_state.focus {
+                    CreateField::Name => {
+                        ctrl_w_delete(&mut self.create_state.name);
+                    }
+                    CreateField::Directory => {
+                        if !self.create_state.dir_filter.is_empty() {
+                            self.create_state.dir_filter.clear();
+                        } else {
+                            ctrl_w_delete_path(&mut self.create_state.directory);
+                        }
+                        self.create_state.refresh_dir_matches();
+                    }
+                    CreateField::AgentType => {}
+                }
+            }
+
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+W: delete back to the last word boundary (unix shell style)
+                match self.create_state.focus {
+                    CreateField::Name => {
+                        ctrl_w_delete(&mut self.create_state.name);
+                    }
+                    CreateField::Directory => {
+                        if !self.create_state.dir_filter.is_empty() {
+                            self.create_state.dir_filter.clear();
+                        } else {
+                            ctrl_w_delete_path(&mut self.create_state.directory);
+                        }
+                        self.create_state.refresh_dir_matches();
+                    }
+                    CreateField::AgentType => {}
+                }
+            }
+
             KeyCode::Backspace => {
                 match self.create_state.focus {
                     CreateField::Name => {
                         self.create_state.name.pop();
                     }
                     CreateField::Directory => {
-                        self.create_state.directory.pop();
-                        // Invalidate tab matches when user edits
-                        self.create_state.tab_matches.clear();
-                        self.create_state.tab_idx =0;
+                        if !self.create_state.dir_filter.is_empty() {
+                            // Delete from the filter first
+                            self.create_state.dir_filter.pop();
+                        } else {
+                            // Filter empty: go up one directory level
+                            let d = self.create_state.directory.trim_end_matches('/').to_string();
+                            if let Some(pos) = d.rfind('/') {
+                                self.create_state.directory = d[..pos].to_string();
+                            } else {
+                                // Already at root (e.g. "/foo" with no parent slash after
+                                // stripping) — floor to "/" rather than going empty.
+                                self.create_state.directory = "/".to_string();
+                            }
+                        }
+                        self.create_state.refresh_dir_matches();
                     }
                     CreateField::AgentType => {}
                 }
             }
+
             KeyCode::Char(c) => {
                 match self.create_state.focus {
                     CreateField::Name => {
                         self.create_state.name.push(c);
                     }
                     CreateField::Directory => {
-                        self.create_state.directory.push(c);
-                        // Invalidate tab matches when user edits
-                        self.create_state.tab_matches.clear();
-                        self.create_state.tab_idx = 0;
+                        self.create_state.dir_filter.push(c);
+                        self.create_state.refresh_dir_matches();
                     }
                     CreateField::AgentType => {}
                 }
             }
+
             _ => {}
         }
         true
@@ -1254,4 +1343,33 @@ fn key_event_to_tmux(key: &KeyEvent) -> String {
     if shift && apply_shift { result.push_str("S-"); }
     result.push_str(&base);
     result
+}
+
+// ---------------------------------------------------------------------------
+// Ctrl+W helpers
+// ---------------------------------------------------------------------------
+
+/// Deletes the last "word" from a generic string (space-delimited).
+fn ctrl_w_delete(s: &mut String) {
+    // Trim trailing spaces, then remove back to the next space
+    let trimmed_len = s.trim_end().len();
+    s.truncate(trimmed_len);
+    if let Some(pos) = s.rfind(|c: char| c == ' ') {
+        s.truncate(pos + 1);
+    } else {
+        s.clear();
+    }
+}
+
+/// Deletes the last path component from a directory string.
+/// Behaves like Ctrl+W in a unix shell: removes back to the last `/`.
+fn ctrl_w_delete_path(s: &mut String) {
+    // Strip trailing slash first, then remove back to the previous slash
+    let trimmed = s.trim_end_matches('/');
+    if let Some(pos) = trimmed.rfind('/') {
+        s.truncate(pos + 1); // keep the slash
+    } else {
+        // Already at the top — floor to root rather than clearing.
+        *s = "/".to_string();
+    }
 }
