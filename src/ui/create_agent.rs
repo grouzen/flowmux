@@ -145,13 +145,26 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
 
     // Directory input — trailing slash only when `directory` is a valid existing dir
     let dir_focused = state.focus == CreateField::Directory;
-    let dir_base = state.directory.trim_end_matches('/');
+    // For root "/", trimming slashes yields "" which is unusable; keep "/" as-is.
+    let dir_base = if state.directory == "/" {
+        "/"
+    } else {
+        state.directory.trim_end_matches('/')
+    };
     let dir_display = if !state.dir_filter.is_empty() {
         // User is typing a filter: show base/filter (no trailing slash yet)
-        format!("{}/{}", dir_base, state.dir_filter)
+        if dir_base == "/" {
+            format!("/{}", state.dir_filter)
+        } else {
+            format!("{}/{}", dir_base, state.dir_filter)
+        }
     } else if std::path::Path::new(dir_base).is_dir() {
-        // Confirmed existing directory: append trailing slash
-        format!("{}/", dir_base)
+        // Confirmed existing directory: append trailing slash (but root already has one)
+        if dir_base == "/" {
+            "/".to_string()
+        } else {
+            format!("{}/", dir_base)
+        }
     } else {
         // Unknown/empty path: show as-is
         dir_base.to_string()

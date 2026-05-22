@@ -178,7 +178,17 @@ impl CreateAgentState {
     /// with `self.dir_filter`. Results are sorted alphabetically, capped at 10,
     /// and stored as bare names (not full paths).
     pub fn refresh_dir_matches(&mut self) {
-        let base = self.directory.trim_end_matches('/');
+        // Always floor directory at "/" so it is never empty.
+        if self.directory.is_empty() {
+            self.directory = "/".to_string();
+        }
+        // For root "/" trimming all slashes gives "" which is not a valid path,
+        // so use the directory string as-is when it equals "/".
+        let base: &str = if self.directory == "/" {
+            "/"
+        } else {
+            self.directory.trim_end_matches('/')
+        };
         let base_path = std::path::Path::new(base);
 
         if !base_path.is_dir() {
@@ -1153,7 +1163,9 @@ impl App {
                             if let Some(pos) = d.rfind('/') {
                                 self.create_state.directory = d[..pos].to_string();
                             } else {
-                                self.create_state.directory.clear();
+                                // Already at root (e.g. "/foo" with no parent slash after
+                                // stripping) — floor to "/" rather than going empty.
+                                self.create_state.directory = "/".to_string();
                             }
                         }
                         self.create_state.refresh_dir_matches();
@@ -1357,6 +1369,7 @@ fn ctrl_w_delete_path(s: &mut String) {
     if let Some(pos) = trimmed.rfind('/') {
         s.truncate(pos + 1); // keep the slash
     } else {
-        s.clear();
+        // Already at the top — floor to root rather than clearing.
+        *s = "/".to_string();
     }
 }
