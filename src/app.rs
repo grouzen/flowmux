@@ -874,7 +874,7 @@ impl App {
             // pane (e.g. vim), causing it to redraw, move the cursor, and
             // potentially reset the editing mode on every poll cycle.
             if let Ok((term_cols, term_rows)) = crossterm::terminal::size() {
-                let content_height = term_rows.saturating_sub(1); // reserve status bar row
+                let content_height = term_rows.saturating_sub(2); // reserve top info bar + bottom status bar
                 let desired = (term_cols, content_height);
                 if self.agent_view_state.last_pane_size != Some(desired) {
                     let _ = tmux::resize_window(&pane, term_cols, content_height);
