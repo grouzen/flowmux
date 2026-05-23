@@ -19,14 +19,19 @@ pub fn render_agent_view(
     agent_entry: &AgentEntry,
     agents: &[AgentEntry],
 ) {
-    // Split into content area and status bar (last row)
+    // Split into top info bar, content area, and bottom status bar
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
         .split(area);
 
-    let content_area = chunks[0];
-    let status_area = chunks[1];
+    let top_area = chunks[0];
+    let content_area = chunks[1];
+    let status_area = chunks[2];
 
     let viewport_height = content_area.height as usize;
 
@@ -131,28 +136,8 @@ pub fn render_agent_view(
         "< 1s".to_string()
     };
 
-    // --- Left: hotkey hints (ctrl+g dashboard, ctrl+b prefix) ---
-    let ctrlg_key = " ctrl+g ";
-    let ctrlb_key = " ctrl+b ";
-    let nav_width = (ctrlg_key.len() + " dashboard".len()
-        + 1  // space between hints
-        + ctrlb_key.len() + " prefix".len()) as u16;
-    let nav_spans: Vec<Span> = vec![
-        Span::styled(
-            ctrlg_key,
-            Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" dashboard", Style::default().fg(FG)),
-        Span::raw(" "),
-        Span::styled(
-            ctrlb_key,
-            Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" prefix", Style::default().fg(FG)),
-    ];
-
-    // --- Middle: agent meta info ---
-    let mut status_spans = vec![
+    // --- Top bar: agent meta info ---
+    let mut top_spans = vec![
         Span::raw(" "),
         Span::styled(
             format!("{}", agent_entry.config.name),
@@ -174,11 +159,32 @@ pub fn render_agent_view(
         ),
     ];
     if let Some(model_str) = agent_entry.meta.model_name.as_deref() {
-        status_spans.push(Span::styled(
+        top_spans.push(Span::styled(
             format!(" {} {}", ICON_MODEL, model_str),
             Style::default().fg(GRAY),
         ));
     }
+    f.render_widget(Paragraph::new(Line::from(top_spans)), top_area);
+
+    // --- Left: hotkey hints (ctrl+g dashboard, ctrl+b prefix) ---
+    let ctrlg_key = " ctrl+g ";
+    let ctrlb_key = " ctrl+b ";
+    let nav_width = (ctrlg_key.len() + " dashboard".len()
+        + 1  // space between hints
+        + ctrlb_key.len() + " prefix".len()) as u16;
+    let nav_spans: Vec<Span> = vec![
+        Span::styled(
+            ctrlg_key,
+            Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" dashboard", Style::default().fg(FG)),
+        Span::raw(" "),
+        Span::styled(
+            ctrlb_key,
+            Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" prefix", Style::default().fg(FG)),
+    ];
 
     // --- Right: PREFIX badge (conditional) + agent statuses + brand ---
     let (brand, brand_width) = brand_line(false);
@@ -219,7 +225,6 @@ pub fn render_agent_view(
             ])
             .split(status_area);
         f.render_widget(Paragraph::new(Line::from(nav_spans)), chunks[0]);
-        f.render_widget(Paragraph::new(Line::from(status_spans)), chunks[1]);
         f.render_widget(
             Paragraph::new(Line::from(vec![Span::styled(
                 prefix_text,
@@ -243,7 +248,6 @@ pub fn render_agent_view(
             ])
             .split(status_area);
         f.render_widget(Paragraph::new(Line::from(nav_spans)), chunks[0]);
-        f.render_widget(Paragraph::new(Line::from(status_spans)), chunks[1]);
         f.render_widget(Paragraph::new(Line::from(agent_status_spans)), chunks[2]);
         f.render_widget(Paragraph::new(brand), chunks[3]);
     }
