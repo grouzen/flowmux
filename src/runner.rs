@@ -1,10 +1,12 @@
 use anyhow::Result;
+use std::path::PathBuf;
 
 use crate::agent_discovery::DiscoveredAgents;
 use crate::agents::claude::{install_hooks, ClaudeRuntime};
 use crate::agents::opencode::OpenCodeAdapter;
 use crate::agents::AgentAdapter;
 use crate::config::{AgentConfig, AgentKind};
+use crate::git;
 use crate::global_config::GlobalConfig;
 use crate::models::AgentType;
 use crate::tmux;
@@ -23,6 +25,9 @@ pub struct AgentRunner {
     global_config: GlobalConfig,
     session_name: String,
     claude: Option<ClaudeRuntime>,
+    /// Base directory under which git worktrees are stored.
+    /// Populated from the `--git-worktrees-location` CLI arg or a default.
+    pub worktrees_base: PathBuf,
 }
 
 impl AgentRunner {
@@ -30,12 +35,14 @@ impl AgentRunner {
         discovered: DiscoveredAgents,
         global_config: GlobalConfig,
         session_name: String,
+        worktrees_base: PathBuf,
     ) -> Self {
         Self {
             discovered,
             global_config,
             session_name,
             claude: None,
+            worktrees_base,
         }
     }
 
@@ -103,19 +110,46 @@ impl AgentRunner {
         name: &str,
         dir: &str,
         agent_type: AgentType,
+        create_worktree: bool,
+        git_repo_root: Option<&str>,
     ) -> Result<(AgentConfig, Box<dyn AgentAdapter>)> {
+        // --------------- Git worktree setup --------------------------------
+        // If worktree creation is requested and we have a git repo root, set
+        // up the worktree now and use its path as the effective working dir.
+        let (effective_dir, stored_repo_root) = if create_worktree {
+            if let Some(repo_root) = git_repo_root {
+                let branch = git::sanitize_branch_name(name);
+                let repo_root_path = std::path::Path::new(repo_root);
+                let wt_path = self.worktrees_base
+                    .join(git::repo_id(repo_root_path))
+                    .join(&branch);
+
+                let use_existing = git::branch_exists(repo_root_path, &branch);
+                git::create_worktree(repo_root_path, &wt_path, &branch, use_existing)?;
+
+                let wt_str = wt_path.to_string_lossy().to_string();
+                (wt_str, Some(repo_root.to_owned()))
+            } else {
+                (dir.to_owned(), None)
+            }
+        } else {
+            (dir.to_owned(), None)
+        };
+        // -------------------------------------------------------------------
+
         match agent_type {
             AgentType::Opencode => {
-                let (adapter, window_index) = OpenCodeAdapter::create(dir, name).await?;
+                let (adapter, window_index) = OpenCodeAdapter::create(&effective_dir, name).await?;
                 let pane = format!("{}:{}.0", tmux::session_name(), window_index);
                 let config = AgentConfig {
                     name: name.to_owned(),
                     pane,
-                    directory: dir.to_owned(),
+                    directory: effective_dir,
                     kind: AgentKind::Opencode {
                         port: adapter.port,
                         session_id: None,
                     },
+                    git_repo_root: stored_repo_root,
                 };
                 Ok((config, Box::new(adapter)))
             }
@@ -127,7 +161,7 @@ impl AgentRunner {
                 self.ensure_claude();
 
                 let stable_agent_id = uuid::Uuid::new_v4().to_string();
-                let window_index = tmux::new_window(dir, name)?;
+                let window_index = tmux::new_window(&effective_dir, name)?;
                 let pane = format!("{}:{}.0", tmux::session_name(), window_index);
 
                 // Launch claude with the stable agent ID exported as an env var.
@@ -142,12 +176,13 @@ impl AgentRunner {
                 let config = AgentConfig {
                     name: name.to_owned(),
                     pane,
-                    directory: dir.to_owned(),
+                    directory: effective_dir,
                     kind: AgentKind::Claude {
                         stable_agent_id,
                         session_id: None,
                         transcript_path: None,
                     },
+                    git_repo_root: stored_repo_root,
                 };
                 Ok((config, Box::new(adapter)))
             }

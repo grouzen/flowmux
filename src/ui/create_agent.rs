@@ -36,6 +36,9 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
         1 + 1 + visible_dir_rows // blank + "Suggested" label + items
     };
 
+    // Worktree checkbox: shown when the directory is inside a git repo.
+    let worktree_rows: u16 = if state.git_repo_root.is_some() { 2 } else { 0 }; // blank + checkbox
+
     let agent_rows = state.available_types.len().max(1) as u16;
     let agent_label_row: u16 = if state.available_types.len() > 1 {
         1
@@ -45,12 +48,13 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
     let error_rows: u16 = if state.error.is_some() { 1 } else { 0 };
 
     // blank + title + blank + Name + blank + Directory
-    // + dir_section + blank + [agent_label] + agent_rows + blank + [error] + buttons + blank
+    // + dir_section + worktree_rows + blank + [agent_label] + agent_rows + blank + [error] + buttons + blank
     let modal_height = 3
         + 1
         + 1
         + 1
         + dir_section_rows
+        + worktree_rows
         + 1
         + agent_label_row
         + agent_rows
@@ -79,6 +83,11 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
         for _ in 0..visible_dir_rows {
             constraints.push(Constraint::Length(1));
         }
+    }
+    // Git worktree checkbox (shown when directory is inside a git repo)
+    if state.git_repo_root.is_some() {
+        constraints.push(Constraint::Length(1)); // blank gap
+        constraints.push(Constraint::Length(1)); // checkbox
     }
     constraints.push(Constraint::Length(1)); // blank
     if state.available_types.len() > 1 {
@@ -258,10 +267,45 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
         }
     }
 
-    // blank
-    row += 1;
+    // Git worktree checkbox
+    if state.git_repo_root.is_some() {
+        // blank gap
+        row += 1;
 
-    // Agent section
+        let wt_focused = state.focus == CreateField::CreateWorktree;
+        let checkbox = if state.create_worktree { "[x]" } else { "[ ]" };
+        let label_style = if wt_focused {
+            Style::default().fg(FG).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(GRAY)
+        };
+        let checkbox_style = if state.create_worktree {
+            if wt_focused {
+                Style::default().fg(CYAN).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(CYAN)
+            }
+        } else {
+            Style::default().fg(GRAY)
+        };
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::raw(left_pad()),
+                Span::styled(checkbox, checkbox_style),
+                Span::styled(" Create git worktree", label_style),
+                Span::styled(
+                    "  space",
+                    Style::default().fg(if wt_focused { GRAY } else { BG2 }),
+                ),
+            ]))
+            .style(Style::default().bg(BG1)),
+            rows[row],
+        );
+        row += 1;
+    }
+
+    // blank (before agent section)
+    row += 1;
     let agent_focused = state.focus == CreateField::AgentType;
     if state.available_types.len() > 1 {
         let label_style = if agent_focused {
