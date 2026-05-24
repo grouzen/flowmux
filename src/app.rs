@@ -993,9 +993,20 @@ impl App {
                 // Forward key to tmux pane
                 if let Some(entry) = self.agents.get(idx) {
                     let pane = entry.config.pane.clone();
+                    // Plain character keys (no Ctrl/Alt modifiers) must be sent
+                    // with `send_literal` (`send-keys -l`) so that tmux does not
+                    // interpret special characters such as `;` as key names or
+                    // command separators.
+                    let is_plain_char = matches!(key.code, KeyCode::Char(_))
+                        && !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT);
                     let keys = key_event_to_tmux(&key);
                     if !keys.is_empty() {
-                        let _ = tmux::send_keys(&pane, &keys);
+                        if is_plain_char {
+                            let _ = tmux::send_literal(&pane, &keys);
+                        } else {
+                            let _ = tmux::send_keys(&pane, &keys);
+                        }
                     }
                 }
             }
