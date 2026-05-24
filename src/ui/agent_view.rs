@@ -6,7 +6,6 @@ use ratatui::{
     widgets::{Block, Clear, Paragraph},
     Frame,
 };
-use std::collections::HashMap;
 
 use crate::app::AgentViewState;
 use crate::models::{AgentEntry, AgentStatus};
@@ -60,33 +59,22 @@ pub fn render_agent_view(
         lines[start..end].join("\n")
     };
 
-    // Parse ANSI escape sequences into styled ratatui Text
+    // Parse ANSI escape sequences into styled ratatui Text, seeding the parser
+    // with the first explicit background colour found in the captured content.
+    // TUI apps (like opencode) always paint their full background first, so the
+    // very first `\x1b[48;...m` sequence in the capture is the theme's ambient
+    // background.  Seeding with that colour ensures spans without an explicit
+    // background (e.g. padding areas in opencode's right panel) inherit the
+    // application's real theme background rather than a hardcoded fallback.
+    // When no explicit background is found (e.g. a plain shell prompt) we fall
+    // back to Style::default() so the Paragraph widget's own background fills
+    // uncovered cells.
+    let base_style = extract_first_bg_color(visible_text.as_bytes())
+        .map_or(Style::default(), |c| Style::default().bg(c));
     let text = visible_text
         .as_bytes()
-        .into_text()
+        .into_text_with_style(base_style)
         .unwrap_or_else(|_| ratatui::text::Text::raw(visible_text.clone()));
-
-    // Use the most frequently occurring background colour in the parsed ANSI
-    // content as the base style for the paragraph.  This lets cells without an
-    // explicit background (e.g. spaces around a modal overlay) inherit the
-    // pane's own background rather than stable's terminal default, while
-    // avoiding transient per-character highlights (e.g. vim's MatchParen on
-    // bracket characters) from hijacking the whole-pane background.
-    let base_bg = {
-        let mut freq: HashMap<ratatui::style::Color, usize> = HashMap::new();
-        for span in text.lines.iter().flat_map(|l| l.spans.iter()) {
-            if let Some(bg) = span.style.bg {
-                *freq.entry(bg).or_insert(0) += span.content.len();
-            }
-        }
-        freq.into_iter()
-            .max_by_key(|(_, count)| *count)
-            .map(|(color, _)| color)
-    };
-    let base_style = match base_bg {
-        Some(bg) => Style::default().bg(bg),
-        None => Style::default(),
-    };
     let para = Paragraph::new(text).style(base_style);
     f.render_widget(para, content_area);
 
@@ -256,6 +244,79 @@ pub fn render_agent_view(
     if state.show_stopped_overlay {
         render_stopped_overlay(f, area);
     }
+}
+
+/// Scan raw ANSI bytes for the first explicit background-colour SGR sequence
+/// and return the corresponding ratatui `Color`.
+///
+/// TUI applications (e.g. opencode) always draw their full background before
+/// any content, so the very first `\x1b[48;...m` (or `\x1b[4Xm`) sequence in
+/// the captured output reliably identifies the theme's ambient background.
+///
+/// Supported encodings:
+/// - `48;2;r;g;b` — 24-bit truecolor → `Color::Rgb`
+/// - `48;5;n`     — 256-colour palette → `Color::Indexed`
+/// - `40`–`47`    — ANSI basic dark backgrounds → `Color::Indexed(0..7)`
+/// - `100`–`107`  — ANSI bright backgrounds → `Color::Indexed(8..15)`
+fn extract_first_bg_color(ansi: &[u8]) -> Option<ratatui::style::Color> {
+    use ratatui::style::Color;
+    let mut i = 0;
+    while i < ansi.len() {
+        // Locate ESC [
+        if ansi[i] != 0x1b {
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if i >= ansi.len() || ansi[i] != b'[' {
+            continue;
+        }
+        i += 1;
+        // Collect bytes up to the terminating 'm' (or another ESC).
+        let start = i;
+        while i < ansi.len() && ansi[i] != b'm' && ansi[i] != 0x1b {
+            i += 1;
+        }
+        if i >= ansi.len() || ansi[i] != b'm' {
+            continue;
+        }
+        let params_bytes = &ansi[start..i];
+        i += 1; // consume 'm'
+
+        let Ok(params_str) = std::str::from_utf8(params_bytes) else {
+            continue;
+        };
+        // Parse semicolon-separated numeric parameters.
+        let nums: Vec<u32> = params_str
+            .split(';')
+            .filter_map(|s| s.parse().ok())
+            .collect();
+
+        let mut j = 0;
+        while j < nums.len() {
+            match nums[j] {
+                // 48;2;r;g;b — 24-bit truecolor
+                48 if j + 4 < nums.len() && nums[j + 1] == 2 => {
+                    return Some(Color::Rgb(
+                        nums[j + 2] as u8,
+                        nums[j + 3] as u8,
+                        nums[j + 4] as u8,
+                    ));
+                }
+                // 48;5;n — 256-colour
+                48 if j + 2 < nums.len() && nums[j + 1] == 5 => {
+                    return Some(Color::Indexed(nums[j + 2] as u8));
+                }
+                // 40–47: ANSI dark background colours
+                n @ 40..=47 => return Some(Color::Indexed((n - 40) as u8)),
+                // 100–107: ANSI bright background colours
+                n @ 100..=107 => return Some(Color::Indexed((n - 100 + 8) as u8)),
+                _ => {}
+            }
+            j += 1;
+        }
+    }
+    None
 }
 
 fn render_stopped_overlay(f: &mut Frame, area: Rect) {
