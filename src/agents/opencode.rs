@@ -378,9 +378,17 @@ async fn handle_event(
 
         // -----------------------------------------------------------------
         "message.updated" => {
+            // sessionID may be at top-level properties or nested under
+            // properties.message depending on the server version.
             let sid = props
                 .get("sessionID")
                 .and_then(Value::as_str)
+                .or_else(|| {
+                    props
+                        .get("message")
+                        .and_then(|m| m.get("sessionID"))
+                        .and_then(Value::as_str)
+                })
                 .unwrap_or("")
                 .to_string();
             if sid.is_empty() {
@@ -398,16 +406,22 @@ async fn handle_event(
             if last_tail_fetch.elapsed() < PART_DEBOUNCE {
                 return;
             }
+            // sessionID is nested under properties.part for this event type.
             let sid = props
-                .get("sessionID")
+                .get("part")
+                .and_then(|p| p.get("sessionID"))
                 .and_then(Value::as_str)
+                .or_else(|| props.get("sessionID").and_then(Value::as_str))
                 .unwrap_or("")
                 .to_string();
             if sid.is_empty() {
                 return;
             }
             *cached_session_id.lock().unwrap() = Some(sid.clone());
-            fetch_and_store_tail(port, client, live_cache, &sid, false).await;
+            // Pass try_first_prompt=true so first_prompt is populated on the
+            // first debounced tick.  The guard inside fetch_and_store_tail
+            // ensures the lookup only happens once.
+            fetch_and_store_tail(port, client, live_cache, &sid, true).await;
             *last_tail_fetch = Instant::now();
         }
 
@@ -501,9 +515,29 @@ async fn fetch_and_store_tail(
         }
     }
 
-    cache.recent_messages = Some(msgs);
+    cache.recent_messages = Some(msgs.clone());
     if let Some(fp) = first_prompt_value {
         cache.first_prompt = Some(fp);
+    }
+
+    // Persist model_id from the latest assistant message so the status bar
+    // can show the model name immediately — even before get_context() runs.
+    if cache.model_id.is_none() {
+        let model_id = msgs
+            .iter()
+            .filter(|m| msg_role(m) == Some("assistant"))
+            .max_by_key(|m| msg_time_created(m))
+            .and_then(|m| {
+                m.get("info")
+                    .and_then(|i| i.get("modelID"))
+                    .and_then(Value::as_str)
+                    .map(|s| s.to_string())
+            });
+        if let Some(mid) = model_id {
+            if !mid.is_empty() {
+                cache.model_id = Some(mid);
+            }
+        }
     }
 }
 
@@ -546,9 +580,14 @@ fn assistant_work_sum(msgs: &[Value]) -> (u64, u64) {
         let completed = msg_time_completed(m);
         if completed > created {
             total += completed - created;
-        }
-        if created > max_created {
-            max_created = created;
+            // Only advance the threshold for completed messages.  If we also
+            // advanced it for in-flight messages (completed == 0) we would set
+            // last_counted_assistant_created = created for that message, and
+            // when it later completes assistant_work_sum_after would skip it
+            // because created <= threshold — so the work would never be counted.
+            if created > max_created {
+                max_created = created;
+            }
         }
     }
     (total, max_created)
@@ -570,9 +609,13 @@ fn assistant_work_sum_after(msgs: &[Value], threshold: u64) -> (u64, u64) {
         let completed = msg_time_completed(m);
         if completed > created {
             total += completed - created;
-        }
-        if created > max_created {
-            max_created = created;
+            // Only advance the threshold for completed messages, for the same
+            // reason as in assistant_work_sum: advancing it for an in-flight
+            // message would make the message invisible to future incremental
+            // updates once it eventually completes.
+            if created > max_created {
+                max_created = created;
+            }
         }
     }
     (total, max_created)
