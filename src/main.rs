@@ -9,6 +9,8 @@ mod tmux;
 mod tui;
 mod ui;
 
+use std::path::PathBuf;
+
 use anyhow::Result;
 use clap::Parser;
 
@@ -28,10 +30,37 @@ struct Cli {
     tmux_session: String,
 }
 
+/// Acquires an exclusive flock on `/tmp/stable-<session>.lock`.
+///
+/// The returned `File` must be kept alive for the duration of the process —
+/// dropping it releases the lock.  The OS also releases it automatically on
+/// process exit or crash, so no cleanup code is required.
+fn acquire_session_lock(session: &str) -> Result<std::fs::File> {
+    use fs2::FileExt as _;
+
+    let lock_path = PathBuf::from(format!("/tmp/stable-{session}.lock"));
+
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&lock_path)?;
+
+    file.try_lock_exclusive().map_err(|_| {
+        anyhow::anyhow!(
+            "Another instance of stable is already running for tmux session '{session}'."
+        )
+    })?;
+
+    Ok(file)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Parse CLI
     let cli = Cli::parse();
+
+    // Ensure only one instance runs per tmux session.
+    let _session_lock = acquire_session_lock(&cli.tmux_session)?;
 
     // Probe $PATH for agent binaries
     let discovered = DiscoveredAgents::probe();
