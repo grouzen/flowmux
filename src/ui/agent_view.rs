@@ -69,7 +69,8 @@ pub fn render_agent_view(
     // When no explicit background is found (e.g. a plain shell prompt) we fall
     // back to Style::default() so the Paragraph widget's own background fills
     // uncovered cells.
-    let base_style = extract_first_bg_color(visible_text.as_bytes())
+    let base_style = state
+        .cached_bg_color
         .map_or(Style::default(), |c| Style::default().bg(c));
     let text = visible_text
         .as_bytes()
@@ -265,7 +266,7 @@ pub fn render_agent_view(
 /// - `48;5;n`     — 256-colour palette → `Color::Indexed`
 /// - `40`–`47`    — ANSI basic dark backgrounds → `Color::Indexed(0..7)`
 /// - `100`–`107`  — ANSI bright backgrounds → `Color::Indexed(8..15)`
-fn extract_first_bg_color(ansi: &[u8]) -> Option<ratatui::style::Color> {
+pub fn extract_first_bg_color(ansi: &[u8]) -> Option<ratatui::style::Color> {
     use ratatui::style::Color;
     let mut i = 0;
     while i < ansi.len() {

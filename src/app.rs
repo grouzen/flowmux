@@ -7,6 +7,7 @@ use crate::config::{AgentKind, Config};
 use crate::models::{AgentEntry, AgentMeta, AgentStatus, AgentType};
 use crate::runner::AgentRunner;
 use crate::tmux;
+use crate::ui::agent_view::extract_first_bg_color;
 use crate::ui::dashboard::grid_layout;
 
 // ---------------------------------------------------------------------------
@@ -95,6 +96,10 @@ pub struct AgentViewState {
     /// stopped overlay.  Defaults to `true` when the agent has a worktree,
     /// and can be toggled with Space before confirming.
     pub remove_worktree_on_stop: bool,
+    /// Cached background colour extracted from the session buffer.
+    /// Updated only when the buffer content changes, so the renderer reads
+    /// a stable value that does not flicker on scroll.
+    pub cached_bg_color: Option<ratatui::style::Color>,
 }
 
 impl AgentViewState {
@@ -888,6 +893,18 @@ impl App {
             } {
                 // update_lines returns true only when content changed.
                 if self.agent_view_state.update_lines(&raw) {
+                    // Re-extract background colour from the last 500 lines of
+                    // the buffer.  TUI apps paint their theme background early,
+                    // so scanning a generous tail window captures the most
+                    // recent theme while remaining stable across scroll.
+                    let scan_start = self
+                        .agent_view_state
+                        .lines
+                        .len()
+                        .saturating_sub(500);
+                    let scan_text = self.agent_view_state.lines[scan_start..].join("\n");
+                    self.agent_view_state.cached_bg_color =
+                        extract_first_bg_color(scan_text.as_bytes());
                     self.dirty = true;
                 }
             }
