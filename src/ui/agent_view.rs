@@ -93,6 +93,12 @@ pub fn render_agent_view(
 
     // Status bar
     let dir_str = &agent_entry.config.directory;
+    let dir_display =
+        if let Some(branch) = crate::git::current_branch(std::path::Path::new(dir_str)) {
+            format!("{}:{}", dir_str, branch)
+        } else {
+            dir_str.clone()
+        };
 
     let running = agents
         .iter()
@@ -139,7 +145,7 @@ pub fn render_agent_view(
         ),
         Span::raw(" "),
         Span::styled(format!("{} ", ICON_DIR), Style::default().fg(GRAY)),
-        Span::styled(dir_str.as_str(), Style::default().fg(GRAY)),
+        Span::styled(dir_display.as_str(), Style::default().fg(GRAY)),
         Span::styled(format!(" {} ", ICON_AGENT), Style::default().fg(GRAY)),
         Span::styled(
             agent_entry.config.agent_type_str(),
@@ -242,7 +248,8 @@ pub fn render_agent_view(
 
     // Stopped overlay
     if state.show_stopped_overlay {
-        render_stopped_overlay(f, area);
+        let has_worktree = agent_entry.config.git_repo_root.is_some();
+        render_stopped_overlay(f, area, has_worktree, state.remove_worktree_on_stop);
     }
 }
 
@@ -319,11 +326,12 @@ fn extract_first_bg_color(ansi: &[u8]) -> Option<ratatui::style::Color> {
     None
 }
 
-fn render_stopped_overlay(f: &mut Frame, area: Rect) {
+fn render_stopped_overlay(f: &mut Frame, area: Rect, has_worktree: bool, remove_worktree: bool) {
     let overlay_width = ((area.width as u32 * 40 / 100) as u16)
         .max(44)
         .min(area.width);
-    let overlay_height = 7u16.min(area.height);
+    let worktree_rows: u16 = if has_worktree { 2 } else { 0 }; // blank + checkbox
+    let overlay_height = (7u16 + worktree_rows).min(area.height);
     let x = area.x + area.width.saturating_sub(overlay_width) / 2;
     let y = area.y + area.height.saturating_sub(overlay_height) / 2;
     let overlay_area = Rect::new(x, y, overlay_width, overlay_height);
@@ -334,18 +342,29 @@ fn render_stopped_overlay(f: &mut Frame, area: Rect) {
         overlay_area,
     );
 
+    let mut constraints = vec![
+        Constraint::Length(1), // blank
+        Constraint::Length(1), // title
+        Constraint::Length(1), // blank
+        Constraint::Length(1), // message
+    ];
+    if has_worktree {
+        constraints.push(Constraint::Length(1)); // blank
+        constraints.push(Constraint::Length(1)); // worktree checkbox
+    }
+    constraints.push(Constraint::Length(1)); // blank
+    constraints.push(Constraint::Length(1)); // buttons
+    constraints.push(Constraint::Length(1)); // blank (trailing)
+
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // blank
-            Constraint::Length(1), // title
-            Constraint::Length(1), // blank
-            Constraint::Length(1), // message
-            Constraint::Length(1), // blank
-            Constraint::Length(1), // buttons
-            Constraint::Length(1), // blank
-        ])
+        .constraints(constraints)
         .split(overlay_area);
+
+    let mut row = 0usize;
+
+    // blank
+    row += 1;
 
     // Title
     f.render_widget(
@@ -357,8 +376,12 @@ fn render_stopped_overlay(f: &mut Frame, area: Rect) {
             ),
         ]))
         .style(Style::default().bg(BG1)),
-        rows[1],
+        rows[row],
     );
+    row += 1;
+
+    // blank
+    row += 1;
 
     // Message
     f.render_widget(
@@ -367,8 +390,36 @@ fn render_stopped_overlay(f: &mut Frame, area: Rect) {
             Span::styled("The agent process has exited.", Style::default().fg(GRAY)),
         ]))
         .style(Style::default().bg(BG1)),
-        rows[3],
+        rows[row],
     );
+    row += 1;
+
+    // Worktree checkbox
+    if has_worktree {
+        // blank
+        row += 1;
+
+        let checkbox = if remove_worktree { "[x]" } else { "[ ]" };
+        let checkbox_style = if remove_worktree {
+            Style::default().fg(ORANGE).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(GRAY)
+        };
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::raw("   "),
+                Span::styled(checkbox, checkbox_style),
+                Span::styled(" Remove git worktree", Style::default().fg(FG)),
+                Span::styled("  space", Style::default().fg(GRAY)),
+            ]))
+            .style(Style::default().bg(BG1)),
+            rows[row],
+        );
+        row += 1;
+    }
+
+    // blank
+    row += 1;
 
     // Buttons
     f.render_widget(
@@ -396,6 +447,6 @@ fn render_stopped_overlay(f: &mut Frame, area: Rect) {
             Span::styled(" ctrl-g", Style::default().fg(GRAY)),
         ]))
         .style(Style::default().bg(BG1)),
-        rows[5],
+        rows[row],
     );
 }

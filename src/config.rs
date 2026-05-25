@@ -34,6 +34,12 @@ pub struct AgentConfig {
     pub directory: String,
     #[serde(flatten)]
     pub kind: AgentKind,
+    /// Absolute path to the git repository root the worktree belongs to.
+    /// `Some(_)` iff this agent was launched with a git worktree; the agent's
+    /// `directory` field already points to the worktree path itself.
+    /// Required for `git worktree remove` and branch deletion on agent removal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_repo_root: Option<String>,
 }
 
 impl AgentConfig {
@@ -162,16 +168,18 @@ mod tests {
                     port: 9000,
                     session_id: Some("s1".into()),
                 },
+                git_repo_root: None,
             },
             AgentConfig {
                 name: "cl".into(),
                 pane: "stable:2.0".into(),
-                directory: "/tmp".into(),
+                directory: "/tmp/wt".into(),
                 kind: AgentKind::Claude {
                     stable_agent_id: "abc-123".into(),
                     session_id: None,
                     transcript_path: Some("/tmp/t.jsonl".into()),
                 },
+                git_repo_root: Some("/tmp/repo".into()),
             },
         ];
 

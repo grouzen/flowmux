@@ -2,6 +2,7 @@ mod agent_discovery;
 mod agents;
 mod app;
 mod config;
+mod git;
 mod global_config;
 mod models;
 mod runner;
@@ -28,6 +29,25 @@ struct Cli {
     /// Name of the tmux session to use
     #[arg(long, default_value = "stable")]
     tmux_session: String,
+
+    /// Base directory for git worktrees created by stable.
+    /// Defaults to ~/.local/share/stable/worktrees
+    #[arg(long)]
+    git_worktrees_location: Option<PathBuf>,
+}
+
+/// Resolve the effective worktrees base directory.
+///
+/// Uses the CLI override when provided; otherwise falls back to
+/// `~/.local/share/stable/worktrees`.
+fn resolve_worktrees_base(override_path: Option<PathBuf>) -> PathBuf {
+    if let Some(p) = override_path {
+        return p;
+    }
+    dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("stable")
+        .join("worktrees")
 }
 
 /// Acquires an exclusive flock on `/tmp/stable-<session>.lock`.
@@ -58,6 +78,7 @@ fn acquire_session_lock(session: &str) -> Result<std::fs::File> {
 async fn main() -> Result<()> {
     // Parse CLI
     let cli = Cli::parse();
+    let worktrees_base = resolve_worktrees_base(cli.git_worktrees_location);
 
     // Ensure only one instance runs per tmux session.
     let _session_lock = acquire_session_lock(&cli.tmux_session)?;
@@ -77,8 +98,8 @@ async fn main() -> Result<()> {
     // Load persisted config for this session
     let mut config = Config::load(&cli.tmux_session)?;
 
-    // Build the AgentRunner which owns all agent lifecycle logic.
-    let mut runner = AgentRunner::new(discovered, global_config, cli.tmux_session.clone());
+    // Build AgentRunner which owns all agent lifecycle logic.
+    let mut runner = AgentRunner::new(discovered, global_config, cli.tmux_session.clone(), worktrees_base);
 
     // Auto-resume any agents whose tmux pane died (e.g. after a tmux server
     // restart).  Uses AgentRunner::restart so Claude agents are skipped
@@ -151,14 +172,25 @@ async fn main() -> Result<()> {
                             ui::dashboard::render_dashboard(f, area, &app.agents, app.selected, &app.card_scroll, &mut app.card_response_heights, &mut app.card_response_widths, true);
                             ui::create_agent::render_create_agent(f, area, &app.create_state);
                         }
-                        app::AppState::RemoveAgentDialog(idx) => {
+                        app::AppState::RemoveAgentDialog(remove_state) => {
                             ui::dashboard::render_dashboard(f, area, &app.agents, app.selected, &app.card_scroll, &mut app.card_response_heights, &mut app.card_response_widths, true);
                             let name = app
                                 .agents
-                                .get(*idx)
+                                .get(remove_state.idx)
                                 .map(|e| e.config.name.as_str())
                                 .unwrap_or("");
-                            ui::remove_agent::render_remove_agent(f, area, name);
+                            let has_worktree = app
+                                .agents
+                                .get(remove_state.idx)
+                                .and_then(|e| e.config.git_repo_root.as_ref())
+                                .is_some();
+                            ui::remove_agent::render_remove_agent(
+                                f,
+                                area,
+                                name,
+                                has_worktree,
+                                remove_state.remove_worktree,
+                            );
                         }
                     }
                 })?;

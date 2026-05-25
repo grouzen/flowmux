@@ -13,12 +13,21 @@ use crate::ui::dashboard::grid_layout;
 // AppState
 // ---------------------------------------------------------------------------
 
+/// State carried by the remove-agent confirmation dialog.
+#[derive(Debug, Clone)]
+pub struct RemoveAgentState {
+    /// Index of the agent to remove.
+    pub idx: usize,
+    /// Whether to also remove the git worktree (only shown when the agent has one).
+    pub remove_worktree: bool,
+}
+
 #[derive(Debug, Clone)]
 pub enum AppState {
     Dashboard,
     CreateAgentDialog,
     AgentView(usize),
-    RemoveAgentDialog(usize),
+    RemoveAgentDialog(RemoveAgentState),
 }
 
 // ---------------------------------------------------------------------------
@@ -82,6 +91,10 @@ pub struct AgentViewState {
     /// pane instead of being intercepted by the app's hotkey handler.
     /// Armed by pressing Ctrl-b; shown as a [PREFIX] indicator in the UI.
     pub prefix_active: bool,
+    /// Whether to remove the git worktree when the user presses [d] on the
+    /// stopped overlay.  Defaults to `true` when the agent has a worktree,
+    /// and can be toggled with Space before confirming.
+    pub remove_worktree_on_stop: bool,
 }
 
 impl AgentViewState {
@@ -116,6 +129,7 @@ pub enum CreateField {
     Name,
     Directory,
     AgentType,
+    CreateWorktree,
 }
 
 /// Maximum number of directory suggestions visible at once in the list.
@@ -141,6 +155,12 @@ pub struct CreateAgentState {
     pub available_types: Vec<AgentType>,
     /// Index into `available_types` for the currently selected type.
     pub selected_type_idx: usize,
+    /// Git repository root discovered for the selected directory.
+    /// `None` if the directory is not inside a git repo.
+    pub git_repo_root: Option<std::path::PathBuf>,
+    /// Whether to create a git worktree for this agent.
+    /// Only meaningful (and shown in the UI) when `git_repo_root.is_some()`.
+    pub create_worktree: bool,
 }
 
 impl Default for CreateAgentState {
@@ -156,6 +176,8 @@ impl Default for CreateAgentState {
             dir_scroll_offset: 0,
             available_types: vec![],
             selected_type_idx: 0,
+            git_repo_root: None,
+            create_worktree: false,
         }
     }
 }
@@ -172,7 +194,8 @@ impl CreateAgentState {
         !self.name.trim().is_empty() && !self.directory.trim().is_empty()
     }
 
-    /// Rebuild the directory suggestion list.
+    /// Rebuild the directory suggestion list and re-detect the git repository
+    /// root for the current directory.
     ///
     /// Lists non-hidden subdirectories of `self.directory` whose names start
     /// with `self.dir_filter`. Results are sorted alphabetically, capped at 10,
@@ -218,6 +241,28 @@ impl CreateAgentState {
         self.dir_matches = matches;
         self.dir_selected_idx = 0;
         self.dir_scroll_offset = 0;
+
+        // Re-detect git root for the current (confirmed) directory.
+        self.detect_git_repo();
+    }
+
+    /// Update `git_repo_root` and `create_worktree` based on the currently
+    /// confirmed `directory`.
+    fn detect_git_repo(&mut self) {
+        let path = std::path::Path::new(self.directory.as_str());
+        let new_root = crate::git::find_git_root(path);
+        match (&self.git_repo_root, &new_root) {
+            (None, Some(_)) => {
+                // Transitioned into a git repo → enable worktree by default.
+                self.create_worktree = true;
+            }
+            (Some(_), None) => {
+                // Left the git repo → disable worktree.
+                self.create_worktree = false;
+            }
+            _ => {} // unchanged
+        }
+        self.git_repo_root = new_root;
     }
 }
 
@@ -567,9 +612,9 @@ impl App {
                 self.handle_agent_view_key(key, idx).await
             }
             AppState::CreateAgentDialog => self.handle_create_key(key).await,
-            AppState::RemoveAgentDialog(idx) => {
-                let idx = *idx;
-                self.handle_remove_key(key, idx)
+            AppState::RemoveAgentDialog(state) => {
+                let state = state.clone();
+                self.handle_remove_key(key, state)
             }
         }
     }
@@ -615,7 +660,14 @@ impl App {
             }
             KeyCode::Char('d') => {
                 if !self.agents.is_empty() {
-                    self.state = AppState::RemoveAgentDialog(self.selected);
+                    let has_worktree = self.agents
+                        .get(self.selected)
+                        .and_then(|e| e.config.git_repo_root.as_ref())
+                        .is_some();
+                    self.state = AppState::RemoveAgentDialog(RemoveAgentState {
+                        idx: self.selected,
+                        remove_worktree: has_worktree,
+                    });
                 }
             }
             KeyCode::Enter => {
@@ -816,6 +868,10 @@ impl App {
                 let prev = self.agent_view_state.prev_status.clone();
                 if prev.as_ref() != Some(&AgentStatus::Stopped) {
                     self.agent_view_state.show_stopped_overlay = true;
+                    self.agent_view_state.remove_worktree_on_stop = self.agents
+                        .get(idx)
+                        .and_then(|e| e.config.git_repo_root.as_ref())
+                        .is_some();
                     self.dirty = true;
                 }
                 self.agent_view_state.prev_status = Some(AgentStatus::Stopped.clone());
@@ -891,6 +947,10 @@ impl App {
                     && prev.as_ref() != Some(&AgentStatus::Stopped)
                 {
                     self.agent_view_state.show_stopped_overlay = true;
+                    self.agent_view_state.remove_worktree_on_stop = self.agents
+                        .get(idx)
+                        .and_then(|e| e.config.git_repo_root.as_ref())
+                        .is_some();
                 }
                 if prev.as_ref() != Some(&new_status) {
                     self.dirty = true;
@@ -934,8 +994,21 @@ impl App {
                     self.dirty = true;
                 }
                 KeyCode::Char('d') => {
-                    self.remove_agent(idx);
+                    let remove_wt = self.agent_view_state.remove_worktree_on_stop;
+                    self.remove_agent(idx, remove_wt);
                     self.state = AppState::Dashboard;
+                }
+                KeyCode::Char(' ') => {
+                    // Toggle the "remove worktree" checkbox (only when agent has one)
+                    let has_worktree = self.agents
+                        .get(idx)
+                        .and_then(|e| e.config.git_repo_root.as_ref())
+                        .is_some();
+                    if has_worktree {
+                        self.agent_view_state.remove_worktree_on_stop =
+                            !self.agent_view_state.remove_worktree_on_stop;
+                        self.dirty = true;
+                    }
                 }
                 KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     self.agent_view_state.show_stopped_overlay = false;
@@ -1013,11 +1086,20 @@ impl App {
                 self.state = AppState::Dashboard;
             }
 
-            // Tab cycles focus: Name → Directory → AgentType → Name
+            // Tab cycles focus: Name → Directory → [Worktree] → AgentType → Name
             KeyCode::Tab => {
                 self.create_state.focus = match self.create_state.focus {
                     CreateField::Name => CreateField::Directory,
                     CreateField::Directory => {
+                        if self.create_state.git_repo_root.is_some() {
+                            CreateField::CreateWorktree
+                        } else if self.create_state.available_types.len() > 1 {
+                            CreateField::AgentType
+                        } else {
+                            CreateField::Name
+                        }
+                    }
+                    CreateField::CreateWorktree => {
                         if self.create_state.available_types.len() > 1 {
                             CreateField::AgentType
                         } else {
@@ -1048,7 +1130,7 @@ impl App {
                         self.create_state.selected_type_idx = idx.saturating_sub(1);
                     }
                 }
-                CreateField::Name => {}
+                CreateField::Name | CreateField::CreateWorktree => {}
             },
             KeyCode::Down => match self.create_state.focus {
                 CreateField::Directory => {
@@ -1070,7 +1152,7 @@ impl App {
                         self.create_state.selected_type_idx = (idx + 1).min(n - 1);
                     }
                 }
-                CreateField::Name => {}
+                CreateField::Name | CreateField::CreateWorktree => {}
             },
 
             KeyCode::Enter => {
@@ -1090,7 +1172,18 @@ impl App {
                     let name = tmux::sanitize_name(&self.create_state.name.clone());
                     let dir = self.create_state.directory.clone();
                     let agent_type = self.create_state.selected_agent_type();
-                    match self.runner.create(&name, &dir, agent_type).await {
+                    let create_worktree = self.create_state.create_worktree
+                        && self.create_state.git_repo_root.is_some();
+                    let git_repo_root = self.create_state.git_repo_root
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string());
+                    match self.runner.create(
+                        &name,
+                        &dir,
+                        agent_type,
+                        create_worktree,
+                        git_repo_root.as_deref(),
+                    ).await {
                         Ok((config, adapter)) => {
                             self.config.agents.push(config.clone());
                             let _ = self.config.save();
@@ -1126,7 +1219,7 @@ impl App {
                         }
                         self.create_state.refresh_dir_matches();
                     }
-                    CreateField::AgentType => {}
+                    CreateField::AgentType | CreateField::CreateWorktree => {}
                 }
             }
 
@@ -1144,7 +1237,7 @@ impl App {
                         }
                         self.create_state.refresh_dir_matches();
                     }
-                    CreateField::AgentType => {}
+                    CreateField::AgentType | CreateField::CreateWorktree => {}
                 }
             }
 
@@ -1170,7 +1263,7 @@ impl App {
                         }
                         self.create_state.refresh_dir_matches();
                     }
-                    CreateField::AgentType => {}
+                    CreateField::AgentType | CreateField::CreateWorktree => {}
                 }
             }
 
@@ -1184,6 +1277,15 @@ impl App {
                         self.create_state.refresh_dir_matches();
                     }
                     CreateField::AgentType => {}
+                    CreateField::CreateWorktree => {
+                        // Space handled separately; other chars are no-ops here.
+                        if c == ' ' {
+                            if self.create_state.git_repo_root.is_some() {
+                                self.create_state.create_worktree =
+                                    !self.create_state.create_worktree;
+                            }
+                        }
+                    }
                 }
             }
 
@@ -1196,14 +1298,26 @@ impl App {
     // RemoveAgentDialog key handler
     // -----------------------------------------------------------------------
 
-    fn handle_remove_key(&mut self, key: KeyEvent, idx: usize) -> bool {
+    fn handle_remove_key(&mut self, key: KeyEvent, state: RemoveAgentState) -> bool {
         match key.code {
             KeyCode::Char('y') | KeyCode::Enter => {
-                self.remove_agent(idx);
+                self.remove_agent(state.idx, state.remove_worktree);
                 self.state = AppState::Dashboard;
             }
             KeyCode::Char('n') | KeyCode::Esc => {
                 self.state = AppState::Dashboard;
+            }
+            // Space toggles the "remove worktree" checkbox (only when agent has one)
+            KeyCode::Char(' ') => {
+                let has_worktree = self.agents
+                    .get(state.idx)
+                    .and_then(|e| e.config.git_repo_root.as_ref())
+                    .is_some();
+                if has_worktree {
+                    if let AppState::RemoveAgentDialog(ref mut s) = self.state {
+                        s.remove_worktree = !s.remove_worktree;
+                    }
+                }
             }
             _ => {}
         }
@@ -1214,7 +1328,7 @@ impl App {
     // Helpers
     // -----------------------------------------------------------------------
 
-    fn remove_agent(&mut self, idx: usize) {
+    fn remove_agent(&mut self, idx: usize, remove_worktree: bool) {
         if idx < self.agents.len() {
             // Kill the tmux window before removing the agent
             if let Some(agent_config) = self.config.agents.get(idx) {
@@ -1223,6 +1337,28 @@ impl App {
                     if let Some(dot_pos) = agent_config.pane[colon_pos..].find('.') {
                         let window_target = &agent_config.pane[..colon_pos + dot_pos];
                         let _ = tmux::kill_window(window_target);
+                    }
+                }
+
+                // Remove the git worktree if requested and present.
+                if remove_worktree {
+                    if let (Some(wt_path), Some(repo_root)) = (
+                        Some(agent_config.directory.as_str()),
+                        agent_config.git_repo_root.as_deref(),
+                    ) {
+                        let branch = crate::git::sanitize_branch_name(&agent_config.name);
+                        // Non-fatal: log error but continue removal.
+                        if let Err(e) = crate::git::remove_worktree(
+                            std::path::Path::new(repo_root),
+                            std::path::Path::new(wt_path),
+                            &branch,
+                            true,
+                        ) {
+                            // Surface in the UI via a best-effort approach.
+                            // We cannot show a dialog here since we're already
+                            // tearing down — just emit to stderr.
+                            eprintln!("warning: failed to remove git worktree: {}", e);
+                        }
                     }
                 }
             }
