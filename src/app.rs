@@ -1392,7 +1392,7 @@ impl App {
                 // Update in-memory agent entry.
                 if let Some(entry) = self.agents.get_mut(idx) {
                     entry.config = new_config;
-                    entry.meta.status = AgentStatus::Unknown;
+                    entry.meta.status = AgentStatus::Idle;
                 }
 
                 // Swap in the new adapter.

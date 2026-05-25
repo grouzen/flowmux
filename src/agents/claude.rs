@@ -222,13 +222,13 @@ impl ClaudeRuntime {
         }
     }
 
-    /// Reset the status of an existing agent entry to `Unknown` so the UI
+    /// Reset the status of an existing agent entry to `Idle` so the UI
     /// reflects "restarting" rather than "stopped" while the new process boots.
     /// If no entry exists for `id` this is a no-op.
     pub(crate) fn reset_status(&self, id: &str) {
         let mut map = self.hook_state.lock().unwrap();
         if let Some(entry) = map.get_mut(id) {
-            entry.status = AgentStatus::Unknown;
+            entry.status = AgentStatus::Idle;
         }
     }
 }
