@@ -93,6 +93,12 @@ pub fn render_agent_view(
 
     // Status bar
     let dir_str = &agent_entry.config.directory;
+    let dir_display =
+        if let Some(branch) = crate::git::current_branch(std::path::Path::new(dir_str)) {
+            format!("{}:{}", dir_str, branch)
+        } else {
+            dir_str.clone()
+        };
 
     let running = agents
         .iter()
@@ -139,7 +145,7 @@ pub fn render_agent_view(
         ),
         Span::raw(" "),
         Span::styled(format!("{} ", ICON_DIR), Style::default().fg(GRAY)),
-        Span::styled(dir_str.as_str(), Style::default().fg(GRAY)),
+        Span::styled(dir_display.as_str(), Style::default().fg(GRAY)),
         Span::styled(format!(" {} ", ICON_AGENT), Style::default().fg(GRAY)),
         Span::styled(
             agent_entry.config.agent_type_str(),

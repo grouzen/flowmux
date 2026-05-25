@@ -345,9 +345,16 @@ fn render_card(
 
     // --- Info row A: directory ---
     let dir_str = shellify_dir(&entry.config.directory);
+    let dir_display = if let Some(branch) =
+        crate::git::current_branch(std::path::Path::new(&entry.config.directory))
+    {
+        format!("{}:{}", dir_str, branch)
+    } else {
+        dir_str
+    };
     let info_a = Line::from(vec![
         Span::styled(format!("{} ", ICON_DIR), ds(dimmed).fg(GRAY)),
-        Span::styled(dir_str, ds(dimmed).fg(GRAY)),
+        Span::styled(dir_display, ds(dimmed).fg(GRAY)),
     ]);
 
     // --- Info row B: agent_type · model_name (only if known) ---

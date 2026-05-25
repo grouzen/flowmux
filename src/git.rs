@@ -82,6 +82,17 @@ pub fn branch_exists(repo_root: &Path, branch: &str) -> bool {
     repo.find_branch(branch, git2::BranchType::Local).is_ok()
 }
 
+/// Returns the current branch name checked out in the work-tree at `path`,
+/// or `None` if the path is not inside a git repo or HEAD is detached.
+pub fn current_branch(path: &Path) -> Option<String> {
+    let repo = Repository::discover(path).ok()?;
+    repo.head()
+        .ok()?
+        .shorthand()
+        .map(|s| s.to_owned())
+        .filter(|s| s != "HEAD")
+}
+
 // ---------------------------------------------------------------------------
 // Worktree creation
 // ---------------------------------------------------------------------------
