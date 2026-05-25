@@ -44,7 +44,7 @@ pub fn sanitize_name(s: &str) -> String {
 /// none is running (tmux_interface's `HasSession` errors out in that case).
 pub fn ensure_session() -> Result<()> {
     let has = Command::new("tmux")
-        .args(["has-session", "-t", session_name()])
+        .args(["has-session", "-t", &format!("={}", session_name())])
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
@@ -87,7 +87,7 @@ pub fn new_window(dir: &str, name: &str) -> Result<usize> {
     let output = Tmux::with_command(
         NewWindow::new()
             .detached()
-            .target_window(session_name())
+            .target_window(&format!("={}", session_name()))
             .start_directory(dir)
             .window_name(name)
             .print()
