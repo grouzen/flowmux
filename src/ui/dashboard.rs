@@ -238,7 +238,7 @@ fn first_line(s: &str) -> &str {
 }
 
 /// Replaces the home directory prefix with `~` for compact display.
-fn shellify_dir(dir: &str) -> String {
+pub(crate) fn shellify_dir(dir: &str) -> String {
     if let Ok(home) = std::env::var("HOME") {
         if let Some(rest) = dir.strip_prefix(&home) {
             return format!("~{}", rest);
