@@ -1,27 +1,37 @@
 use std::future::Future;
-use std::io::{stdout, Stdout};
+use std::io::{Stdout, stdout};
 use std::panic;
 
 use anyhow::Result;
 use crossterm::{
     event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{Terminal, backend::CrosstermBackend};
 
 pub type Tui = Terminal<CrosstermBackend<Stdout>>;
 
 pub fn enter_terminal() -> Result<Tui> {
     enable_raw_mode()?;
-    execute!(stdout(), EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
+    execute!(
+        stdout(),
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
     let terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     Ok(terminal)
 }
 
 pub fn leave_terminal() -> Result<()> {
     disable_raw_mode()?;
-    execute!(stdout(), LeaveAlternateScreen, DisableMouseCapture, DisableBracketedPaste)?;
+    execute!(
+        stdout(),
+        LeaveAlternateScreen,
+        DisableMouseCapture,
+        DisableBracketedPaste
+    )?;
     Ok(())
 }
 

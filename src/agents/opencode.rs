@@ -98,7 +98,11 @@ async fn launch(
         sleep(tokio::time::Duration::from_millis(200)).await;
         if let Ok(resp) = client.get(&health_url).send().await {
             if let Ok(body) = resp.json::<Value>().await {
-                if body.get("healthy").and_then(Value::as_bool).unwrap_or(false) {
+                if body
+                    .get("healthy")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
                     healthy = true;
                     break;
                 }
@@ -462,8 +466,7 @@ async fn fetch_and_store_tail(
         return;
     };
 
-    let need_first_prompt =
-        try_first_prompt && live_cache.read().unwrap().first_prompt.is_none();
+    let need_first_prompt = try_first_prompt && live_cache.read().unwrap().first_prompt.is_none();
     let need_work_init = !live_cache.read().unwrap().work_time_initialized;
     // If the session is long (tail is full), do a one-time full fetch for both
     // first_prompt and total_work_ms initialisation.
@@ -543,10 +546,7 @@ async fn fetch_and_store_tail(
 
 /// One-time full fetch to extract the very first user message text.
 async fn fetch_first_prompt(port: u16, client: &Client, session_id: &str) -> Option<String> {
-    let url = format!(
-        "http://127.0.0.1:{}/session/{}/message",
-        port, session_id
-    );
+    let url = format!("http://127.0.0.1:{}/session/{}/message", port, session_id);
     let resp = client.get(&url).send().await.ok()?;
     let msgs: Vec<Value> = resp.json().await.ok()?;
     msgs.into_iter()
@@ -729,12 +729,7 @@ impl AgentAdapter for OpenCodeAdapter {
     }
 
     async fn get_context(&self) -> Option<ContextInfo> {
-        let messages: Vec<Value> = self
-            .live_cache
-            .read()
-            .unwrap()
-            .recent_messages
-            .clone()?;
+        let messages: Vec<Value> = self.live_cache.read().unwrap().recent_messages.clone()?;
 
         // Find the latest assistant message with non-zero token usage.
         // In-flight messages exist but have zeroed token counts while streaming.
@@ -754,21 +749,24 @@ impl AgentAdapter for OpenCodeAdapter {
             .clone();
 
         let tokens = msg_tokens(&latest_assistant)?.clone();
-        let used = tokens.get("total").and_then(Value::as_u64).unwrap_or_else(|| {
-            let input = tokens.get("input").and_then(Value::as_u64).unwrap_or(0);
-            let output = tokens.get("output").and_then(Value::as_u64).unwrap_or(0);
-            let cache_read = tokens
-                .get("cache")
-                .and_then(|c: &Value| c.get("read"))
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            let cache_write = tokens
-                .get("cache")
-                .and_then(|c: &Value| c.get("write"))
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            input + output + cache_read + cache_write
-        });
+        let used = tokens
+            .get("total")
+            .and_then(Value::as_u64)
+            .unwrap_or_else(|| {
+                let input = tokens.get("input").and_then(Value::as_u64).unwrap_or(0);
+                let output = tokens.get("output").and_then(Value::as_u64).unwrap_or(0);
+                let cache_read = tokens
+                    .get("cache")
+                    .and_then(|c: &Value| c.get("read"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let cache_write = tokens
+                    .get("cache")
+                    .and_then(|c: &Value| c.get("write"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                input + output + cache_read + cache_write
+            });
 
         let provider_id = latest_assistant
             .get("info")
@@ -834,7 +832,11 @@ impl AgentAdapter for OpenCodeAdapter {
             .filter(|m| msg_role(m) == Some("assistant"))
             .filter_map(|m| all_text_parts(m))
             .collect();
-        if !parts.is_empty() { Some(parts.join("\n\n")) } else { None }
+        if !parts.is_empty() {
+            Some(parts.join("\n\n"))
+        } else {
+            None
+        }
     }
 
     fn get_cached_session_id(&self) -> Option<String> {

@@ -99,7 +99,12 @@ async fn main() -> Result<()> {
     let mut config = Config::load(&cli.tmux_session)?;
 
     // Build AgentRunner which owns all agent lifecycle logic.
-    let mut runner = AgentRunner::new(discovered, global_config, cli.tmux_session.clone(), worktrees_base);
+    let mut runner = AgentRunner::new(
+        discovered,
+        global_config,
+        cli.tmux_session.clone(),
+        worktrees_base,
+    );
 
     // Auto-resume any agents whose tmux pane died (e.g. after a tmux server
     // restart).  Uses AgentRunner::restart so Claude agents are skipped
@@ -155,7 +160,16 @@ async fn main() -> Result<()> {
                     let area = f.area();
                     match &state {
                         app::AppState::Dashboard => {
-                            ui::dashboard::render_dashboard(f, area, &app.agents, app.selected, &app.card_scroll, &mut app.card_response_heights, &mut app.card_response_widths, false);
+                            ui::dashboard::render_dashboard(
+                                f,
+                                area,
+                                &app.agents,
+                                app.selected,
+                                &app.card_scroll,
+                                &mut app.card_response_heights,
+                                &mut app.card_response_widths,
+                                false,
+                            );
                         }
                         app::AppState::AgentView(idx) => {
                             if let Some(entry) = app.agents.get(*idx) {
@@ -169,11 +183,29 @@ async fn main() -> Result<()> {
                             }
                         }
                         app::AppState::CreateAgentDialog => {
-                            ui::dashboard::render_dashboard(f, area, &app.agents, app.selected, &app.card_scroll, &mut app.card_response_heights, &mut app.card_response_widths, true);
+                            ui::dashboard::render_dashboard(
+                                f,
+                                area,
+                                &app.agents,
+                                app.selected,
+                                &app.card_scroll,
+                                &mut app.card_response_heights,
+                                &mut app.card_response_widths,
+                                true,
+                            );
                             ui::create_agent::render_create_agent(f, area, &app.create_state);
                         }
                         app::AppState::RemoveAgentDialog(remove_state) => {
-                            ui::dashboard::render_dashboard(f, area, &app.agents, app.selected, &app.card_scroll, &mut app.card_response_heights, &mut app.card_response_widths, true);
+                            ui::dashboard::render_dashboard(
+                                f,
+                                area,
+                                &app.agents,
+                                app.selected,
+                                &app.card_scroll,
+                                &mut app.card_response_heights,
+                                &mut app.card_response_widths,
+                                true,
+                            );
                             let name = app
                                 .agents
                                 .get(remove_state.idx)
@@ -191,6 +223,11 @@ async fn main() -> Result<()> {
                                 has_worktree,
                                 remove_state.remove_worktree,
                             );
+                        }
+                        app::AppState::GitViewer(gv) => {
+                            if let Some(entry) = app.agents.get(gv.agent_idx) {
+                                ui::git_viewer::render_git_viewer(f, area, gv, entry, &app.agents);
+                            }
                         }
                     }
                 })?;

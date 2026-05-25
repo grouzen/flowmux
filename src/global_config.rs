@@ -9,6 +9,11 @@ pub struct GlobalConfig {
     /// Port the Claude Code hook server listens on. Default: 15100.
     #[serde(default = "default_hook_port")]
     pub claude_hook_server_port: u16,
+
+    /// Command string for the external git viewer (e.g. "lazygit" or "lazydiff diff").
+    /// When set, Ctrl+V in the agent view launches the viewer in a new tmux pane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_viewer: Option<String>,
 }
 
 fn default_hook_port() -> u16 {
@@ -19,6 +24,7 @@ impl Default for GlobalConfig {
     fn default() -> Self {
         Self {
             claude_hook_server_port: default_hook_port(),
+            git_viewer: None,
         }
     }
 }
@@ -41,5 +47,18 @@ impl GlobalConfig {
         let contents = std::fs::read_to_string(&path)?;
         let config: GlobalConfig = toml::from_str(&contents)?;
         Ok(config)
+    }
+
+    /// Split the `git_viewer` string into (program, args).
+    /// Returns `None` if `git_viewer` is not configured.
+    pub fn git_viewer_parts(&self) -> Option<(String, Vec<String>)> {
+        let raw = self.git_viewer.as_deref()?.trim();
+        if raw.is_empty() {
+            return None;
+        }
+        let mut parts = raw.split_whitespace().map(String::from);
+        let program = parts.next()?;
+        let args: Vec<String> = parts.collect();
+        Some((program, args))
     }
 }
