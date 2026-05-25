@@ -332,6 +332,26 @@ async fn populate_initial(
     if let Some(sid) = sid {
         fetch_and_store_tail(port, client, live_cache, &sid, true).await;
     }
+
+    // --- pending permissions / questions ---------------------------------
+    let current_status = live_cache.read().unwrap().status.clone();
+    if current_status == AgentStatus::Idle || current_status == AgentStatus::Running {
+        let has_pending = async {
+            for endpoint in &["/permission", "/question"] {
+                if let Ok(resp) = client.get(format!("{}{}", base, endpoint)).send().await
+                    && let Ok(body) = resp.json::<Value>().await
+                    && body.as_array().is_some_and(|a| !a.is_empty())
+                {
+                    return true;
+                }
+            }
+            false
+        };
+        if has_pending.await {
+            live_cache.write().unwrap().status = AgentStatus::WaitingForInput;
+        }
+    }
+
     true
 }
 
@@ -425,10 +445,18 @@ async fn handle_event(
             *last_tail_fetch = Instant::now();
         }
 
-        // Sub-token streaming deltas — no useful state to cache.
-        "message.part.delta" => {}
+        "permission.asked" | "question.asked" => {
+            live_cache.write().unwrap().status = AgentStatus::WaitingForInput;
+        }
 
-        // Reconnect confirmation — redo initial population.
+        "permission.replied" | "question.replied" => {
+            live_cache.write().unwrap().status = AgentStatus::Running;
+        }
+
+        "question.rejected" => {
+            live_cache.write().unwrap().status = AgentStatus::Idle;
+        }
+
         "server.connected" => {
             populate_initial(port, client, live_cache, cached_session_id).await;
         }
