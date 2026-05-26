@@ -31,7 +31,7 @@ pub struct ClaudeHookState {
 impl Default for ClaudeHookState {
     fn default() -> Self {
         Self {
-            status: AgentStatus::Unknown,
+            status: AgentStatus::Idle,
             first_prompt: None,
             last_model_response: None,
             model_name: None,
