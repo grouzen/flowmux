@@ -1012,7 +1012,7 @@ impl App {
                 let term_h = crossterm::terminal::size()
                     .map(|(_, h)| h as usize)
                     .unwrap_or(24);
-                let viewport_h = term_h.saturating_sub(2);
+                let viewport_h = term_h.saturating_sub(4);
                 let max_scroll = self.agent_view_state.lines.len().saturating_sub(viewport_h);
                 if self.agent_view_state.view_scroll > max_scroll {
                     self.agent_view_state.view_scroll = max_scroll;
@@ -1037,7 +1037,7 @@ impl App {
             // pane (e.g. vim), causing it to redraw, move the cursor, and
             // potentially reset the editing mode on every poll cycle.
             if let Ok((term_cols, term_rows)) = crossterm::terminal::size() {
-                let content_height = term_rows.saturating_sub(2); // reserve top info bar + bottom status bar
+                let content_height = term_rows.saturating_sub(4); // reserve top info bar + bottom status bar + border (2 rows)
                 let desired = (term_cols, content_height);
                 if self.agent_view_state.last_pane_size != Some(desired) {
                     let _ = tmux::resize_window(&pane, term_cols, content_height);
@@ -1344,7 +1344,7 @@ impl App {
             gv.pane_mouse_active = tmux::pane_mouse_active(&pane);
 
             if let Ok((term_cols, term_rows)) = crossterm::terminal::size() {
-                let content_height = term_rows.saturating_sub(2);
+                let content_height = term_rows.saturating_sub(4); // reserve top info bar + bottom status bar + border (2 rows)
                 let desired = (term_cols, content_height);
                 if gv.last_pane_size != Some(desired) {
                     let _ = tmux::resize_window(&pane, term_cols, content_height);
