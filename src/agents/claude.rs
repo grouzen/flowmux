@@ -79,23 +79,32 @@ impl AgentAdapter for ClaudeAdapter {
 ///
 /// Source: <https://docs.anthropic.com/en/docs/about-claude/models>
 ///
-/// All Claude 3+ models ship with a 200 k token context window.  Only the
-/// legacy Claude 2 / Instant lines have smaller windows; those are listed
-/// explicitly.  Any unrecognised `claude-*` string defaults to 200 k so that
-/// newly released models are handled gracefully without a code change.
+/// Most Claude 3+ models ship with a 200 k token context window.  Some newer
+/// models (Opus 4.6+, Sonnet 4.6) have been upgraded to 1 M tokens, while the
+/// legacy Claude 2 / Instant lines have smaller windows.  Any unrecognised
+/// `claude-*` string defaults to 200 k so that newly released models are
+/// handled gracefully without a code change.
 pub fn model_context_window(model: &str) -> Option<u64> {
-    // Explicit 100 k exceptions (Claude 2.0 and Instant 1.x lines).
     const HUNDRED_K: &[&str] = &[
         "claude-2.0",
         "claude-instant-1",
     ];
-    // If the model matches any 100 k prefix, return 100 k.
+    const ONE_MILLION: &[&str] = &[
+        "claude-opus-4-6",
+        "claude-opus-4-7",
+        "claude-sonnet-4-6",
+    ];
+
     for prefix in HUNDRED_K {
         if model.starts_with(prefix) {
             return Some(100_000);
         }
     }
-    // Any other "claude-*" model gets 200 k.
+    for prefix in ONE_MILLION {
+        if model.starts_with(prefix) {
+            return Some(1_000_000);
+        }
+    }
     if model.starts_with("claude") {
         Some(200_000)
     } else {
@@ -599,5 +608,39 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing event after upgrade: {event}"));
             assert_eq!(arr.len(), 1, "duplicate hook groups for {event}");
         }
+    }
+
+    #[test]
+    fn context_window_legacy_100k() {
+        assert_eq!(model_context_window("claude-2.0"), Some(100_000));
+        assert_eq!(model_context_window("claude-2.0-100k"), Some(100_000));
+        assert_eq!(model_context_window("claude-instant-1"), Some(100_000));
+        assert_eq!(model_context_window("claude-instant-1.2"), Some(100_000));
+    }
+
+    #[test]
+    fn context_window_1m() {
+        assert_eq!(model_context_window("claude-opus-4-6"), Some(1_000_000));
+        assert_eq!(model_context_window("claude-opus-4-7"), Some(1_000_000));
+        assert_eq!(model_context_window("claude-sonnet-4-6"), Some(1_000_000));
+    }
+
+    #[test]
+    fn context_window_200k() {
+        assert_eq!(model_context_window("claude-sonnet-4-5-20250929"), Some(200_000));
+        assert_eq!(model_context_window("claude-sonnet-4-5"), Some(200_000));
+        assert_eq!(model_context_window("claude-haiku-4-5-20251001"), Some(200_000));
+        assert_eq!(model_context_window("claude-haiku-4-5"), Some(200_000));
+        assert_eq!(model_context_window("claude-opus-4-5"), Some(200_000));
+        assert_eq!(model_context_window("claude-opus-4-1"), Some(200_000));
+        assert_eq!(model_context_window("claude-sonnet-4-20250514"), Some(200_000));
+        assert_eq!(model_context_window("claude-opus-4-20250514"), Some(200_000));
+    }
+
+    #[test]
+    fn context_window_non_claude() {
+        assert_eq!(model_context_window("gpt-4"), None);
+        assert_eq!(model_context_window("gemini-pro"), None);
+        assert_eq!(model_context_window(""), None);
     }
 }
