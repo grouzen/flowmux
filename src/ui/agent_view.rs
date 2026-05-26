@@ -1,10 +1,10 @@
 use ansi_to_tui::IntoText;
 use ratatui::{
-    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Clear, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph},
+    Frame,
 };
 
 use crate::app::AgentViewState;
@@ -32,7 +32,7 @@ pub fn render_agent_view(
     let content_area = chunks[1];
     let status_area = chunks[2];
 
-    let viewport_height = content_area.height as usize;
+    let viewport_height = content_area.height.saturating_sub(2) as usize;
 
     // Show the appropriate window of lines based on view_scroll.
     // view_scroll == 0: live view (last viewport_height lines).
@@ -75,16 +75,21 @@ pub fn render_agent_view(
         .as_bytes()
         .into_text_with_style(base_style)
         .unwrap_or_else(|_| ratatui::text::Text::raw(visible_text.clone()));
-    let para = Paragraph::new(text).style(base_style);
+    let para = Paragraph::new(text).style(base_style).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Plain)
+            .border_style(Style::default().fg(GRAY)),
+    );
     f.render_widget(para, content_area);
 
     // Forward the pane cursor only when showing live content (not scrolled back).
     if !state.show_stopped_overlay && state.view_scroll == 0 {
         if let Some((cx, cy)) = state.cursor {
-            let screen_x = content_area.x.saturating_add(cx);
-            let screen_y = content_area.y.saturating_add(cy);
-            if screen_x < content_area.x + content_area.width
-                && screen_y < content_area.y + content_area.height
+            let screen_x = content_area.x.saturating_add(cx + 1);
+            let screen_y = content_area.y.saturating_add(cy + 1);
+            if screen_x < content_area.x + content_area.width - 1
+                && screen_y < content_area.y + content_area.height - 1
             {
                 f.set_cursor_position((screen_x, screen_y));
             }
