@@ -21,7 +21,10 @@ pub struct ClaudeAdapter {
 
 impl ClaudeAdapter {
     pub fn new(stable_agent_id: String, hook_state: HookStateMap) -> Self {
-        Self { stable_agent_id, hook_state }
+        Self {
+            stable_agent_id,
+            hook_state,
+        }
     }
 }
 
@@ -39,7 +42,10 @@ impl AgentAdapter for ClaudeAdapter {
         let entry = map.get(&self.stable_agent_id)?;
         let context_used = entry.context_used?;
         let total = entry.model_name.as_deref().and_then(model_context_window);
-        Some(ContextInfo { used: context_used, total })
+        Some(ContextInfo {
+            used: context_used,
+            total,
+        })
     }
 
     async fn get_first_prompt(&self) -> Option<String> {
@@ -85,15 +91,8 @@ impl AgentAdapter for ClaudeAdapter {
 /// `claude-*` string defaults to 200 k so that newly released models are
 /// handled gracefully without a code change.
 pub fn model_context_window(model: &str) -> Option<u64> {
-    const HUNDRED_K: &[&str] = &[
-        "claude-2.0",
-        "claude-instant-1",
-    ];
-    const ONE_MILLION: &[&str] = &[
-        "claude-opus-4-6",
-        "claude-opus-4-7",
-        "claude-sonnet-4-6",
-    ];
+    const HUNDRED_K: &[&str] = &["claude-2.0", "claude-instant-1"];
+    const ONE_MILLION: &[&str] = &["claude-opus-4-6", "claude-opus-4-7", "claude-sonnet-4-6"];
 
     for prefix in HUNDRED_K {
         if model.starts_with(prefix) {
@@ -159,7 +158,10 @@ impl ClaudeRuntime {
             }
         });
 
-        Self { hook_state, persist_tx }
+        Self {
+            hook_state,
+            persist_tx,
+        }
     }
 
     /// Create a `ClaudeAdapter` for a given `stable_agent_id`, pre-inserting
@@ -267,7 +269,9 @@ fn infer_transcript_path(session_id: &str, directory: Option<&str>) -> Option<St
     // Fast path: derive the expected directory encoding from the agent's CWD.
     if let Some(dir) = directory {
         let encoded = dir.replace('/', "-");
-        let candidate = projects_root.join(&encoded).join(format!("{session_id}.jsonl"));
+        let candidate = projects_root
+            .join(&encoded)
+            .join(format!("{session_id}.jsonl"));
         if candidate.exists() {
             return candidate.to_str().map(str::to_owned);
         }
@@ -359,11 +363,17 @@ const STABLE_HOOK_EVENTS: &[&str] = &[
 /// Return `true` if `hooks_root` already contains at least one stable hook
 /// entry (identified by a URL ending in `/hook` pointing to `127.0.0.1`).
 fn has_stable_hooks(hooks_root: &Value) -> bool {
-    let Some(obj) = hooks_root.as_object() else { return false };
+    let Some(obj) = hooks_root.as_object() else {
+        return false;
+    };
     for event_val in obj.values() {
-        let Some(arr) = event_val.as_array() else { continue };
+        let Some(arr) = event_val.as_array() else {
+            continue;
+        };
         for hook_group in arr {
-            let Some(inner) = hook_group.get("hooks").and_then(Value::as_array) else { continue };
+            let Some(inner) = hook_group.get("hooks").and_then(Value::as_array) else {
+                continue;
+            };
             for h in inner {
                 let url = h.get("url").and_then(Value::as_str).unwrap_or("");
                 if url.contains("127.0.0.1") && url.ends_with(HOOK_URL_PATH) {
@@ -380,9 +390,13 @@ fn has_stable_hooks(hooks_root: &Value) -> bool {
 /// stale (e.g. stable was updated and new events were added) and a re-install
 /// is required.
 fn has_all_stable_hook_events(hooks_root: &Value) -> bool {
-    let Some(obj) = hooks_root.as_object() else { return false };
+    let Some(obj) = hooks_root.as_object() else {
+        return false;
+    };
     STABLE_HOOK_EVENTS.iter().all(|event| {
-        let Some(arr) = obj.get(*event).and_then(Value::as_array) else { return false };
+        let Some(arr) = obj.get(*event).and_then(Value::as_array) else {
+            return false;
+        };
         arr.iter().any(|hook_group| {
             let Some(inner) = hook_group.get("hooks").and_then(Value::as_array) else {
                 return false;
@@ -400,9 +414,13 @@ fn has_all_stable_hook_events(hooks_root: &Value) -> bool {
 /// A hook group is considered a stable entry when it contains at least one
 /// `http` hook whose URL points to `127.0.0.1` and ends with `/hook`.
 fn remove_stable_hooks(hooks_root: &mut Value) {
-    let Some(obj) = hooks_root.as_object_mut() else { return };
+    let Some(obj) = hooks_root.as_object_mut() else {
+        return;
+    };
     for event_val in obj.values_mut() {
-        let Some(arr) = event_val.as_array_mut() else { continue };
+        let Some(arr) = event_val.as_array_mut() else {
+            continue;
+        };
         arr.retain(|hook_group| {
             let Some(inner) = hook_group.get("hooks").and_then(Value::as_array) else {
                 return true;
@@ -428,10 +446,8 @@ pub fn install_hooks(port: u16) -> Result<()> {
 
     // Read existing JSON or start from an empty object.
     let mut root: Value = if path.exists() {
-        let raw = std::fs::read_to_string(&path)
-            .with_context(|| format!("read {:?}", path))?;
-        serde_json::from_str(&raw)
-            .with_context(|| format!("parse {:?}", path))?
+        let raw = std::fs::read_to_string(&path).with_context(|| format!("read {:?}", path))?;
+        serde_json::from_str(&raw).with_context(|| format!("parse {:?}", path))?
     } else {
         serde_json::json!({})
     };
@@ -463,7 +479,9 @@ pub fn install_hooks(port: u16) -> Result<()> {
         let event_arr = hooks_obj
             .entry(event.clone())
             .or_insert_with(|| serde_json::json!([]));
-        let arr = event_arr.as_array_mut().context("event hook list is not an array")?;
+        let arr = event_arr
+            .as_array_mut()
+            .context("event hook list is not an array")?;
         if let Some(entries) = new_entries.as_array() {
             arr.extend(entries.iter().cloned());
         }
@@ -476,14 +494,12 @@ pub fn install_hooks(port: u16) -> Result<()> {
 /// (write to `.tmp` then rename).
 fn write_settings(path: &std::path::Path, value: &Value) -> Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("create dir {:?}", parent))?;
+        std::fs::create_dir_all(parent).with_context(|| format!("create dir {:?}", parent))?;
     }
     let tmp = path.with_extension("json.tmp");
     let json = serde_json::to_string_pretty(value).context("serialize settings.json")?;
     std::fs::write(&tmp, json).with_context(|| format!("write {:?}", tmp))?;
-    std::fs::rename(&tmp, path)
-        .with_context(|| format!("rename {:?} -> {:?}", tmp, path))?;
+    std::fs::rename(&tmp, path).with_context(|| format!("rename {:?} -> {:?}", tmp, path))?;
     Ok(())
 }
 
@@ -532,8 +548,15 @@ mod tests {
         let root = make_settings(15100);
         let hooks = root.get("hooks").unwrap().as_object().unwrap();
         for event in &[
-            "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
-            "SubagentStop", "PermissionRequest", "Notification", "Stop", "SessionEnd",
+            "SessionStart",
+            "UserPromptSubmit",
+            "PreToolUse",
+            "PostToolUse",
+            "SubagentStop",
+            "PermissionRequest",
+            "Notification",
+            "Stop",
+            "SessionEnd",
         ] {
             assert!(hooks.contains_key(*event), "missing event: {event}");
         }
@@ -556,7 +579,10 @@ mod tests {
             remove_stable_hooks(hooks);
         }
         let hooks = root.get("hooks").unwrap();
-        assert!(!has_stable_hooks(hooks), "stable hooks still present after removal");
+        assert!(
+            !has_stable_hooks(hooks),
+            "stable hooks still present after removal"
+        );
     }
 
     #[test]
@@ -598,13 +624,18 @@ mod tests {
         // The stale root should be detected as incomplete.
         let hooks = root.get("hooks").unwrap();
         assert!(has_stable_hooks(hooks), "should detect existing hooks");
-        assert!(!has_all_stable_hook_events(hooks), "should detect stale install");
+        assert!(
+            !has_all_stable_hook_events(hooks),
+            "should detect stale install"
+        );
 
         // After re-install all 8 events must be present with a single entry each.
         install_hooks_into(&mut root, 15100);
         let hooks = root.get("hooks").unwrap().as_object().unwrap();
         for event in STABLE_HOOK_EVENTS {
-            let arr = hooks.get(*event).and_then(Value::as_array)
+            let arr = hooks
+                .get(*event)
+                .and_then(Value::as_array)
                 .unwrap_or_else(|| panic!("missing event after upgrade: {event}"));
             assert_eq!(arr.len(), 1, "duplicate hook groups for {event}");
         }
@@ -627,14 +658,26 @@ mod tests {
 
     #[test]
     fn context_window_200k() {
-        assert_eq!(model_context_window("claude-sonnet-4-5-20250929"), Some(200_000));
+        assert_eq!(
+            model_context_window("claude-sonnet-4-5-20250929"),
+            Some(200_000)
+        );
         assert_eq!(model_context_window("claude-sonnet-4-5"), Some(200_000));
-        assert_eq!(model_context_window("claude-haiku-4-5-20251001"), Some(200_000));
+        assert_eq!(
+            model_context_window("claude-haiku-4-5-20251001"),
+            Some(200_000)
+        );
         assert_eq!(model_context_window("claude-haiku-4-5"), Some(200_000));
         assert_eq!(model_context_window("claude-opus-4-5"), Some(200_000));
         assert_eq!(model_context_window("claude-opus-4-1"), Some(200_000));
-        assert_eq!(model_context_window("claude-sonnet-4-20250514"), Some(200_000));
-        assert_eq!(model_context_window("claude-opus-4-20250514"), Some(200_000));
+        assert_eq!(
+            model_context_window("claude-sonnet-4-20250514"),
+            Some(200_000)
+        );
+        assert_eq!(
+            model_context_window("claude-opus-4-20250514"),
+            Some(200_000)
+        );
     }
 
     #[test]

@@ -1,5 +1,5 @@
-use async_trait::async_trait;
 use crate::models::{AgentStatus, ContextInfo};
+use async_trait::async_trait;
 
 #[async_trait]
 pub trait AgentAdapter: Send + Sync {

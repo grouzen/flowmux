@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use tokio::time::{interval, Duration};
+use tokio::time::{Duration, interval};
 
 use crate::agents::AgentAdapter;
 use crate::config::{AgentKind, Config};
@@ -22,12 +22,65 @@ pub struct RemoveAgentState {
     pub remove_worktree: bool,
 }
 
+/// State for the git viewer pane view.
+#[derive(Debug, Clone)]
+pub struct GitViewerState {
+    /// Index of the agent we came from (to return to on exit).
+    pub agent_idx: usize,
+    /// tmux pane target (e.g. "stable:5.0").
+    pub pane: String,
+    /// Captured pane output lines.
+    pub lines: Vec<String>,
+    /// Cursor position within the pane's visible screen (col, row).
+    pub cursor: Option<(u16, u16)>,
+    /// Last dimensions sent to tmux resize-window (width, height).
+    pub last_pane_size: Option<(u16, u16)>,
+    /// Whether the process currently running in the pane has enabled mouse reporting.
+    pub pane_mouse_active: bool,
+    /// When true, the next keypress will be forwarded directly to the tmux pane.
+    pub prefix_active: bool,
+    /// Byte length of the last captured raw string (for change detection).
+    prev_raw_len: usize,
+    /// Last raw capture for byte-exact change detection.
+    prev_raw: String,
+}
+
+impl GitViewerState {
+    pub fn new(agent_idx: usize, pane: String) -> Self {
+        Self {
+            agent_idx,
+            pane,
+            lines: Vec::new(),
+            cursor: None,
+            last_pane_size: None,
+            pane_mouse_active: false,
+            prefix_active: false,
+            prev_raw_len: 0,
+            prev_raw: String::new(),
+        }
+    }
+
+    pub fn update_lines(&mut self, raw: &str) -> bool {
+        if raw.len() == self.prev_raw_len && raw == self.prev_raw {
+            return false;
+        }
+        self.prev_raw_len = raw.len();
+        self.prev_raw = raw.to_owned();
+
+        let all_lines = raw.trim_end_matches('\n').split('\n');
+        let new_lines: Vec<String> = all_lines.map(|s| s.to_string()).collect();
+        self.lines = new_lines;
+        true
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum AppState {
     Dashboard,
     CreateAgentDialog,
     AgentView(usize),
     RemoveAgentDialog(RemoveAgentState),
+    GitViewer(GitViewerState),
 }
 
 // ---------------------------------------------------------------------------
@@ -41,6 +94,7 @@ pub enum Event {
     Paste(String),
     DashboardTick,
     AgentViewTick,
+    GitViewerTick,
 }
 
 // ---------------------------------------------------------------------------
@@ -278,6 +332,7 @@ pub struct App {
     pub config: Config,
     pub runner: AgentRunner,
     pub agent_view_state: AgentViewState,
+    pub git_viewer_state: Option<GitViewerState>,
     pub create_state: CreateAgentState,
     pub tx: UnboundedSender<Event>,
     pub rx: UnboundedReceiver<Event>,
@@ -296,7 +351,12 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(config: Config, agents: Vec<AgentEntry>, adapters: Vec<Box<dyn AgentAdapter>>, runner: AgentRunner) -> Self {
+    pub fn new(
+        config: Config,
+        agents: Vec<AgentEntry>,
+        adapters: Vec<Box<dyn AgentAdapter>>,
+        runner: AgentRunner,
+    ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let card_count = agents.len();
         Self {
@@ -307,6 +367,7 @@ impl App {
             config,
             runner,
             agent_view_state: AgentViewState::default(),
+            git_viewer_state: None,
             create_state: CreateAgentState::default(),
             tx,
             rx,
@@ -361,6 +422,16 @@ impl App {
                 let _ = tx.send(Event::AgentViewTick);
             }
         });
+
+        // GitViewer ticker — 50 ms
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let mut ticker = interval(Duration::from_millis(50));
+            loop {
+                ticker.tick().await;
+                let _ = tx.send(Event::GitViewerTick);
+            }
+        });
     }
 
     // -----------------------------------------------------------------------
@@ -393,6 +464,10 @@ impl App {
                 // handle_agent_view_tick sets self.dirty = true only when
                 // the captured output has actually changed.
                 self.handle_agent_view_tick().await;
+                true
+            }
+            Event::GitViewerTick => {
+                self.handle_git_viewer_tick().await;
                 true
             }
         }
@@ -480,66 +555,95 @@ impl App {
             return;
         }
 
-        let AppState::AgentView(idx) = self.state else {
-            return;
-        };
+        match &self.state {
+            AppState::AgentView(idx) => {
+                let idx = *idx;
+                self.handle_agent_view_mouse(mouse, idx);
+            }
+            AppState::GitViewer(gv) => {
+                let pane = gv.pane.clone();
+                let mouse_active = gv.pane_mouse_active;
+                self.handle_pane_mouse_generic(mouse, &pane, mouse_active, false);
+            }
+            _ => {}
+        }
+    }
 
-        // Scroll events are forwarded as named tmux keys.
+    fn handle_agent_view_mouse(&mut self, mouse: MouseEvent, idx: usize) {
+        let is_claude = self
+            .agents
+            .get(idx)
+            .map(|e| matches!(e.config.kind, AgentKind::Claude { .. }))
+            .unwrap_or(false);
+
         match mouse.kind {
             MouseEventKind::ScrollUp => {
-                if let Some(entry) = self.agents.get(idx) {
-                    if matches!(entry.config.kind, AgentKind::Claude { .. }) {
-                        self.agent_view_state.view_scroll =
-                            self.agent_view_state.view_scroll.saturating_add(3)
-                            .min(MAX_RETAINED_LINES);
-                        self.dirty = true;
-                    } else {
-                        let _ = tmux::send_keys(&entry.config.pane, "PPage");
-                    }
+                if is_claude {
+                    self.agent_view_state.view_scroll = self
+                        .agent_view_state
+                        .view_scroll
+                        .saturating_add(3)
+                        .min(MAX_RETAINED_LINES);
+                    self.dirty = true;
+                } else if let Some(entry) = self.agents.get(idx) {
+                    let _ = tmux::send_keys(&entry.config.pane, "PPage");
                 }
                 return;
             }
             MouseEventKind::ScrollDown => {
-                if let Some(entry) = self.agents.get(idx) {
-                    if matches!(entry.config.kind, AgentKind::Claude { .. }) {
-                        self.agent_view_state.view_scroll =
-                            self.agent_view_state.view_scroll.saturating_sub(3);
-                        self.dirty = true;
-                    } else {
-                        let _ = tmux::send_keys(&entry.config.pane, "NPage");
-                    }
+                if is_claude {
+                    self.agent_view_state.view_scroll =
+                        self.agent_view_state.view_scroll.saturating_sub(3);
+                    self.dirty = true;
+                } else if let Some(entry) = self.agents.get(idx) {
+                    let _ = tmux::send_keys(&entry.config.pane, "NPage");
                 }
                 return;
             }
             _ => {}
         }
 
-        // For all other mouse events, forward as an SGR escape sequence via
-        // `send-keys -l` so the application inside the pane receives them.
+        self.handle_pane_mouse_generic(
+            mouse,
+            &self
+                .agents
+                .get(idx)
+                .map(|e| e.config.pane.clone())
+                .unwrap_or_default(),
+            self.agent_view_state.pane_mouse_active,
+            self.agent_view_state.show_stopped_overlay,
+        );
+    }
 
-        // Guard: skip events on the status bar (last row of the terminal).
+    fn handle_pane_mouse_generic(
+        &mut self,
+        mouse: MouseEvent,
+        pane: &str,
+        mouse_active: bool,
+        show_overlay: bool,
+    ) {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                let _ = tmux::send_keys(pane, "PPage");
+                return;
+            }
+            MouseEventKind::ScrollDown => {
+                let _ = tmux::send_keys(pane, "NPage");
+                return;
+            }
+            _ => {}
+        }
+
         let term_height = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
         if mouse.row >= term_height.saturating_sub(1) {
             return;
         }
 
-        // Guard: don't forward while the "agent stopped" overlay is visible.
-        if self.agent_view_state.show_stopped_overlay {
+        if show_overlay {
             return;
         }
 
-        // Map event kind → (SGR button code, is_press).
-        // SGR button encoding: 0=left 1=middle 2=right; drag adds 32; hover=35.
-        // Modifiers: Shift+4, Alt+8, Ctrl+16.
-        //
-        // Hover / all-motion events (Moved) are only forwarded when the pane
-        // application has enabled mouse reporting (#{mouse_any_flag} == 1).
-        // If the pane application has NOT enabled mouse mode — for example vim
-        // opened as $EDITOR without `set mouse=a` — the leading \x1b of the
-        // SGR hover sequence would be interpreted as Escape, exiting insert
-        // mode and potentially triggering normal-mode commands (the trailing
-        // 'M' maps to vim's "move to middle of screen").
-        if mouse.kind == MouseEventKind::Moved && !self.agent_view_state.pane_mouse_active {
+        if mouse.kind == MouseEventKind::Moved && !mouse_active {
             return;
         }
 
@@ -561,8 +665,6 @@ impl App {
             cb += 16;
         }
 
-        // SGR format: ESC [ < Cb ; Cx ; Cy M (press) or m (release).
-        // Coordinates are 1-based.
         let suffix = if press { 'M' } else { 'm' };
         let seq = format!(
             "\x1b[<{};{};{}{}",
@@ -572,9 +674,7 @@ impl App {
             suffix
         );
 
-        if let Some(entry) = self.agents.get(idx) {
-            let _ = tmux::send_literal(&entry.config.pane, &seq);
-        }
+        let _ = tmux::send_literal(pane, &seq);
     }
 
     fn sgr_button(btn: MouseButton) -> u8 {
@@ -592,15 +692,23 @@ impl App {
     /// (one tmux subprocess) rather than character-by-character, which makes
     /// pasting large blocks of text fast.
     fn handle_paste(&mut self, text: String) {
-        let AppState::AgentView(idx) = self.state else {
-            return;
-        };
-        if self.agent_view_state.show_stopped_overlay {
-            return;
-        }
-        if let Some(entry) = self.agents.get(idx) {
-            let seq = format!("\x1b[200~{}\x1b[201~", text);
-            let _ = tmux::send_literal(&entry.config.pane, &seq);
+        match &self.state {
+            AppState::AgentView(idx) => {
+                let idx = *idx;
+                if self.agent_view_state.show_stopped_overlay {
+                    return;
+                }
+                if let Some(entry) = self.agents.get(idx) {
+                    let seq = format!("\x1b[200~{}\x1b[201~", text);
+                    let _ = tmux::send_literal(&entry.config.pane, &seq);
+                }
+            }
+            AppState::GitViewer(gv) => {
+                let pane = gv.pane.clone();
+                let seq = format!("\x1b[200~{}\x1b[201~", text);
+                let _ = tmux::send_literal(&pane, &seq);
+            }
+            _ => {}
         }
     }
 
@@ -616,6 +724,7 @@ impl App {
                 let state = state.clone();
                 self.handle_remove_key(key, state)
             }
+            AppState::GitViewer(_) => self.handle_git_viewer_key(key),
         }
     }
 
@@ -660,7 +769,8 @@ impl App {
             }
             KeyCode::Char('d') => {
                 if !self.agents.is_empty() {
-                    let has_worktree = self.agents
+                    let has_worktree = self
+                        .agents
                         .get(self.selected)
                         .and_then(|e| e.config.git_repo_root.as_ref())
                         .is_some();
@@ -868,7 +978,8 @@ impl App {
                 let prev = self.agent_view_state.prev_status.clone();
                 if prev.as_ref() != Some(&AgentStatus::Stopped) {
                     self.agent_view_state.show_stopped_overlay = true;
-                    self.agent_view_state.remove_worktree_on_stop = self.agents
+                    self.agent_view_state.remove_worktree_on_stop = self
+                        .agents
                         .get(idx)
                         .and_then(|e| e.config.git_repo_root.as_ref())
                         .is_some();
@@ -902,11 +1013,7 @@ impl App {
                     .map(|(_, h)| h as usize)
                     .unwrap_or(24);
                 let viewport_h = term_h.saturating_sub(2);
-                let max_scroll = self
-                    .agent_view_state
-                    .lines
-                    .len()
-                    .saturating_sub(viewport_h);
+                let max_scroll = self.agent_view_state.lines.len().saturating_sub(viewport_h);
                 if self.agent_view_state.view_scroll > max_scroll {
                     self.agent_view_state.view_scroll = max_scroll;
                 }
@@ -947,7 +1054,8 @@ impl App {
                     && prev.as_ref() != Some(&AgentStatus::Stopped)
                 {
                     self.agent_view_state.show_stopped_overlay = true;
-                    self.agent_view_state.remove_worktree_on_stop = self.agents
+                    self.agent_view_state.remove_worktree_on_stop = self
+                        .agents
                         .get(idx)
                         .and_then(|e| e.config.git_repo_root.as_ref())
                         .is_some();
@@ -1000,7 +1108,8 @@ impl App {
                 }
                 KeyCode::Char(' ') => {
                     // Toggle the "remove worktree" checkbox (only when agent has one)
-                    let has_worktree = self.agents
+                    let has_worktree = self
+                        .agents
                         .get(idx)
                         .and_then(|e| e.config.git_repo_root.as_ref())
                         .is_some();
@@ -1031,6 +1140,9 @@ impl App {
             KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.state = AppState::Dashboard;
             }
+            KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.launch_git_viewer(idx);
+            }
             KeyCode::PageUp => {
                 if let Some(entry) = self.agents.get(idx) {
                     if matches!(entry.config.kind, AgentKind::Claude { .. }) {
@@ -1038,8 +1150,10 @@ impl App {
                             .map(|(_, h)| h as usize)
                             .unwrap_or(24)
                             .saturating_sub(2);
-                        self.agent_view_state.view_scroll =
-                            self.agent_view_state.view_scroll.saturating_add(page)
+                        self.agent_view_state.view_scroll = self
+                            .agent_view_state
+                            .view_scroll
+                            .saturating_add(page)
                             .min(MAX_RETAINED_LINES);
                         self.dirty = true;
                     } else {
@@ -1074,6 +1188,170 @@ impl App {
             }
         }
         true
+    }
+
+    // -----------------------------------------------------------------------
+    // Git Viewer
+    // -----------------------------------------------------------------------
+
+    fn launch_git_viewer(&mut self, agent_idx: usize) {
+        let git_viewer = match self.runner.global_config().git_viewer_parts() {
+            Some(parts) => parts,
+            None => return,
+        };
+
+        let directory = match self.agents.get(agent_idx) {
+            Some(entry) => entry.config.directory.clone(),
+            None => return,
+        };
+
+        let window_index = match tmux::new_window(&directory, "git") {
+            Ok(idx) => idx,
+            Err(_) => return,
+        };
+
+        let pane = format!("{}:{}.0", tmux::session_name(), window_index);
+
+        let (program, args) = git_viewer;
+        let cmd = if args.is_empty() {
+            format!("{}\n", program)
+        } else {
+            format!("{} {}\n", program, args.join(" "))
+        };
+
+        if tmux::send_keys(&pane, &cmd).is_err() {
+            let _ = tmux::kill_window(&format!("{}:{}", tmux::session_name(), window_index));
+            return;
+        }
+
+        self.git_viewer_state = Some(GitViewerState::new(agent_idx, pane.clone()));
+        self.state = AppState::GitViewer(self.git_viewer_state.clone().unwrap());
+        self.dirty = true;
+    }
+
+    fn handle_git_viewer_key(&mut self, key: KeyEvent) -> bool {
+        let pane = match &self.state {
+            AppState::GitViewer(gv) => gv.pane.clone(),
+            _ => return true,
+        };
+
+        let prefix_active = match &self.state {
+            AppState::GitViewer(gv) => gv.prefix_active,
+            _ => false,
+        };
+
+        if prefix_active {
+            if let AppState::GitViewer(ref mut gv) = self.state {
+                gv.prefix_active = false;
+            }
+            self.dirty = true;
+            let keys = key_event_to_tmux(&key);
+            if !keys.is_empty() {
+                let _ = tmux::send_keys(&pane, &keys);
+            }
+            return true;
+        }
+
+        match key.code {
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let AppState::GitViewer(ref mut gv) = self.state {
+                    gv.prefix_active = true;
+                }
+                self.dirty = true;
+            }
+            KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.exit_git_viewer_to_agent();
+            }
+            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.exit_git_viewer_to_dashboard();
+            }
+            _ => {
+                let keys = key_event_to_tmux(&key);
+                if !keys.is_empty() {
+                    let _ = tmux::send_keys(&pane, &keys);
+                }
+            }
+        }
+        true
+    }
+
+    fn exit_git_viewer_to_agent(&mut self) {
+        let (agent_idx, pane) = match &self.state {
+            AppState::GitViewer(gv) => (gv.agent_idx, gv.pane.clone()),
+            _ => return,
+        };
+
+        if let Some(colon_pos) = pane.find(':') {
+            if let Some(dot_pos) = pane[colon_pos..].find('.') {
+                let window_target = &pane[..colon_pos + dot_pos];
+                let _ = tmux::kill_window(window_target);
+            }
+        }
+
+        self.agent_view_state = AgentViewState::default();
+        self.state = AppState::AgentView(agent_idx);
+        self.git_viewer_state = None;
+        self.dirty = true;
+    }
+
+    fn exit_git_viewer_to_dashboard(&mut self) {
+        let pane = match &self.state {
+            AppState::GitViewer(gv) => gv.pane.clone(),
+            _ => return,
+        };
+
+        if let Some(colon_pos) = pane.find(':') {
+            if let Some(dot_pos) = pane[colon_pos..].find('.') {
+                let window_target = &pane[..colon_pos + dot_pos];
+                let _ = tmux::kill_window(window_target);
+            }
+        }
+
+        self.state = AppState::Dashboard;
+        self.git_viewer_state = None;
+        self.dirty = true;
+    }
+
+    async fn handle_git_viewer_tick(&mut self) {
+        let pane = match &self.state {
+            AppState::GitViewer(gv) => gv.pane.clone(),
+            _ => return,
+        };
+
+        if !tmux::is_alive(&pane) {
+            self.exit_git_viewer_to_agent();
+            return;
+        }
+
+        if let Ok(raw) = tmux::capture_pane(&pane) {
+            let changed = if let AppState::GitViewer(ref mut gv) = self.state {
+                gv.update_lines(&raw)
+            } else {
+                false
+            };
+            if changed {
+                self.dirty = true;
+            }
+        }
+
+        let new_cursor = tmux::cursor_position(&pane);
+        if let AppState::GitViewer(ref mut gv) = self.state {
+            if new_cursor != gv.cursor {
+                gv.cursor = new_cursor;
+                self.dirty = true;
+            }
+
+            gv.pane_mouse_active = tmux::pane_mouse_active(&pane);
+
+            if let Ok((term_cols, term_rows)) = crossterm::terminal::size() {
+                let content_height = term_rows.saturating_sub(2);
+                let desired = (term_cols, content_height);
+                if gv.last_pane_size != Some(desired) {
+                    let _ = tmux::resize_window(&pane, term_cols, content_height);
+                    gv.last_pane_size = Some(desired);
+                }
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1140,8 +1418,7 @@ impl App {
                         self.create_state.dir_selected_idx = new_idx;
                         // Scroll down if needed
                         if new_idx >= self.create_state.dir_scroll_offset + MAX_DIR_VISIBLE {
-                            self.create_state.dir_scroll_offset =
-                                new_idx + 1 - MAX_DIR_VISIBLE;
+                            self.create_state.dir_scroll_offset = new_idx + 1 - MAX_DIR_VISIBLE;
                         }
                     }
                 }
@@ -1158,12 +1435,17 @@ impl App {
             KeyCode::Enter => {
                 // When Directory focused: commit the highlighted suggestion name
                 if self.create_state.focus == CreateField::Directory {
-                    if let Some(name) = self.create_state
+                    if let Some(name) = self
+                        .create_state
                         .dir_matches
                         .get(self.create_state.dir_selected_idx)
                         .cloned()
                     {
-                        let base = self.create_state.directory.trim_end_matches('/').to_string();
+                        let base = self
+                            .create_state
+                            .directory
+                            .trim_end_matches('/')
+                            .to_string();
                         self.create_state.directory = format!("{}/{}", base, name);
                         self.create_state.dir_filter.clear();
                         self.create_state.refresh_dir_matches();
@@ -1174,16 +1456,22 @@ impl App {
                     let agent_type = self.create_state.selected_agent_type();
                     let create_worktree = self.create_state.create_worktree
                         && self.create_state.git_repo_root.is_some();
-                    let git_repo_root = self.create_state.git_repo_root
+                    let git_repo_root = self
+                        .create_state
+                        .git_repo_root
                         .as_ref()
                         .map(|p| p.to_string_lossy().to_string());
-                    match self.runner.create(
-                        &name,
-                        &dir,
-                        agent_type,
-                        create_worktree,
-                        git_repo_root.as_deref(),
-                    ).await {
+                    match self
+                        .runner
+                        .create(
+                            &name,
+                            &dir,
+                            agent_type,
+                            create_worktree,
+                            git_repo_root.as_deref(),
+                        )
+                        .await
+                    {
                         Ok((config, adapter)) => {
                             self.config.agents.push(config.clone());
                             let _ = self.config.save();
@@ -1252,7 +1540,11 @@ impl App {
                             self.create_state.dir_filter.pop();
                         } else {
                             // Filter empty: go up one directory level
-                            let d = self.create_state.directory.trim_end_matches('/').to_string();
+                            let d = self
+                                .create_state
+                                .directory
+                                .trim_end_matches('/')
+                                .to_string();
                             if let Some(pos) = d.rfind('/') {
                                 self.create_state.directory = d[..pos].to_string();
                             } else {
@@ -1309,7 +1601,8 @@ impl App {
             }
             // Space toggles the "remove worktree" checkbox (only when agent has one)
             KeyCode::Char(' ') => {
-                let has_worktree = self.agents
+                let has_worktree = self
+                    .agents
                     .get(state.idx)
                     .and_then(|e| e.config.git_repo_root.as_ref())
                     .is_some();
@@ -1447,36 +1740,42 @@ fn unicode_display_width(s: &str) -> usize {
 }
 
 fn key_event_to_tmux(key: &KeyEvent) -> String {
-    let ctrl  = key.modifiers.contains(KeyModifiers::CONTROL);
-    let alt   = key.modifiers.contains(KeyModifiers::ALT);
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
     // Each arm yields (base_name, apply_shift_prefix).
     // Char keys encode Shift in the character value (upper/lowercase), and
     // BackTab encodes Shift implicitly, so neither gets an S- prefix.
     let (base, apply_shift): (String, bool) = match key.code {
-        KeyCode::BackTab   => ("BTab".into(),   false),
-        KeyCode::Char(c)   => (c.to_string(),   false),
-        KeyCode::Enter     => ("Enter".into(),  true),
+        KeyCode::BackTab => ("BTab".into(), false),
+        KeyCode::Char(c) => (c.to_string(), false),
+        KeyCode::Enter => ("Enter".into(), true),
         KeyCode::Backspace => ("BSpace".into(), true),
-        KeyCode::Tab       => ("Tab".into(),    true),
-        KeyCode::Esc       => ("Escape".into(), true),
-        KeyCode::Left      => ("Left".into(),   true),
-        KeyCode::Right     => ("Right".into(),  true),
-        KeyCode::Up        => ("Up".into(),     true),
-        KeyCode::Down      => ("Down".into(),   true),
-        KeyCode::PageUp    => ("PPage".into(),  true),
-        KeyCode::PageDown  => ("NPage".into(),  true),
-        KeyCode::Home      => ("Home".into(),   true),
-        KeyCode::End       => ("End".into(),    true),
-        KeyCode::Delete    => ("DC".into(),     true),
-        _                  => return String::new(),
+        KeyCode::Tab => ("Tab".into(), true),
+        KeyCode::Esc => ("Escape".into(), true),
+        KeyCode::Left => ("Left".into(), true),
+        KeyCode::Right => ("Right".into(), true),
+        KeyCode::Up => ("Up".into(), true),
+        KeyCode::Down => ("Down".into(), true),
+        KeyCode::PageUp => ("PPage".into(), true),
+        KeyCode::PageDown => ("NPage".into(), true),
+        KeyCode::Home => ("Home".into(), true),
+        KeyCode::End => ("End".into(), true),
+        KeyCode::Delete => ("DC".into(), true),
+        _ => return String::new(),
     };
 
     let mut result = String::new();
-    if ctrl              { result.push_str("C-"); }
-    if alt               { result.push_str("M-"); }
-    if shift && apply_shift { result.push_str("S-"); }
+    if ctrl {
+        result.push_str("C-");
+    }
+    if alt {
+        result.push_str("M-");
+    }
+    if shift && apply_shift {
+        result.push_str("S-");
+    }
     result.push_str(&base);
     result
 }

@@ -1,10 +1,10 @@
 use ansi_to_tui::IntoText;
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Clear, Paragraph},
-    Frame,
 };
 
 use crate::app::AgentViewState;
@@ -161,18 +161,30 @@ pub fn render_agent_view(
     }
     f.render_widget(Paragraph::new(Line::from(top_spans)), top_area);
 
-    // --- Left: hotkey hints (ctrl+g dashboard, ctrl+b prefix) ---
+    // --- Left: hotkey hints (ctrl+g dashboard, ctrl+v git, ctrl+b prefix) ---
     let ctrlg_key = " ctrl+g ";
     let ctrlb_key = " ctrl+b ";
-    let nav_width = (ctrlg_key.len() + " dashboard".len()
-        + 1  // space between hints
-        + ctrlb_key.len() + " prefix".len()) as u16;
+    let ctrlv_key = " ctrl+v ";
+    let nav_width = (ctrlg_key.len()
+        + " dashboard".len()
+        + 1
+        + ctrlv_key.len()
+        + " git".len()
+        + 1
+        + ctrlb_key.len()
+        + " prefix".len()) as u16;
     let nav_spans: Vec<Span> = vec![
         Span::styled(
             ctrlg_key,
             Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
         ),
         Span::styled(" dashboard", Style::default().fg(FG)),
+        Span::raw(" "),
+        Span::styled(
+            ctrlv_key,
+            Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" git", Style::default().fg(FG)),
         Span::raw(" "),
         Span::styled(
             ctrlb_key,

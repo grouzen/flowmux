@@ -2,9 +2,9 @@ use anyhow::Result;
 use std::path::PathBuf;
 
 use crate::agent_discovery::DiscoveredAgents;
-use crate::agents::claude::{install_hooks, ClaudeRuntime};
-use crate::agents::opencode::OpenCodeAdapter;
 use crate::agents::AgentAdapter;
+use crate::agents::claude::{ClaudeRuntime, install_hooks};
+use crate::agents::opencode::OpenCodeAdapter;
 use crate::config::{AgentConfig, AgentKind};
 use crate::git;
 use crate::global_config::GlobalConfig;
@@ -44,6 +44,10 @@ impl AgentRunner {
             claude: None,
             worktrees_base,
         }
+    }
+
+    pub fn global_config(&self) -> &GlobalConfig {
+        &self.global_config
     }
 
     // -----------------------------------------------------------------------
@@ -95,7 +99,12 @@ impl AgentRunner {
                 // without requiring the user to create a new agent.
                 let _ = install_hooks(port);
                 let runtime = self.claude.as_ref().unwrap();
-                runtime.restore(stable_agent_id, session_id.clone(), transcript_path.clone(), Some(&config.directory));
+                runtime.restore(
+                    stable_agent_id,
+                    session_id.clone(),
+                    transcript_path.clone(),
+                    Some(&config.directory),
+                );
                 Box::new(runtime.make_adapter(stable_agent_id.clone()))
             }
         }
@@ -120,7 +129,8 @@ impl AgentRunner {
             if let Some(repo_root) = git_repo_root {
                 let branch = git::sanitize_branch_name(name);
                 let repo_root_path = std::path::Path::new(repo_root);
-                let wt_path = self.worktrees_base
+                let wt_path = self
+                    .worktrees_base
                     .join(git::repo_id(repo_root_path))
                     .join(&branch);
 
@@ -200,9 +210,12 @@ impl AgentRunner {
         match &config.kind {
             AgentKind::Opencode { .. } => {
                 let session_id = config.session_id().map(str::to_owned);
-                let (new_adapter, window_index, new_port) =
-                    OpenCodeAdapter::restart(&config.directory, &config.name, session_id.as_deref())
-                        .await?;
+                let (new_adapter, window_index, new_port) = OpenCodeAdapter::restart(
+                    &config.directory,
+                    &config.name,
+                    session_id.as_deref(),
+                )
+                .await?;
                 let new_pane = format!("{}:{}.0", tmux::session_name(), window_index);
                 let mut new_config = config.clone();
                 new_config.pane = new_pane;

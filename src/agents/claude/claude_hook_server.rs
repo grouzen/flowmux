@@ -105,10 +105,7 @@ async fn hook_handler(
                 .get("transcript_path")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
-            let model_name = body
-                .get("model")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
+            let model_name = body.get("model").and_then(Value::as_str).map(str::to_owned);
 
             // Prefer session_id from the hook payload; fall back to deriving
             // it from the transcript filename (the UUID stem is the session ID
@@ -152,7 +149,8 @@ async fn hook_handler(
                     entry.first_prompt = prompt.clone();
                 }
                 // Only set status to Running if this is a real user prompt (not internal scaffolding)
-                let is_real_prompt = prompt.as_ref()
+                let is_real_prompt = prompt
+                    .as_ref()
                     .map(|p| {
                         let trimmed = p.trim_start();
                         !trimmed.is_empty() && !trimmed.starts_with('<')
@@ -188,9 +186,7 @@ async fn hook_handler(
                     .or_else(|| map.get(&agent_id)?.transcript_path.clone())
             };
 
-            let parsed = transcript_path
-                .as_deref()
-                .and_then(parse_transcript);
+            let parsed = transcript_path.as_deref().and_then(parse_transcript);
 
             let mut map = state.hook_state.lock().unwrap();
             if let Some(entry) = map.get_mut(&agent_id) {
@@ -309,7 +305,10 @@ pub fn spawn_hook_server(
     port: u16,
 ) {
     tokio::spawn(async move {
-        let state = HookServerState { hook_state, persist_tx };
+        let state = HookServerState {
+            hook_state,
+            persist_tx,
+        };
         let app = Router::new()
             .route("/hook", post(hook_handler))
             .layer(Extension(state));
@@ -347,8 +346,9 @@ pub struct TranscriptInfo {
 /// Parse `transcript_path` (JSONL) and return info from the last assistant entry.
 /// Returns `None` if the file cannot be opened or contains no assistant entries.
 pub fn parse_transcript(transcript_path: &str) -> Option<TranscriptInfo> {
-    use claude_code_transcripts::types::{AssistantContentBlock, Entry, UserContent,
-                                         UserContentBlock, UserRole};
+    use claude_code_transcripts::types::{
+        AssistantContentBlock, Entry, UserContent, UserContentBlock, UserRole,
+    };
 
     let file = std::fs::File::open(transcript_path).ok()?;
     let reader = std::io::BufReader::new(file);
@@ -457,9 +457,7 @@ pub fn parse_transcript(transcript_path: &str) -> Option<TranscriptInfo> {
     }
 
     // Accumulate time for the last (most recent) turn.
-    if let (Some(u_ts), Some(a_ts)) =
-        (current_turn_user_ts, current_turn_last_assistant_ts)
-    {
+    if let (Some(u_ts), Some(a_ts)) = (current_turn_user_ts, current_turn_last_assistant_ts) {
         let delta = a_ts.saturating_sub(u_ts).max(0) as u64;
         total_work_ms += delta;
     }

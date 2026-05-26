@@ -4,7 +4,7 @@
 //! `std::process::Command` for `git worktree add/remove` since those
 //! operations map most cleanly to the git CLI.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use git2::Repository;
 use std::path::{Path, PathBuf};
 
