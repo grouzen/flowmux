@@ -38,8 +38,7 @@ pub fn repo_id(repo_root: &Path) -> String {
 /// Convert an arbitrary agent name into a valid git branch name.
 ///
 /// Rules applied:
-/// - Lowercased
-/// - Spaces and any character not in `[a-z0-9._-]` become dashes
+/// - Spaces and any character not in `[a-zA-Z0-9._-]` become dashes
 /// - Consecutive dashes are collapsed to one
 /// - Leading/trailing dashes and dots are stripped
 /// - Empty result falls back to `"agent"`
@@ -49,9 +48,8 @@ pub fn sanitize_branch_name(name: &str) -> String {
 
     for c in name.chars() {
         if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
-            let lc = c.to_ascii_lowercase();
-            result.push(lc);
-            prev_dash = lc == '-';
+            result.push(c);
+            prev_dash = c == '-';
         } else if !prev_dash {
             result.push('-');
             prev_dash = true;
@@ -205,8 +203,9 @@ mod tests {
 
     #[test]
     fn sanitize_basic() {
-        assert_eq!(sanitize_branch_name("My Feature"), "my-feature");
+        assert_eq!(sanitize_branch_name("My Feature"), "My-Feature");
         assert_eq!(sanitize_branch_name("fix: auth bug!"), "fix-auth-bug");
+        assert_eq!(sanitize_branch_name("IDY-9999 fix bug"), "IDY-9999-fix-bug");
         assert_eq!(sanitize_branch_name("  --  "), "agent");
         assert_eq!(sanitize_branch_name("hello_world"), "hello_world");
         assert_eq!(sanitize_branch_name("v1.2.3"), "v1.2.3");
