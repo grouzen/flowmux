@@ -1038,9 +1038,10 @@ impl App {
             // potentially reset the editing mode on every poll cycle.
             if let Ok((term_cols, term_rows)) = crossterm::terminal::size() {
                 let content_height = term_rows.saturating_sub(4); // reserve top info bar + bottom status bar + border (2 rows)
-                let desired = (term_cols, content_height);
+                let content_width = term_cols.saturating_sub(2); // reserve left + right border
+                let desired = (content_width, content_height);
                 if self.agent_view_state.last_pane_size != Some(desired) {
-                    let _ = tmux::resize_window(&pane, term_cols, content_height);
+                    let _ = tmux::resize_window(&pane, content_width, content_height);
                     self.agent_view_state.last_pane_size = Some(desired);
                 }
             }
@@ -1345,9 +1346,10 @@ impl App {
 
             if let Ok((term_cols, term_rows)) = crossterm::terminal::size() {
                 let content_height = term_rows.saturating_sub(4); // reserve top info bar + bottom status bar + border (2 rows)
-                let desired = (term_cols, content_height);
+                let content_width = term_cols.saturating_sub(2); // reserve left + right border
+                let desired = (content_width, content_height);
                 if gv.last_pane_size != Some(desired) {
-                    let _ = tmux::resize_window(&pane, term_cols, content_height);
+                    let _ = tmux::resize_window(&pane, content_width, content_height);
                     gv.last_pane_size = Some(desired);
                 }
             }

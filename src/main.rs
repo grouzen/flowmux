@@ -2,6 +2,7 @@ mod agent_discovery;
 mod agents;
 mod app;
 mod config;
+mod ghostty;
 mod git;
 mod global_config;
 mod models;
