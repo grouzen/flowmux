@@ -669,8 +669,8 @@ impl App {
         let seq = format!(
             "\x1b[<{};{};{}{}",
             cb,
-            mouse.column + 1,
-            mouse.row + 1,
+            mouse.column.saturating_sub(1) + 1,
+            mouse.row.saturating_sub(2) + 1,
             suffix
         );
 
