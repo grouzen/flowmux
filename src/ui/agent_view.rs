@@ -166,37 +166,45 @@ pub fn render_agent_view(
     }
     f.render_widget(Paragraph::new(Line::from(top_spans)), top_area);
 
-    // --- Left: hotkey hints (ctrl+g dashboard, ctrl+v git, ctrl+b prefix) ---
+    // --- Left: hotkey hints (ctrl+g dashboard, [ctrl+v git], ctrl+b prefix) ---
+    let is_git =
+        crate::git::find_git_root(std::path::Path::new(&agent_entry.config.directory)).is_some();
     let ctrlg_key = " ctrl+g ";
     let ctrlb_key = " ctrl+b ";
     let ctrlv_key = " ctrl+v ";
-    let nav_width = (ctrlg_key.len()
-        + " dashboard".len()
-        + 1
-        + ctrlv_key.len()
-        + " git".len()
-        + 1
-        + ctrlb_key.len()
-        + " prefix".len()) as u16;
-    let nav_spans: Vec<Span> = vec![
+    let nav_width = if is_git {
+        (ctrlg_key.len()
+            + " dashboard".len()
+            + 1
+            + ctrlv_key.len()
+            + " git".len()
+            + 1
+            + ctrlb_key.len()
+            + " prefix".len()) as u16
+    } else {
+        (ctrlg_key.len() + " dashboard".len() + 1 + ctrlb_key.len() + " prefix".len()) as u16
+    };
+    let mut nav_spans: Vec<Span> = vec![
         Span::styled(
             ctrlg_key,
             Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
         ),
         Span::styled(" dashboard", Style::default().fg(FG)),
-        Span::raw(" "),
-        Span::styled(
+    ];
+    if is_git {
+        nav_spans.push(Span::raw(" "));
+        nav_spans.push(Span::styled(
             ctrlv_key,
             Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" git", Style::default().fg(FG)),
-        Span::raw(" "),
-        Span::styled(
-            ctrlb_key,
-            Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" prefix", Style::default().fg(FG)),
-    ];
+        ));
+        nav_spans.push(Span::styled(" git", Style::default().fg(FG)));
+    }
+    nav_spans.push(Span::raw(" "));
+    nav_spans.push(Span::styled(
+        ctrlb_key,
+        Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
+    ));
+    nav_spans.push(Span::styled(" prefix", Style::default().fg(FG)));
 
     // --- Right: PREFIX badge (conditional) + agent statuses + brand ---
     let (brand, brand_width) = brand_line(false);

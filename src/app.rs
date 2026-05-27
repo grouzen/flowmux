@@ -1141,7 +1141,12 @@ impl App {
                 self.state = AppState::Dashboard;
             }
             KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.launch_git_viewer(idx);
+                let is_git = self.agents.get(idx).is_some_and(|entry| {
+                    crate::git::find_git_root(std::path::Path::new(&entry.config.directory)).is_some()
+                });
+                if is_git {
+                    self.launch_git_viewer(idx);
+                }
             }
             KeyCode::PageUp => {
                 if let Some(entry) = self.agents.get(idx) {
