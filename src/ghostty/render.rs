@@ -5,7 +5,7 @@ use ratatui::Frame;
 
 use super::{
     ghostty_blank_symbol_for_width, ghostty_buffer_symbol_into, ghostty_cell_style, ghostty_color,
-    ghostty_reset_cell, CellWide, RenderState, RowCells, RowIterator, Terminal,
+    CellWide, RenderState, RowCells, RowIterator, Terminal,
 };
 
 use crate::ui::theme::GRAY;
@@ -28,6 +28,18 @@ pub fn render_pane_content(
         return;
     }
 
+    let base_style =
+        extract_first_bg_color(ansi_bytes).map_or(Style::default(), |c| Style::default().bg(c));
+    {
+        let buf = frame.buffer_mut();
+        for y in 0..inner.height {
+            for x in 0..inner.width {
+                let cell = &mut buf[(inner.x + x, inner.y + y)];
+                cell.set_style(base_style);
+            }
+        }
+    }
+
     let mut terminal = match Terminal::new(inner.width, inner.height, 0) {
         Ok(t) => t,
         Err(_) => return,
@@ -43,9 +55,7 @@ pub fn render_pane_content(
     }
 
     let colors = render_state.colors().ok();
-    let default_fg = colors.map(|c| ghostty_color(c.foreground));
-    let default_bg = colors.map(|c| ghostty_color(c.background));
-    let resolved_bg = default_bg;
+    let resolved_bg = colors.map(|c| ghostty_color(c.background));
 
     let mut row_iterator = match RowIterator::new() {
         Ok(it) => it,
@@ -73,7 +83,7 @@ pub fn render_pane_content(
             let mut x = 0u16;
             while x < inner.width && cells.next() {
                 let wide = cells.wide().unwrap_or(CellWide::Narrow);
-                let style = ghostty_cell_style(&cells, default_fg, default_bg, resolved_bg);
+                let style = ghostty_cell_style(&cells, None, None, resolved_bg);
                 let symbol = match ghostty_buffer_symbol_into(
                     &cells,
                     wide,
@@ -93,18 +103,6 @@ pub fn render_pane_content(
                 cell.set_style(style);
                 x += 1;
             }
-            while x < inner.width {
-                let cell = &mut buf[(inner.x + x, inner.y + y)];
-                ghostty_reset_cell(cell, default_fg, default_bg);
-                x += 1;
-            }
-            y += 1;
-        }
-        while y < inner.height {
-            for x in 0..inner.width {
-                let cell = &mut buf[(inner.x + x, inner.y + y)];
-                ghostty_reset_cell(cell, default_fg, default_bg);
-            }
             y += 1;
         }
     }
@@ -114,4 +112,58 @@ pub fn render_pane_content(
             frame.set_cursor_position((inner.x + cx, inner.y + cy));
         }
     }
+}
+
+fn extract_first_bg_color(ansi: &[u8]) -> Option<ratatui::style::Color> {
+    use ratatui::style::Color;
+    let mut i = 0;
+    while i < ansi.len() {
+        if ansi[i] != 0x1b {
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if i >= ansi.len() || ansi[i] != b'[' {
+            continue;
+        }
+        i += 1;
+        let start = i;
+        while i < ansi.len() && ansi[i] != b'm' && ansi[i] != 0x1b {
+            i += 1;
+        }
+        if i >= ansi.len() || ansi[i] != b'm' {
+            continue;
+        }
+        let params_bytes = &ansi[start..i];
+        i += 1;
+
+        let Ok(params_str) = std::str::from_utf8(params_bytes) else {
+            continue;
+        };
+        let nums: Vec<u32> = params_str
+            .split(';')
+            .filter_map(|s| s.parse().ok())
+            .collect();
+
+        let mut j = 0;
+        while j < nums.len() {
+            match nums[j] {
+                48 if j + 4 < nums.len() && nums[j + 1] == 2 => {
+                    return Some(Color::Rgb(
+                        nums[j + 2] as u8,
+                        nums[j + 3] as u8,
+                        nums[j + 4] as u8,
+                    ));
+                }
+                48 if j + 2 < nums.len() && nums[j + 1] == 5 => {
+                    return Some(Color::Indexed(nums[j + 2] as u8));
+                }
+                n @ 40..=47 => return Some(Color::Indexed((n - 40) as u8)),
+                n @ 100..=107 => return Some(Color::Indexed((n - 100 + 8) as u8)),
+                _ => {}
+            }
+            j += 1;
+        }
+    }
+    None
 }
