@@ -95,6 +95,7 @@ pub enum Event {
     DashboardTick,
     AgentViewTick,
     GitViewerTick,
+    HostDefaultColor(crate::terminal_theme::DefaultColorKind, crate::terminal_theme::RgbColor),
 }
 
 // ---------------------------------------------------------------------------
@@ -348,6 +349,8 @@ pub struct App {
     /// Used together with Paragraph::line_count to compute the true
     /// wrapped line count for accurate max-scroll calculation.
     pub card_response_widths: Vec<u16>,
+    /// Host terminal theme (detected via OSC 10/11 queries).
+    pub host_terminal_theme: crate::terminal_theme::TerminalTheme,
 }
 
 impl App {
@@ -375,11 +378,74 @@ impl App {
             card_scroll: vec![0u16; card_count],
             card_response_heights: vec![0u16; card_count],
             card_response_widths: vec![0u16; card_count],
+            host_terminal_theme: crate::terminal_theme::TerminalTheme::default(),
         }
     }
 
     /// Spawn background tasks (crossterm events, dashboard ticker, agent view ticker).
     pub fn spawn_tasks(&self) {
+        // Query host terminal for default colors via OSC 10/11
+        use std::io::Write;
+        let mut stdout = std::io::stdout().lock();
+        let _ = stdout.write_all(crate::terminal_theme::HOST_COLOR_QUERY_SEQUENCE.as_bytes());
+        let _ = stdout.flush();
+        drop(stdout);
+
+        // Raw stdin reader for OSC response parsing (temporary - only during startup)
+        // Crossterm's EventStream may consume OSC sequences before we can see them,
+        // so we spawn a short-lived raw reader that parses OSC 10/11 responses,
+        // then exits to let crossterm handle all input normally.
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut stdin = std::io::stdin().lock();
+            let mut buffer = [0u8; 1024];
+            let mut osc_buffer = String::new();
+            let mut in_osc = false;
+            let mut responses_found = 0;
+            let start = std::time::Instant::now();
+
+            loop {
+                // Exit after finding both OSC responses or after 100ms timeout
+                if responses_found >= 2 || start.elapsed() > std::time::Duration::from_millis(100) {
+                    break;
+                }
+
+                match stdin.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        for &byte in &buffer[..n] {
+                            if !in_osc {
+                                if byte == 0x1b {
+                                    in_osc = true;
+                                    osc_buffer.clear();
+                                    osc_buffer.push(byte as char);
+                                }
+                            } else {
+                                osc_buffer.push(byte as char);
+                                // OSC sequences end with ST (ESC \) or BEL (0x07)
+                                if byte == 0x07 || (osc_buffer.ends_with("\x1b\\") && osc_buffer.len() > 2) {
+                                    // Try to parse as OSC 10/11 response
+                                    if let Some((kind, color)) = crate::terminal_theme::parse_default_color_response(&osc_buffer) {
+                                        let _ = tx.send(Event::HostDefaultColor(kind, color));
+                                        responses_found += 1;
+                                    }
+                                    in_osc = false;
+                                    osc_buffer.clear();
+                                }
+                                // Reset if we've accumulated too much without finding a terminator
+                                if osc_buffer.len() > 64 {
+                                    in_osc = false;
+                                    osc_buffer.clear();
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
         // Crossterm event reader
         let tx = self.tx.clone();
         tokio::spawn(async move {
@@ -468,6 +534,11 @@ impl App {
             }
             Event::GitViewerTick => {
                 self.handle_git_viewer_tick().await;
+                true
+            }
+            Event::HostDefaultColor(kind, color) => {
+                self.host_terminal_theme = self.host_terminal_theme.with_color(kind, color);
+                self.dirty = true;
                 true
             }
         }

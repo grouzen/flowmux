@@ -8,6 +8,7 @@ use ratatui::{
 
 use crate::app::AgentViewState;
 use crate::models::{AgentEntry, AgentStatus};
+use crate::terminal_theme::TerminalTheme;
 use crate::ui::theme::*;
 
 pub fn render_agent_view(
@@ -16,6 +17,7 @@ pub fn render_agent_view(
     state: &AgentViewState,
     agent_entry: &AgentEntry,
     agents: &[AgentEntry],
+    host_theme: TerminalTheme,
 ) {
     // Split into top info bar, content area, and bottom status bar
     let chunks = Layout::default()
@@ -68,7 +70,7 @@ pub fn render_agent_view(
         f,
         content_area,
         cursor_position,
-        None,
+        host_theme,
     );
 
     // Status bar

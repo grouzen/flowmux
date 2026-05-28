@@ -95,8 +95,17 @@ impl From<ffi::GhosttyColorRgb> for RgbColor {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellColor {
+    Palette(u8),
+    Rgb(RgbColor),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CellStyle {
+    pub fg_color: Option<CellColor>,
+    pub bg_color: Option<CellColor>,
+    pub underline_color: Option<CellColor>,
     pub bold: bool,
     pub italic: bool,
     pub faint: bool,
@@ -111,6 +120,9 @@ pub struct CellStyle {
 impl From<ffi::GhosttyStyle> for CellStyle {
     fn from(value: ffi::GhosttyStyle) -> Self {
         Self {
+            fg_color: cell_color_from_style_color(value.fg_color),
+            bg_color: cell_color_from_style_color(value.bg_color),
+            underline_color: cell_color_from_style_color(value.underline_color),
             bold: value.bold,
             italic: value.italic,
             faint: value.faint,
@@ -121,6 +133,18 @@ impl From<ffi::GhosttyStyle> for CellStyle {
             overline: value.overline,
             underlined: value.underline != 0,
         }
+    }
+}
+
+fn cell_color_from_style_color(color: ffi::GhosttyStyleColor) -> Option<CellColor> {
+    match color.tag {
+        ffi::GhosttyStyleColorTag_GHOSTTY_STYLE_COLOR_PALETTE => {
+            Some(CellColor::Palette(unsafe { color.value.palette }))
+        }
+        ffi::GhosttyStyleColorTag_GHOSTTY_STYLE_COLOR_RGB => {
+            Some(CellColor::Rgb(unsafe { color.value.rgb }.into()))
+        }
+        _ => None,
     }
 }
 
@@ -482,6 +506,47 @@ impl<'a> RowCellIter<'a> {
         Ok(style.into())
     }
 
+    pub fn content_bg_color(&self) -> Result<Option<CellColor>, Error> {
+        let raw = self.raw_cell()?;
+        let mut tag = ffi::GhosttyCellContentTag_GHOSTTY_CELL_CONTENT_CODEPOINT;
+        unsafe {
+            ffi::ghostty_cell_get(
+                raw,
+                ffi::GhosttyCellData_GHOSTTY_CELL_DATA_CONTENT_TAG,
+                (&mut tag as *mut ffi::GhosttyCellContentTag).cast(),
+            )
+            .into_result()?;
+        }
+
+        match tag {
+            ffi::GhosttyCellContentTag_GHOSTTY_CELL_CONTENT_BG_COLOR_PALETTE => {
+                let mut index = 0u8;
+                unsafe {
+                    ffi::ghostty_cell_get(
+                        raw,
+                        ffi::GhosttyCellData_GHOSTTY_CELL_DATA_COLOR_PALETTE,
+                        (&mut index as *mut u8).cast(),
+                    )
+                    .into_result()?;
+                }
+                Ok(Some(CellColor::Palette(index)))
+            }
+            ffi::GhosttyCellContentTag_GHOSTTY_CELL_CONTENT_BG_COLOR_RGB => {
+                let mut color = ffi::GhosttyColorRgb::default();
+                unsafe {
+                    ffi::ghostty_cell_get(
+                        raw,
+                        ffi::GhosttyCellData_GHOSTTY_CELL_DATA_COLOR_RGB,
+                        (&mut color as *mut ffi::GhosttyColorRgb).cast(),
+                    )
+                    .into_result()?;
+                }
+                Ok(Some(CellColor::Rgb(color.into())))
+            }
+            _ => Ok(None),
+        }
+    }
+
     pub fn fg_color(&self) -> Result<Option<RgbColor>, Error> {
         let mut color = ffi::GhosttyColorRgb::default();
         let result = unsafe {
@@ -612,27 +677,41 @@ pub fn ghostty_reset_cell(
     }
 }
 
+fn ghostty_cell_color(color: CellColor) -> ratatui::style::Color {
+    match color {
+        CellColor::Palette(index) => ratatui::style::Color::Indexed(index),
+        CellColor::Rgb(rgb) => ghostty_color(rgb),
+    }
+}
+
 pub fn ghostty_cell_style(
     cells: &RowCellIter<'_>,
     default_fg: Option<ratatui::style::Color>,
     default_bg: Option<ratatui::style::Color>,
+    resolved_fg: Option<ratatui::style::Color>,
     resolved_bg: Option<ratatui::style::Color>,
 ) -> ratatui::style::Style {
     use ratatui::style::{Modifier, Style};
 
     let style_data = cells.style().unwrap_or_default();
-    let mut fg = cells
-        .fg_color()
-        .ok()
-        .flatten()
-        .map(ghostty_color)
+
+    // 3-tier foreground resolution: style_data.fg_color → cells.fg_color() → default_fg
+    let mut fg = style_data
+        .fg_color
+        .map(ghostty_cell_color)
+        .or_else(|| cells.fg_color().ok().flatten().map(ghostty_color))
         .or(default_fg);
+
+    // 4-tier background resolution: content_bg_color → style_data.bg_color → cells.bg_color() → default_bg
     let mut bg = cells
-        .bg_color()
+        .content_bg_color()
         .ok()
         .flatten()
-        .map(ghostty_color)
+        .or(style_data.bg_color)
+        .map(ghostty_cell_color)
+        .or_else(|| cells.bg_color().ok().flatten().map(ghostty_color))
         .or(default_bg);
+
     if style_data.invisible {
         fg = bg.or(default_bg);
     }
@@ -641,7 +720,7 @@ pub fn ghostty_cell_style(
             bg = resolved_bg;
         }
         if fg.is_none() {
-            fg = default_fg;
+            fg = resolved_fg;
         }
         std::mem::swap(&mut fg, &mut bg);
     }
@@ -678,4 +757,48 @@ pub fn ghostty_cell_style(
 
 pub fn ghostty_color(color: RgbColor) -> ratatui::style::Color {
     ratatui::style::Color::Rgb(color.r, color.g, color.b)
+}
+
+fn terminal_theme_color(color: RgbColor) -> crate::terminal_theme::RgbColor {
+    crate::terminal_theme::RgbColor {
+        r: color.r,
+        g: color.g,
+        b: color.b,
+    }
+}
+
+pub fn ghostty_default_fg(
+    color: RgbColor,
+    host_theme: crate::terminal_theme::TerminalTheme,
+    initial_default_foreground: Option<RgbColor>,
+) -> Option<ratatui::style::Color> {
+    if let Some(host_foreground) = host_theme.foreground {
+        if host_foreground == terminal_theme_color(color) {
+            None
+        } else {
+            Some(ghostty_color(color))
+        }
+    } else if initial_default_foreground.is_some_and(|initial| initial != color) {
+        Some(ghostty_color(color))
+    } else {
+        None
+    }
+}
+
+pub fn ghostty_default_bg(
+    color: RgbColor,
+    host_theme: crate::terminal_theme::TerminalTheme,
+    initial_default_background: Option<RgbColor>,
+) -> Option<ratatui::style::Color> {
+    if let Some(host_background) = host_theme.background {
+        if host_background == terminal_theme_color(color) {
+            None
+        } else {
+            Some(ghostty_color(color))
+        }
+    } else if initial_default_background.is_some_and(|initial| initial != color) {
+        Some(ghostty_color(color))
+    } else {
+        None
+    }
 }

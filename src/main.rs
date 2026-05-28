@@ -7,6 +7,7 @@ mod git;
 mod global_config;
 mod models;
 mod runner;
+mod terminal_theme;
 mod tmux;
 mod tui;
 mod ui;
@@ -180,6 +181,7 @@ async fn main() -> Result<()> {
                                     &app.agent_view_state,
                                     entry,
                                     &app.agents,
+                                    app.host_terminal_theme,
                                 );
                             }
                         }
@@ -227,7 +229,7 @@ async fn main() -> Result<()> {
                         }
                         app::AppState::GitViewer(gv) => {
                             if let Some(entry) = app.agents.get(gv.agent_idx) {
-                                ui::git_viewer::render_git_viewer(f, area, gv, entry, &app.agents);
+                                ui::git_viewer::render_git_viewer(f, area, gv, entry, &app.agents, app.host_terminal_theme);
                             }
                         }
                     }

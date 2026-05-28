@@ -8,6 +8,7 @@ use ratatui::{
 
 use crate::app::GitViewerState;
 use crate::models::{AgentEntry, AgentStatus};
+use crate::terminal_theme::TerminalTheme;
 use crate::ui::theme::*;
 
 pub fn render_git_viewer(
@@ -16,6 +17,7 @@ pub fn render_git_viewer(
     state: &GitViewerState,
     agent_entry: &AgentEntry,
     agents: &[AgentEntry],
+    host_theme: TerminalTheme,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -37,7 +39,7 @@ pub fn render_git_viewer(
         f,
         content_area,
         state.cursor,
-        Some(BG),
+        host_theme,
     );
 
     let dir_str = super::dashboard::shellify_dir(&agent_entry.config.directory);
