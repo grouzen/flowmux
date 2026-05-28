@@ -37,6 +37,7 @@ pub fn render_git_viewer(
         f,
         content_area,
         state.cursor,
+        Some(BG),
     );
 
     let dir_str = super::dashboard::shellify_dir(&agent_entry.config.directory);

@@ -1,5 +1,5 @@
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, BorderType, Borders};
 use ratatui::Frame;
 
@@ -15,6 +15,7 @@ pub fn render_pane_content(
     frame: &mut Frame,
     area: Rect,
     cursor: Option<(u16, u16)>,
+    theme_bg: Option<Color>,
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -28,8 +29,13 @@ pub fn render_pane_content(
         return;
     }
 
-    let base_style =
-        extract_first_bg_color(ansi_bytes).map_or(Style::default(), |c| Style::default().bg(c));
+    // Determine the background color to use:
+    // - If theme_bg is provided (git view, editor), use it
+    // - Otherwise (agent view), extract the first explicit bg from ANSI (the app's theme)
+    let bg_color = theme_bg.or_else(|| extract_first_bg_color(ansi_bytes));
+
+    // Pre-fill ratatui buffer with the background color for cells ghostty doesn't touch
+    let base_style = bg_color.map_or(Style::default(), |c| Style::default().bg(c));
     {
         let buf = frame.buffer_mut();
         for y in 0..inner.height {
@@ -44,6 +50,14 @@ pub fn render_pane_content(
         Ok(t) => t,
         Err(_) => return,
     };
+
+    // Inject the background color via OSC 11 so ghostty uses it as the default
+    // This ensures cells without explicit backgrounds use the correct theme color
+    if let Some(Color::Rgb(r, g, b)) = bg_color {
+        let osc_bg = format!("\x1b]11;rgb:{:02x}/{:02x}/{:02x}\x1b\\", r, g, b);
+        terminal.write(osc_bg.as_bytes());
+    }
+
     terminal.write(ansi_bytes);
 
     let mut render_state = match RenderState::new() {
@@ -114,55 +128,69 @@ pub fn render_pane_content(
     }
 }
 
-fn extract_first_bg_color(ansi: &[u8]) -> Option<ratatui::style::Color> {
-    use ratatui::style::Color;
+/// Extract the first explicit background color from ANSI escape sequences.
+/// This is typically the embedded app's theme background color.
+fn extract_first_bg_color(ansi_bytes: &[u8]) -> Option<Color> {
     let mut i = 0;
-    while i < ansi.len() {
-        if ansi[i] != 0x1b {
-            i += 1;
-            continue;
-        }
-        i += 1;
-        if i >= ansi.len() || ansi[i] != b'[' {
-            continue;
-        }
-        i += 1;
-        let start = i;
-        while i < ansi.len() && ansi[i] != b'm' && ansi[i] != 0x1b {
-            i += 1;
-        }
-        if i >= ansi.len() || ansi[i] != b'm' {
-            continue;
-        }
-        let params_bytes = &ansi[start..i];
-        i += 1;
+    while i < ansi_bytes.len() {
+        if ansi_bytes[i] == 0x1b && i + 1 < ansi_bytes.len() && ansi_bytes[i + 1] == b'[' {
+            let mut j = i + 2;
+            let mut params = Vec::new();
+            let mut current_param = String::new();
 
-        let Ok(params_str) = std::str::from_utf8(params_bytes) else {
-            continue;
-        };
-        let nums: Vec<u32> = params_str
-            .split(';')
-            .filter_map(|s| s.parse().ok())
-            .collect();
-
-        let mut j = 0;
-        while j < nums.len() {
-            match nums[j] {
-                48 if j + 4 < nums.len() && nums[j + 1] == 2 => {
-                    return Some(Color::Rgb(
-                        nums[j + 2] as u8,
-                        nums[j + 3] as u8,
-                        nums[j + 4] as u8,
-                    ));
+            while j < ansi_bytes.len() && ansi_bytes[j] != b'm' {
+                if ansi_bytes[j] == b';' {
+                    if !current_param.is_empty() {
+                        if let Ok(n) = current_param.parse::<u32>() {
+                            params.push(n);
+                        }
+                    }
+                    current_param.clear();
+                } else if ansi_bytes[j].is_ascii_digit() {
+                    current_param.push(ansi_bytes[j] as char);
                 }
-                48 if j + 2 < nums.len() && nums[j + 1] == 5 => {
-                    return Some(Color::Indexed(nums[j + 2] as u8));
-                }
-                n @ 40..=47 => return Some(Color::Indexed((n - 40) as u8)),
-                n @ 100..=107 => return Some(Color::Indexed((n - 100 + 8) as u8)),
-                _ => {}
+                j += 1;
             }
-            j += 1;
+
+            if !current_param.is_empty() {
+                if let Ok(n) = current_param.parse::<u32>() {
+                    params.push(n);
+                }
+            }
+
+            // Look for background color parameters
+            for k in 0..params.len() {
+                match params[k] {
+                    48 if k + 4 < params.len() && params[k + 1] == 2 => {
+                        // 48;2;r;g;b - RGB background
+                        let r = params[k + 2] as u8;
+                        let g = params[k + 3] as u8;
+                        let b = params[k + 4] as u8;
+                        return Some(Color::Rgb(r, g, b));
+                    }
+                    40..=47 => {
+                        // Standard background colors (40-47)
+                        // Map to common Gruvbox-like colors
+                        let color = match params[k] {
+                            40 => Color::Rgb(40, 40, 40),    // Black -> BG
+                            41 => Color::Rgb(204, 36, 29),   // Red
+                            42 => Color::Rgb(152, 151, 26),  // Green
+                            43 => Color::Rgb(215, 153, 33),  // Yellow
+                            44 => Color::Rgb(69, 133, 136),  // Blue
+                            45 => Color::Rgb(177, 98, 134),  // Magenta
+                            46 => Color::Rgb(104, 157, 106), // Cyan
+                            47 => Color::Rgb(146, 131, 116), // White -> GRAY
+                            _ => Color::Rgb(40, 40, 40),
+                        };
+                        return Some(color);
+                    }
+                    _ => {}
+                }
+            }
+
+            i = j + 1;
+        } else {
+            i += 1;
         }
     }
     None

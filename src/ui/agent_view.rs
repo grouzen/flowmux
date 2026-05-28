@@ -68,6 +68,7 @@ pub fn render_agent_view(
         f,
         content_area,
         cursor_position,
+        None,
     );
 
     // Status bar
