@@ -172,6 +172,7 @@ pub fn render_agent_view(
     let ctrlg_key = " ctrl+g ";
     let ctrlb_key = " ctrl+b ";
     let ctrlv_key = " ctrl+v ";
+    let ctrlt_key = " ctrl+t ";
     let nav_width = if is_git {
         (ctrlg_key.len()
             + " dashboard".len()
@@ -179,10 +180,20 @@ pub fn render_agent_view(
             + ctrlv_key.len()
             + " git".len()
             + 1
+            + ctrlt_key.len()
+            + " terminal".len()
+            + 1
             + ctrlb_key.len()
             + " prefix".len()) as u16
     } else {
-        (ctrlg_key.len() + " dashboard".len() + 1 + ctrlb_key.len() + " prefix".len()) as u16
+        (ctrlg_key.len()
+            + " dashboard".len()
+            + 1
+            + ctrlt_key.len()
+            + " terminal".len()
+            + 1
+            + ctrlb_key.len()
+            + " prefix".len()) as u16
     };
     let mut nav_spans: Vec<Span> = vec![
         Span::styled(
@@ -199,6 +210,12 @@ pub fn render_agent_view(
         ));
         nav_spans.push(Span::styled(" git", Style::default().fg(FG)));
     }
+    nav_spans.push(Span::raw(" "));
+    nav_spans.push(Span::styled(
+        ctrlt_key,
+        Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
+    ));
+    nav_spans.push(Span::styled(" terminal", Style::default().fg(FG)));
     nav_spans.push(Span::raw(" "));
     nav_spans.push(Span::styled(
         ctrlb_key,

@@ -229,6 +229,13 @@ async fn main() -> Result<()> {
                                 ui::git_viewer::render_git_viewer(f, area, gv, entry, &app.agents);
                             }
                         }
+                        app::AppState::TerminalView(tv) => {
+                            if let Some(entry) = app.agents.get(tv.agent_idx) {
+                                ui::terminal_view::render_terminal_view(
+                                    f, area, tv, entry, &app.agents,
+                                );
+                            }
+                        }
                     }
                 })?;
             }

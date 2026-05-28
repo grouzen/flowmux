@@ -45,6 +45,58 @@ pub struct GitViewerState {
     prev_raw: String,
 }
 
+/// State for the persistent terminal view.
+#[derive(Debug, Clone)]
+pub struct TerminalViewState {
+    /// Index of the agent we came from (to return to on exit).
+    pub agent_idx: usize,
+    /// tmux pane target (e.g. "stable:5.0").
+    pub pane: String,
+    /// Captured pane output lines.
+    pub lines: Vec<String>,
+    /// Cursor position within the pane's visible screen (col, row).
+    pub cursor: Option<(u16, u16)>,
+    /// Last dimensions sent to tmux resize-window (width, height).
+    pub last_pane_size: Option<(u16, u16)>,
+    /// Whether the process currently running in the pane has enabled mouse reporting.
+    pub pane_mouse_active: bool,
+    /// When true, the next keypress will be forwarded directly to the tmux pane.
+    pub prefix_active: bool,
+    /// Byte length of the last captured raw string (for change detection).
+    prev_raw_len: usize,
+    /// Last raw capture for byte-exact change detection.
+    prev_raw: String,
+}
+
+impl TerminalViewState {
+    pub fn new(agent_idx: usize, pane: String) -> Self {
+        Self {
+            agent_idx,
+            pane,
+            lines: Vec::new(),
+            cursor: None,
+            last_pane_size: None,
+            pane_mouse_active: false,
+            prefix_active: false,
+            prev_raw_len: 0,
+            prev_raw: String::new(),
+        }
+    }
+
+    pub fn update_lines(&mut self, raw: &str) -> bool {
+        if raw.len() == self.prev_raw_len && raw == self.prev_raw {
+            return false;
+        }
+        self.prev_raw_len = raw.len();
+        self.prev_raw = raw.to_owned();
+
+        let all_lines = raw.trim_end_matches('\n').split('\n');
+        let new_lines: Vec<String> = all_lines.map(|s| s.to_string()).collect();
+        self.lines = new_lines;
+        true
+    }
+}
+
 impl GitViewerState {
     pub fn new(agent_idx: usize, pane: String) -> Self {
         Self {
@@ -81,6 +133,7 @@ pub enum AppState {
     AgentView(usize),
     RemoveAgentDialog(RemoveAgentState),
     GitViewer(GitViewerState),
+    TerminalView(TerminalViewState),
 }
 
 // ---------------------------------------------------------------------------
@@ -95,6 +148,7 @@ pub enum Event {
     DashboardTick,
     AgentViewTick,
     GitViewerTick,
+    TerminalViewTick,
 }
 
 // ---------------------------------------------------------------------------
@@ -333,6 +387,8 @@ pub struct App {
     pub runner: AgentRunner,
     pub agent_view_state: AgentViewState,
     pub git_viewer_state: Option<GitViewerState>,
+    pub terminal_view_state: Option<TerminalViewState>,
+    pub terminal_panes: std::collections::HashMap<usize, String>,
     pub create_state: CreateAgentState,
     pub tx: UnboundedSender<Event>,
     pub rx: UnboundedReceiver<Event>,
@@ -368,6 +424,8 @@ impl App {
             runner,
             agent_view_state: AgentViewState::default(),
             git_viewer_state: None,
+            terminal_view_state: None,
+            terminal_panes: std::collections::HashMap::new(),
             create_state: CreateAgentState::default(),
             tx,
             rx,
@@ -432,6 +490,16 @@ impl App {
                 let _ = tx.send(Event::GitViewerTick);
             }
         });
+
+        // TerminalView ticker — 50 ms
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let mut ticker = interval(Duration::from_millis(50));
+            loop {
+                ticker.tick().await;
+                let _ = tx.send(Event::TerminalViewTick);
+            }
+        });
     }
 
     // -----------------------------------------------------------------------
@@ -468,6 +536,10 @@ impl App {
             }
             Event::GitViewerTick => {
                 self.handle_git_viewer_tick().await;
+                true
+            }
+            Event::TerminalViewTick => {
+                self.handle_terminal_view_tick().await;
                 true
             }
         }
@@ -563,6 +635,11 @@ impl App {
             AppState::GitViewer(gv) => {
                 let pane = gv.pane.clone();
                 let mouse_active = gv.pane_mouse_active;
+                self.handle_pane_mouse_generic(mouse, &pane, mouse_active, false);
+            }
+            AppState::TerminalView(tv) => {
+                let pane = tv.pane.clone();
+                let mouse_active = tv.pane_mouse_active;
                 self.handle_pane_mouse_generic(mouse, &pane, mouse_active, false);
             }
             _ => {}
@@ -725,6 +802,7 @@ impl App {
                 self.handle_remove_key(key, state)
             }
             AppState::GitViewer(_) => self.handle_git_viewer_key(key),
+            AppState::TerminalView(_) => self.handle_terminal_view_key(key),
         }
     }
 
@@ -1148,6 +1226,9 @@ impl App {
                     self.launch_git_viewer(idx);
                 }
             }
+            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.launch_terminal(idx);
+            }
             KeyCode::PageUp => {
                 if let Some(entry) = self.agents.get(idx) {
                     if matches!(entry.config.kind, AgentKind::Claude { .. }) {
@@ -1354,6 +1435,152 @@ impl App {
                 if gv.last_pane_size != Some(desired) {
                     let _ = tmux::resize_window(&pane, term_cols, content_height);
                     gv.last_pane_size = Some(desired);
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Terminal View
+    // -----------------------------------------------------------------------
+
+    fn launch_terminal(&mut self, agent_idx: usize) {
+        let directory = match self.agents.get(agent_idx) {
+            Some(entry) => entry.config.directory.clone(),
+            None => return,
+        };
+
+        if let Some(existing_pane) = self.terminal_panes.get(&agent_idx) {
+            if tmux::is_alive(existing_pane) {
+                let pane = existing_pane.clone();
+                self.terminal_view_state = Some(TerminalViewState::new(agent_idx, pane));
+                self.state = AppState::TerminalView(self.terminal_view_state.clone().unwrap());
+                self.dirty = true;
+                return;
+            } else {
+                self.terminal_panes.remove(&agent_idx);
+            }
+        }
+
+        let window_index = match tmux::new_window(&directory, "terminal") {
+            Ok(idx) => idx,
+            Err(_) => return,
+        };
+
+        let pane = format!("{}:{}.0", tmux::session_name(), window_index);
+
+        self.terminal_panes.insert(agent_idx, pane.clone());
+        self.terminal_view_state = Some(TerminalViewState::new(agent_idx, pane));
+        self.state = AppState::TerminalView(self.terminal_view_state.clone().unwrap());
+        self.dirty = true;
+    }
+
+    fn handle_terminal_view_key(&mut self, key: KeyEvent) -> bool {
+        let pane = match &self.state {
+            AppState::TerminalView(tv) => tv.pane.clone(),
+            _ => return true,
+        };
+
+        let prefix_active = match &self.state {
+            AppState::TerminalView(tv) => tv.prefix_active,
+            _ => false,
+        };
+
+        if prefix_active {
+            if let AppState::TerminalView(ref mut tv) = self.state {
+                tv.prefix_active = false;
+            }
+            self.dirty = true;
+            let keys = key_event_to_tmux(&key);
+            if !keys.is_empty() {
+                let _ = tmux::send_keys(&pane, &keys);
+            }
+            return true;
+        }
+
+        match key.code {
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let AppState::TerminalView(ref mut tv) = self.state {
+                    tv.prefix_active = true;
+                }
+                self.dirty = true;
+            }
+            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.exit_terminal_to_agent();
+            }
+            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.exit_terminal_to_dashboard();
+            }
+            _ => {
+                let keys = key_event_to_tmux(&key);
+                if !keys.is_empty() {
+                    let _ = tmux::send_keys(&pane, &keys);
+                }
+            }
+        }
+        true
+    }
+
+    fn exit_terminal_to_agent(&mut self) {
+        let agent_idx = match &self.state {
+            AppState::TerminalView(tv) => tv.agent_idx,
+            _ => return,
+        };
+
+        self.agent_view_state = AgentViewState::default();
+        self.state = AppState::AgentView(agent_idx);
+        self.terminal_view_state = None;
+        self.dirty = true;
+    }
+
+    fn exit_terminal_to_dashboard(&mut self) {
+        self.state = AppState::Dashboard;
+        self.terminal_view_state = None;
+        self.dirty = true;
+    }
+
+    async fn handle_terminal_view_tick(&mut self) {
+        let pane = match &self.state {
+            AppState::TerminalView(tv) => tv.pane.clone(),
+            _ => return,
+        };
+
+        if !tmux::is_alive(&pane) {
+            let agent_idx = match &self.state {
+                AppState::TerminalView(tv) => tv.agent_idx,
+                _ => return,
+            };
+            self.terminal_panes.remove(&agent_idx);
+            self.exit_terminal_to_agent();
+            return;
+        }
+
+        if let Ok(raw) = tmux::capture_pane(&pane) {
+            let changed = if let AppState::TerminalView(ref mut tv) = self.state {
+                tv.update_lines(&raw)
+            } else {
+                false
+            };
+            if changed {
+                self.dirty = true;
+            }
+        }
+
+        let new_cursor = tmux::cursor_position(&pane);
+        if let AppState::TerminalView(ref mut tv) = self.state {
+            if new_cursor != tv.cursor {
+                tv.cursor = new_cursor;
+                self.dirty = true;
+            }
+
+            tv.pane_mouse_active = tmux::pane_mouse_active(&pane);
+
+            if let Ok((term_cols, term_rows)) = crossterm::terminal::size() {
+                let content_height = term_rows.saturating_sub(4);
+                let desired = (term_cols, content_height);
+                if tv.last_pane_size != Some(desired) {
+                    let _ = tmux::resize_window(&pane, term_cols, content_height);
+                    tv.last_pane_size = Some(desired);
                 }
             }
         }
