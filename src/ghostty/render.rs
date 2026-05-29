@@ -1,5 +1,5 @@
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, BorderType, Borders};
 use ratatui::Frame;
 
@@ -10,7 +10,7 @@ use super::{
 };
 
 use crate::terminal_theme::TerminalTheme;
-use crate::ui::theme::GRAY;
+use crate::ui::theme::{BG, GRAY};
 
 pub fn render_pane_content(
     ansi_bytes: &[u8],
@@ -29,6 +29,20 @@ pub fn render_pane_content(
 
     if inner.width == 0 || inner.height == 0 {
         return;
+    }
+
+    // Detect the embedded app's theme background from ANSI, then pre-fill with stable's BG.
+    // Cells whose resolved bg matches the app's theme become transparent, showing stable's BG.
+    let app_theme_bg = extract_first_bg_color(ansi_bytes);
+    let base_style = Style::default().bg(BG);
+    {
+        let buf = frame.buffer_mut();
+        for y in 0..inner.height {
+            for x in 0..inner.width {
+                let cell = &mut buf[(inner.x + x, inner.y + y)];
+                cell.set_style(base_style);
+            }
+        }
     }
 
     let mut terminal = match Terminal::new(inner.width, inner.height, 0) {
@@ -78,8 +92,14 @@ pub fn render_pane_content(
             let mut x = 0u16;
             while x < inner.width && cells.next() {
                 let wide = cells.wide().unwrap_or(CellWide::Narrow);
-                let style =
-                    ghostty_cell_style(&cells, default_fg, default_bg, resolved_fg, resolved_bg);
+                let style = ghostty_cell_style(
+                    &cells,
+                    default_fg,
+                    default_bg,
+                    resolved_fg,
+                    resolved_bg,
+                    app_theme_bg,
+                );
                 let symbol = match ghostty_buffer_symbol_into(
                     &cells,
                     wide,
@@ -120,4 +140,72 @@ pub fn render_pane_content(
             frame.set_cursor_position((inner.x + cx, inner.y + cy));
         }
     }
+}
+
+/// Extract the first explicit background color from ANSI escape sequences.
+/// This is typically the embedded app's theme background color.
+fn extract_first_bg_color(ansi_bytes: &[u8]) -> Option<Color> {
+    let mut i = 0;
+    while i < ansi_bytes.len() {
+        if ansi_bytes[i] == 0x1b && i + 1 < ansi_bytes.len() && ansi_bytes[i + 1] == b'[' {
+            let mut j = i + 2;
+            let mut params = Vec::new();
+            let mut current_param = String::new();
+
+            while j < ansi_bytes.len() && ansi_bytes[j] != b'm' {
+                if ansi_bytes[j] == b';' {
+                    if !current_param.is_empty() {
+                        if let Ok(n) = current_param.parse::<u32>() {
+                            params.push(n);
+                        }
+                    }
+                    current_param.clear();
+                } else if ansi_bytes[j].is_ascii_digit() {
+                    current_param.push(ansi_bytes[j] as char);
+                }
+                j += 1;
+            }
+
+            if !current_param.is_empty() {
+                if let Ok(n) = current_param.parse::<u32>() {
+                    params.push(n);
+                }
+            }
+
+            // Look for background color parameters
+            for k in 0..params.len() {
+                match params[k] {
+                    48 if k + 4 < params.len() && params[k + 1] == 2 => {
+                        // 48;2;r;g;b - RGB background
+                        let r = params[k + 2] as u8;
+                        let g = params[k + 3] as u8;
+                        let b = params[k + 4] as u8;
+                        return Some(Color::Rgb(r, g, b));
+                    }
+                    40..=47 => {
+                        // Standard background colors (40-47)
+                        // Map to common Gruvbox-like colors
+                        let color = match params[k] {
+                            40 => Color::Rgb(40, 40, 40),    // Black -> BG
+                            41 => Color::Rgb(204, 36, 29),   // Red
+                            42 => Color::Rgb(152, 151, 26),  // Green
+                            43 => Color::Rgb(215, 153, 33),  // Yellow
+                            44 => Color::Rgb(69, 133, 136),  // Blue
+                            45 => Color::Rgb(177, 98, 134),  // Magenta
+                            46 => Color::Rgb(104, 157, 106), // Cyan
+                            47 => Color::Rgb(146, 131, 116), // White -> GRAY
+                            _ => Color::Rgb(40, 40, 40),
+                        };
+                        return Some(color);
+                    }
+                    _ => {}
+                }
+            }
+
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
+    None
 }

@@ -690,6 +690,7 @@ pub fn ghostty_cell_style(
     default_bg: Option<ratatui::style::Color>,
     resolved_fg: Option<ratatui::style::Color>,
     resolved_bg: Option<ratatui::style::Color>,
+    app_theme_bg: Option<ratatui::style::Color>,
 ) -> ratatui::style::Style {
     use ratatui::style::{Modifier, Style};
 
@@ -711,6 +712,14 @@ pub fn ghostty_cell_style(
         .map(ghostty_cell_color)
         .or_else(|| cells.bg_color().ok().flatten().map(ghostty_color))
         .or(default_bg);
+
+    // If the cell's bg matches the embedded app's theme bg, treat as transparent
+    // so stable's pre-filled BG shows through
+    if let (Some(cell_bg), Some(app_bg)) = (bg, app_theme_bg) {
+        if cell_bg == app_bg {
+            bg = None;
+        }
+    }
 
     if style_data.invisible {
         fg = bg.or(default_bg);
