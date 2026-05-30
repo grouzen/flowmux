@@ -7,6 +7,23 @@ pub enum AgentType {
     Claude,
 }
 
+impl AgentType {
+    pub fn name(&self) -> &'static str {
+        match self {
+            AgentType::Opencode => "opencode",
+            AgentType::Claude => "claude",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<AgentType> {
+        match s {
+            "opencode" => Some(AgentType::Opencode),
+            "claude" => Some(AgentType::Claude),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum AgentStatus {
     Running,
