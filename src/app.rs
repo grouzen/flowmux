@@ -299,7 +299,9 @@ impl CreateAgentState {
     }
 
     pub fn is_valid(&self) -> bool {
-        !self.name.trim().is_empty() && !self.directory.trim().is_empty()
+        !self.name.trim().is_empty()
+            && !self.directory.trim().is_empty()
+            && !self.available_types.is_empty()
     }
 
     /// Rebuild the directory suggestion list and re-detect the git repository
@@ -832,12 +834,16 @@ impl App {
         match key.code {
             KeyCode::Char('q') => return false,
             KeyCode::Char('n') => {
+                let available = self.runner.available_agent_types();
+                if available.is_empty() {
+                    return true;
+                }
                 let cwd = std::env::current_dir()
                     .unwrap_or_else(|_| std::path::PathBuf::from("."))
                     .to_string_lossy()
                     .to_string();
                 let mut cs = CreateAgentState {
-                    available_types: self.runner.available_agent_types(),
+                    available_types: available,
                     directory: cwd,
                     ..CreateAgentState::default()
                 };

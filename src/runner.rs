@@ -28,6 +28,9 @@ pub struct AgentRunner {
     /// Base directory under which git worktrees are stored.
     /// Populated from the `--git-worktrees-location` CLI arg or a default.
     pub worktrees_base: PathBuf,
+    /// Optional list of enabled agent type names (e.g. ["opencode", "claude"]).
+    /// When `None`, all discovered agents are available.
+    enabled_agents: Option<Vec<String>>,
 }
 
 impl AgentRunner {
@@ -36,6 +39,7 @@ impl AgentRunner {
         global_config: GlobalConfig,
         session_name: String,
         worktrees_base: PathBuf,
+        enabled_agents: Option<Vec<String>>,
     ) -> Self {
         Self {
             discovered,
@@ -43,6 +47,7 @@ impl AgentRunner {
             session_name,
             claude: None,
             worktrees_base,
+            enabled_agents,
         }
     }
 
@@ -51,7 +56,8 @@ impl AgentRunner {
     }
 
     // -----------------------------------------------------------------------
-    /// Returns all agent types whose binaries were found on `$PATH`.
+    /// Returns all agent types whose binaries were found on `$PATH` and that
+    /// are enabled (if an explicit enabled list is configured).
     /// The order is stable: Opencode first, Claude second.  Future agent types
     /// should be appended here; callers must not hardcode the list.
     pub fn available_agent_types(&self) -> Vec<AgentType> {
@@ -61,6 +67,9 @@ impl AgentRunner {
         }
         if self.discovered.claude.is_some() {
             types.push(AgentType::Claude);
+        }
+        if let Some(ref enabled) = self.enabled_agents {
+            types.retain(|t| enabled.iter().any(|e| e == t.name()));
         }
         types
     }

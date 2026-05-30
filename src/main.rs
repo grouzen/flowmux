@@ -19,7 +19,7 @@ use agent_discovery::DiscoveredAgents;
 use app::App;
 use config::Config;
 use global_config::GlobalConfig;
-use models::{AgentEntry, AgentMeta};
+use models::{AgentEntry, AgentMeta, AgentType};
 use runner::AgentRunner;
 
 /// stable — multi-agent TUI dashboard
@@ -34,6 +34,11 @@ struct Cli {
     /// Defaults to ~/.local/share/stable/worktrees
     #[arg(long)]
     git_worktrees_location: Option<PathBuf>,
+
+    /// Comma-separated list of agent types to enable (e.g. "opencode,claude").
+    /// Overrides the global config's `enabled_agents` setting.
+    #[arg(long, value_delimiter = ',')]
+    enabled_agents: Option<Vec<String>>,
 }
 
 /// Resolve the effective worktrees base directory.
@@ -98,13 +103,31 @@ async fn main() -> Result<()> {
     // Load persisted config for this session
     let mut config = Config::load(&cli.tmux_session)?;
 
+    // Resolve enabled agents: CLI overrides global config.
+    let enabled_agents = cli.enabled_agents.or_else(|| global_config.enabled_agents.clone());
+
+    // Validate and warn about unknown agent names.
+    if let Some(ref names) = enabled_agents {
+        for name in names {
+            if AgentType::from_name(name).is_none() {
+                eprintln!("warning: unknown agent type '{}' in enabled_agents", name);
+            }
+        }
+    }
+
     // Build AgentRunner which owns all agent lifecycle logic.
     let mut runner = AgentRunner::new(
         discovered,
         global_config,
         cli.tmux_session.clone(),
         worktrees_base,
+        enabled_agents,
     );
+
+    if runner.available_agent_types().is_empty() {
+        eprintln!("error: no agents available (none discovered or all filtered out by enabled_agents)");
+        std::process::exit(1);
+    }
 
     // Auto-resume any agents whose tmux pane died (e.g. after a tmux server
     // restart).  Uses AgentRunner::restart so Claude agents are skipped

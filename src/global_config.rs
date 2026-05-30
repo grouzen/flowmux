@@ -14,6 +14,11 @@ pub struct GlobalConfig {
     /// When set, Ctrl+V in the agent view launches the viewer in a new tmux pane.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_viewer: Option<String>,
+
+    /// List of agent type names to enable (e.g. ["opencode", "claude"]).
+    /// When `None`, all discovered agents are available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled_agents: Option<Vec<String>>,
 }
 
 fn default_hook_port() -> u16 {
@@ -25,6 +30,7 @@ impl Default for GlobalConfig {
         Self {
             claude_hook_server_port: default_hook_port(),
             git_viewer: None,
+            enabled_agents: None,
         }
     }
 }
