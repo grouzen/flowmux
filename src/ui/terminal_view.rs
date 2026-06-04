@@ -1,13 +1,13 @@
-use ansi_to_tui::IntoText;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph},
+    widgets::Paragraph,
     Frame,
 };
 
 use crate::app::TerminalViewState;
+use crate::host_terminal::HostColors;
 use crate::models::{AgentEntry, AgentStatus};
 use crate::ui::theme::*;
 
@@ -17,6 +17,7 @@ pub fn render_terminal_view(
     state: &TerminalViewState,
     agent_entry: &AgentEntry,
     agents: &[AgentEntry],
+    host_colors: HostColors,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -31,31 +32,16 @@ pub fn render_terminal_view(
     let content_area = chunks[1];
     let status_area = chunks[2];
 
-    let visible_text = state.lines.join("\n");
+    let visible_text = state.lines.join("\r\n");
 
-    let base_style = extract_first_bg_color(visible_text.as_bytes())
-        .map_or(Style::default(), |c| Style::default().bg(c));
-    let text = visible_text
-        .as_bytes()
-        .into_text_with_style(base_style)
-        .unwrap_or_else(|_| ratatui::text::Text::raw(visible_text.clone()));
-    let para = Paragraph::new(text).style(base_style).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Plain)
-            .border_style(Style::default().fg(GRAY)),
+    crate::ghostty::render::render_pane_content(
+        visible_text.as_bytes(),
+        f,
+        content_area,
+        state.cursor,
+        host_colors.fg,
+        host_colors.bg,
     );
-    f.render_widget(para, content_area);
-
-    if let Some((cx, cy)) = state.cursor {
-        let screen_x = content_area.x.saturating_add(cx + 1);
-        let screen_y = content_area.y.saturating_add(cy + 1);
-        if screen_x < content_area.x + content_area.width - 1
-            && screen_y < content_area.y + content_area.height - 1
-        {
-            f.set_cursor_position((screen_x, screen_y));
-        }
-    }
 
     let dir_str = super::dashboard::shellify_dir(&agent_entry.config.directory);
     let dir_display = if let Some(branch) =
@@ -188,58 +174,4 @@ pub fn render_terminal_view(
         f.render_widget(Paragraph::new(Line::from(agent_status_spans)), chunks[2]);
         f.render_widget(Paragraph::new(brand), chunks[3]);
     }
-}
-
-fn extract_first_bg_color(ansi: &[u8]) -> Option<ratatui::style::Color> {
-    use ratatui::style::Color;
-    let mut i = 0;
-    while i < ansi.len() {
-        if ansi[i] != 0x1b {
-            i += 1;
-            continue;
-        }
-        i += 1;
-        if i >= ansi.len() || ansi[i] != b'[' {
-            continue;
-        }
-        i += 1;
-        let start = i;
-        while i < ansi.len() && ansi[i] != b'm' && ansi[i] != 0x1b {
-            i += 1;
-        }
-        if i >= ansi.len() || ansi[i] != b'm' {
-            continue;
-        }
-        let params_bytes = &ansi[start..i];
-        i += 1;
-
-        let Ok(params_str) = std::str::from_utf8(params_bytes) else {
-            continue;
-        };
-        let nums: Vec<u32> = params_str
-            .split(';')
-            .filter_map(|s| s.parse().ok())
-            .collect();
-
-        let mut j = 0;
-        while j < nums.len() {
-            match nums[j] {
-                48 if j + 4 < nums.len() && nums[j + 1] == 2 => {
-                    return Some(Color::Rgb(
-                        nums[j + 2] as u8,
-                        nums[j + 3] as u8,
-                        nums[j + 4] as u8,
-                    ));
-                }
-                48 if j + 2 < nums.len() && nums[j + 1] == 5 => {
-                    return Some(Color::Indexed(nums[j + 2] as u8));
-                }
-                n @ 40..=47 => return Some(Color::Indexed((n - 40) as u8)),
-                n @ 100..=107 => return Some(Color::Indexed((n - 100 + 8) as u8)),
-                _ => {}
-            }
-            j += 1;
-        }
-    }
-    None
 }
