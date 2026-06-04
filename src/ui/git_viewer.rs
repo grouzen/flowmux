@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::GitViewerState;
+use crate::host_terminal::HostColors;
 use crate::models::{AgentEntry, AgentStatus};
 use crate::ui::theme::*;
 
@@ -16,6 +17,7 @@ pub fn render_git_viewer(
     state: &GitViewerState,
     agent_entry: &AgentEntry,
     agents: &[AgentEntry],
+    host_colors: HostColors,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -37,6 +39,8 @@ pub fn render_git_viewer(
         f,
         content_area,
         state.cursor,
+        host_colors.fg,
+        host_colors.bg,
     );
 
     let dir_str = super::dashboard::shellify_dir(&agent_entry.config.directory);

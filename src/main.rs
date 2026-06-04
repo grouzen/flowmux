@@ -5,6 +5,7 @@ mod config;
 mod ghostty;
 mod git;
 mod global_config;
+mod host_terminal;
 mod models;
 mod runner;
 mod tmux;
@@ -148,7 +149,14 @@ async fn main() -> Result<()> {
     }
 
     // Build App and spawn background tasks
-    let mut app = App::new(config, agents, agent_adapters, runner);
+    let host_colors = match host_terminal::probe_host_colors() {
+        Ok(colors) => colors,
+        Err(e) => {
+            eprintln!("Warning: failed to probe host terminal colors: {}", e);
+            host_terminal::HostColors::default()
+        }
+    };
+    let mut app = App::new(config, agents, agent_adapters, runner, host_colors);
     app.spawn_tasks();
 
     tui::run(|mut terminal| async move {
@@ -180,6 +188,7 @@ async fn main() -> Result<()> {
                                     &app.agent_view_state,
                                     entry,
                                     &app.agents,
+                                    app.host_colors,
                                 );
                             }
                         }
@@ -227,7 +236,7 @@ async fn main() -> Result<()> {
                         }
                         app::AppState::GitViewer(gv) => {
                             if let Some(entry) = app.agents.get(gv.agent_idx) {
-                                ui::git_viewer::render_git_viewer(f, area, gv, entry, &app.agents);
+                                ui::git_viewer::render_git_viewer(f, area, gv, entry, &app.agents, app.host_colors);
                             }
                         }
                     }

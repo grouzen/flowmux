@@ -123,6 +123,8 @@ pub fn render_pane_content(
     frame: &mut Frame,
     area: Rect,
     cursor: Option<(u16, u16)>,
+    host_fg: Option<(u8, u8, u8)>,
+    host_bg: Option<(u8, u8, u8)>,
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -140,6 +142,15 @@ pub fn render_pane_content(
         Ok(t) => t,
         Err(_) => return,
     };
+
+    // Set default colors from host terminal
+    if let Some((r, g, b)) = host_fg {
+        let _ = terminal.set_default_fg(r, g, b);
+    }
+    if let Some((r, g, b)) = host_bg {
+        let _ = terminal.set_default_bg(r, g, b);
+    }
+
     let padded_bytes = pad_ansi_lines_to_width(ansi_bytes, inner.width);
     terminal.write(&padded_bytes);
 

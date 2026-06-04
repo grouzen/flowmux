@@ -4,6 +4,7 @@ use tokio::time::{Duration, interval};
 
 use crate::agents::AgentAdapter;
 use crate::config::{AgentKind, Config};
+use crate::host_terminal::HostColors;
 use crate::models::{AgentEntry, AgentMeta, AgentStatus, AgentType};
 use crate::runner::AgentRunner;
 use crate::tmux;
@@ -348,6 +349,9 @@ pub struct App {
     /// Used together with Paragraph::line_count to compute the true
     /// wrapped line count for accurate max-scroll calculation.
     pub card_response_widths: Vec<u16>,
+    /// Host terminal default colors (fg/bg), probed once at startup via OSC 10/11.
+    /// Used as the default bg/fg for ghostty cells without explicit colors.
+    pub host_colors: HostColors,
 }
 
 impl App {
@@ -356,6 +360,7 @@ impl App {
         agents: Vec<AgentEntry>,
         adapters: Vec<Box<dyn AgentAdapter>>,
         runner: AgentRunner,
+        host_colors: HostColors,
     ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let card_count = agents.len();
@@ -375,6 +380,7 @@ impl App {
             card_scroll: vec![0u16; card_count],
             card_response_heights: vec![0u16; card_count],
             card_response_widths: vec![0u16; card_count],
+            host_colors,
         }
     }
 
