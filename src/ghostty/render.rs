@@ -5,7 +5,8 @@ use ratatui::Frame;
 
 use super::{
     ghostty_blank_symbol_for_width, ghostty_buffer_symbol_into, ghostty_cell_style, ghostty_color,
-    ghostty_reset_cell, CellWide, RenderState, RowCells, RowIterator, Terminal,
+    ghostty_reset_cell, scan_first_truecolor, CellWide, RenderState, RowCells, RowIterator,
+    Terminal,
 };
 
 use crate::ui::theme::GRAY;
@@ -32,6 +33,13 @@ pub fn render_pane_content(
         Ok(t) => t,
         Err(_) => return,
     };
+    let (first_fg, first_bg) = scan_first_truecolor(ansi_bytes);
+    if let Some(bg) = first_bg {
+        let _ = terminal.set_default_bg(bg.r, bg.g, bg.b);
+    }
+    if let Some(fg) = first_fg {
+        let _ = terminal.set_default_fg(fg.r, fg.g, fg.b);
+    }
     terminal.write(ansi_bytes);
 
     let mut render_state = match RenderState::new() {

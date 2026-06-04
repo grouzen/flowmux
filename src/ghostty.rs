@@ -174,6 +174,32 @@ impl Terminal {
         }
     }
 
+    pub fn set_default_bg(&mut self, r: u8, g: u8, b: u8) -> Result<(), Error> {
+        let color = ffi::GhosttyColorRgb { r, g, b };
+        const OPT_COLOR_BACKGROUND: ffi::GhosttyTerminalOption = 12;
+        unsafe {
+            ffi::ghostty_terminal_set(
+                self.raw,
+                OPT_COLOR_BACKGROUND,
+                (&color as *const ffi::GhosttyColorRgb).cast(),
+            )
+            .into_result()
+        }
+    }
+
+    pub fn set_default_fg(&mut self, r: u8, g: u8, b: u8) -> Result<(), Error> {
+        let color = ffi::GhosttyColorRgb { r, g, b };
+        const OPT_COLOR_FOREGROUND: ffi::GhosttyTerminalOption = 11;
+        unsafe {
+            ffi::ghostty_terminal_set(
+                self.raw,
+                OPT_COLOR_FOREGROUND,
+                (&color as *const ffi::GhosttyColorRgb).cast(),
+            )
+            .into_result()
+        }
+    }
+
     pub fn cols(&self) -> Result<u16, Error> {
         self.get_u16(ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLS)
     }
@@ -678,4 +704,144 @@ pub fn ghostty_cell_style(
 
 pub fn ghostty_color(color: RgbColor) -> ratatui::style::Color {
     ratatui::style::Color::Rgb(color.r, color.g, color.b)
+}
+
+pub fn scan_first_truecolor(bytes: &[u8]) -> (Option<RgbColor>, Option<RgbColor>) {
+    let mut fg = None;
+    let mut bg = None;
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len && (fg.is_none() || bg.is_none()) {
+        if bytes[i] != 0x1b || i + 1 >= len || bytes[i + 1] != b'[' {
+            i += 1;
+            continue;
+        }
+        i += 2;
+        let params_start = i;
+        while i < len && bytes[i] != b'm' && bytes[i] != 0x1b {
+            i += 1;
+        }
+        if i >= len || bytes[i] != b'm' {
+            continue;
+        }
+        let params = &bytes[params_start..i];
+        i += 1;
+        let s = match std::str::from_utf8(params) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let parts: Vec<&str> = s.split(';').collect();
+        let mut j = 0;
+        while j < parts.len() {
+            if parts[j] == "38" && fg.is_none() && j + 4 < parts.len() && parts[j + 1] == "2" {
+                if let (Ok(r), Ok(g), Ok(b)) = (
+                    parts[j + 2].parse(),
+                    parts[j + 3].parse(),
+                    parts[j + 4].parse(),
+                ) {
+                    fg = Some(RgbColor { r, g, b });
+                }
+                j += 5;
+            } else if parts[j] == "48" && bg.is_none() && j + 4 < parts.len() && parts[j + 1] == "2"
+            {
+                if let (Ok(r), Ok(g), Ok(b)) = (
+                    parts[j + 2].parse(),
+                    parts[j + 3].parse(),
+                    parts[j + 4].parse(),
+                ) {
+                    bg = Some(RgbColor { r, g, b });
+                }
+                j += 5;
+            } else {
+                j += 1;
+            }
+        }
+    }
+    (fg, bg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_scan_separate_sequences() {
+        let input = b"\x1b[38;2;255;255;255m\x1b[48;2;63;63;63m  text";
+        let (fg, bg) = scan_first_truecolor(input);
+        assert_eq!(
+            fg,
+            Some(RgbColor {
+                r: 255,
+                g: 255,
+                b: 255
+            })
+        );
+        assert_eq!(
+            bg,
+            Some(RgbColor {
+                r: 63,
+                g: 63,
+                b: 63
+            })
+        );
+    }
+
+    #[test]
+    fn test_scan_combined_sequence() {
+        let input = b"\x1b[38;2;200;100;50;48;2;10;20;30m";
+        let (fg, bg) = scan_first_truecolor(input);
+        assert_eq!(
+            fg,
+            Some(RgbColor {
+                r: 200,
+                g: 100,
+                b: 50
+            })
+        );
+        assert_eq!(
+            bg,
+            Some(RgbColor {
+                r: 10,
+                g: 20,
+                b: 30
+            })
+        );
+    }
+
+    #[test]
+    fn test_scan_only_bg() {
+        let input = b"\x1b[48;2;79;79;79mhello";
+        let (fg, bg) = scan_first_truecolor(input);
+        assert_eq!(fg, None);
+        assert_eq!(
+            bg,
+            Some(RgbColor {
+                r: 79,
+                g: 79,
+                b: 79
+            })
+        );
+    }
+
+    #[test]
+    fn test_scan_no_truecolor() {
+        let input = b"\x1b[31mhello\x1b[0m";
+        let (fg, bg) = scan_first_truecolor(input);
+        assert_eq!(fg, None);
+        assert_eq!(bg, None);
+    }
+
+    #[test]
+    fn test_scan_first_wins() {
+        let input = b"\x1b[48;2;1;1;1m\x1b[48;2;2;2;2m";
+        let (_, bg) = scan_first_truecolor(input);
+        assert_eq!(bg, Some(RgbColor { r: 1, g: 1, b: 1 }));
+    }
+
+    #[test]
+    fn test_scan_empty() {
+        let (fg, bg) = scan_first_truecolor(b"");
+        assert_eq!(fg, None);
+        assert_eq!(bg, None);
+    }
 }
