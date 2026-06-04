@@ -46,18 +46,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ansi-to-tui"
-version = "8.0.1"
-source = "git+https://github.com/grouzen/ansi-to-tui?branch=allow-setting-style-on-init-and-reset#abb141f25e437bf8e7d13f3036c77f0b7cdfec41"
-dependencies = [
- "nom 8.0.0",
- "ratatui-core",
- "simdutf8",
- "smallvec",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2526,7 +2514,6 @@ dependencies = [
 name = "stable"
 version = "0.1.0"
 dependencies = [
- "ansi-to-tui 8.0.1 (git+https://github.com/grouzen/ansi-to-tui?branch=allow-setting-style-on-init-and-reset)",
  "anyhow",
  "async-trait",
  "axum",
@@ -2547,6 +2534,7 @@ dependencies = [
  "tokio",
  "toml",
  "tui-markdown",
+ "unicode-width",
  "uuid",
  "which",
 ]
@@ -3065,7 +3053,7 @@ version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e766339aabad4528c3fccddf4acf03bc2b7ae6642def41e43c7af1a11f183122"
 dependencies = [
- "ansi-to-tui 8.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "ansi-to-tui",
  "itertools",
  "pretty_assertions",
  "pulldown-cmark",
