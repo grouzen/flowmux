@@ -265,7 +265,7 @@ async fn main() -> Result<()> {
                         app::AppState::TerminalView(tv) => {
                             if let Some(entry) = app.agents.get(tv.agent_idx) {
                                 ui::terminal_view::render_terminal_view(
-                                    f, area, tv, entry, &app.agents,
+                                    f, area, tv, entry, &app.agents, app.host_colors,
                                 );
                             }
                         }
