@@ -325,7 +325,10 @@ fn render_card(
     // Status badge: colored bg pill " ● Running "
     let badge_text = format!(" {} {} ", sym, lbl);
     let avail = inner.width as usize;
-    let padding = avail.saturating_sub(left_text.chars().count() + badge_text.chars().count());
+    let padding = avail.saturating_sub(
+        unicode_width::UnicodeWidthStr::width(left_text.as_str())
+            + unicode_width::UnicodeWidthStr::width(badge_text.as_str()),
+    );
     let row0 = Line::from(vec![
         Span::styled(left_text, ds(dimmed).fg(GRAY)),
         Span::raw(" ".repeat(padding)),
@@ -537,12 +540,13 @@ fn render_keybindings_bar(f: &mut Frame, area: Rect, agents: &[AgentEntry], dimm
     push_keybind(&mut spans, "q", "quit", dimmed);
 
     // Right: agent status counts (leading space separates from middle chunk; trailing space before brand)
-    let status_width = format!(
-        " {} {} running {} {} waiting {} {} idle ",
-        ICON_RUN, running, ICON_WAIT, waiting, ICON_IDLE, idle
-    )
-    .chars()
-    .count() as u16;
+    let status_width = unicode_width::UnicodeWidthStr::width(
+        format!(
+            " {} {} running {} {} waiting {} {} idle ",
+            ICON_RUN, running, ICON_WAIT, waiting, ICON_IDLE, idle
+        )
+        .as_str(),
+    ) as u16;
     let status_spans: Vec<Span> = vec![
         Span::styled(
             format!(" {} {} running", ICON_RUN, running),

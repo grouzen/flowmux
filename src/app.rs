@@ -1975,14 +1975,9 @@ fn wrapped_line_count(text: &ratatui::text::Text, width: u16) -> u16 {
     count
 }
 
-/// Approximate display-column width of a string (ASCII fast path; falls back
-/// to character count for non-ASCII so we don't need a heavy Unicode library).
 fn unicode_display_width(s: &str) -> usize {
-    if s.is_ascii() {
-        s.len()
-    } else {
-        s.chars().count()
-    }
+    use unicode_width::UnicodeWidthStr;
+    UnicodeWidthStr::width(s)
 }
 
 fn key_event_to_tmux(key: &KeyEvent) -> String {
