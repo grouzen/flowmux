@@ -98,7 +98,8 @@ pub fn brand_line(dimmed: bool) -> (Line<'static>, u16) {
         Style::default()
     };
     let version = env!("CARGO_PKG_VERSION");
-    let display_width = format!(" ♥ Stable v{} ", version).chars().count() as u16;
+    let display_width =
+        unicode_width::UnicodeWidthStr::width(format!(" ♥ Stable v{} ", version).as_str()) as u16;
     let line = Line::from(vec![
         Span::styled(" ♥ ", base.fg(HEART_RED)),
         Span::styled("Stable", base.fg(GRAY)),

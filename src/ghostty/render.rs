@@ -55,26 +55,27 @@ fn count_visible_columns(line: &[u8]) -> usize {
             continue;
         }
 
-        // Count UTF-8 character width
         if b < 0x80 {
-            // ASCII: 1 column
             cols += 1;
             i += 1;
-        } else if (b & 0xe0) == 0xc0 {
-            // 2-byte UTF-8: assume 1 column
-            cols += 1;
-            i += 2;
-        } else if (b & 0xf0) == 0xe0 {
-            // 3-byte UTF-8: assume 1 column (CJK wide chars are rare in opencode)
-            cols += 1;
-            i += 3;
-        } else if (b & 0xf8) == 0xf0 {
-            // 4-byte UTF-8: assume 2 columns (emoji, CJK)
-            cols += 2;
-            i += 4;
         } else {
-            // Continuation byte or invalid: skip
-            i += 1;
+            let char_len = if (b & 0xe0) == 0xc0 {
+                2
+            } else if (b & 0xf0) == 0xe0 {
+                3
+            } else if (b & 0xf8) == 0xf0 {
+                4
+            } else {
+                1
+            };
+            if i + char_len <= len {
+                if let Ok(s) = std::str::from_utf8(&line[i..i + char_len]) {
+                    if let Some(ch) = s.chars().next() {
+                        cols += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+                    }
+                }
+            }
+            i += char_len;
         }
     }
 
@@ -267,10 +268,9 @@ mod tests {
 
     #[test]
     fn test_count_visible_columns_utf8() {
-        // UTF-8 characters: 2-byte = 1 col, 3-byte = 1 col, 4-byte = 2 cols
-        assert_eq!(count_visible_columns("café".as_bytes()), 4); // é is 2-byte
-        assert_eq!(count_visible_columns("中文".as_bytes()), 2); // 3-byte chars, 1 col each
-        assert_eq!(count_visible_columns("😀".as_bytes()), 2); // 4-byte emoji, 2 cols
+        assert_eq!(count_visible_columns("café".as_bytes()), 4);
+        assert_eq!(count_visible_columns("中文".as_bytes()), 4);
+        assert_eq!(count_visible_columns("😀".as_bytes()), 2);
     }
 
     #[test]

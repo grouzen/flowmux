@@ -127,12 +127,13 @@ pub fn render_git_viewer(
         ),
         Span::raw(" "),
     ];
-    let status_width = format!(
-        " {} {} running {} {} waiting {} {} idle ",
-        ICON_RUN, running, ICON_WAIT, waiting, ICON_IDLE, idle
-    )
-    .chars()
-    .count() as u16;
+    let status_width = unicode_width::UnicodeWidthStr::width(
+        format!(
+            " {} {} running {} {} waiting {} {} idle ",
+            ICON_RUN, running, ICON_WAIT, waiting, ICON_IDLE, idle
+        )
+        .as_str(),
+    ) as u16;
 
     if state.prefix_active {
         let prefix_text = " PREFIX ";
