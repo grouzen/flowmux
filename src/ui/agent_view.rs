@@ -108,41 +108,96 @@ pub fn render_agent_view(
         "∞/∞".to_string()
     };
 
-    let work_str = if agent_entry.meta.total_work_ms > 0 {
-        format_uptime(agent_entry.meta.total_work_ms)
-    } else {
-        "< 1s".to_string()
-    };
+    let work_str = format_uptime(agent_entry.meta.total_work_ms);
 
-    // --- Top bar: agent meta info ---
-    let mut top_spans = vec![
-        Span::raw(" "),
-        Span::styled(
-            format!("{}", agent_entry.config.name),
-            Style::default().fg(FG).add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" "),
-        Span::styled(ctx_text, Style::default().fg(GRAY)),
-        Span::styled(
-            format!(" {} {}", ICON_TIME, work_str),
-            Style::default().fg(GRAY),
-        ),
-        Span::raw(" "),
-        Span::styled(format!("{} ", ICON_DIR), Style::default().fg(GRAY)),
-        Span::styled(dir_display.as_str(), Style::default().fg(GRAY)),
-        Span::styled(format!(" {} ", ICON_AGENT), Style::default().fg(GRAY)),
-        Span::styled(
-            agent_entry.config.agent_type_str(),
-            Style::default().fg(GRAY),
-        ),
+    // --- Top bar: agent meta info (3-zone layout) ---
+    let name_text = format!(" {} ", agent_entry.config.name);
+    let name_width = unicode_width::UnicodeWidthStr::width(name_text.as_str()) as u16;
+
+    let dir_prefix = format!(" {} ", ICON_DIR);
+    let dir_prefix_width = unicode_width::UnicodeWidthStr::width(dir_prefix.as_str()) as u16;
+
+    let agent_type_text = format!(" {} {}", ICON_AGENT, agent_entry.config.agent_type_str());
+    let model_text = agent_entry
+        .meta
+        .model_name
+        .as_deref()
+        .map(|m| format!(" {} {}", ICON_MODEL, m))
+        .unwrap_or_default();
+    let ctx_full_text = format!(" {} {}", ICON_CTX, ctx_text);
+    let time_text = format!(" {} {}", ICON_TIME, work_str);
+
+    let right_parts: Vec<&str> = vec![
+        agent_type_text.as_str(),
+        model_text.as_str(),
+        ctx_full_text.as_str(),
+        time_text.as_str(),
     ];
-    if let Some(model_str) = agent_entry.meta.model_name.as_deref() {
-        top_spans.push(Span::styled(
-            format!(" {} {}", ICON_MODEL, model_str),
+    let right_combined = right_parts.join(" ");
+    let right_text = format!(" {} ", right_combined);
+    let right_width = unicode_width::UnicodeWidthStr::width(right_text.as_str()) as u16;
+
+    let layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(name_width),
+            Constraint::Length(dir_prefix_width),
+            Constraint::Min(0),
+            Constraint::Length(right_width),
+        ])
+        .split(top_area);
+
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            &name_text,
+            Style::default().fg(FG).add_modifier(Modifier::BOLD),
+        ))),
+        layout[0],
+    );
+
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            &dir_prefix,
             Style::default().fg(GRAY),
-        ));
+        ))),
+        layout[1],
+    );
+
+    let middle_width = layout[2].width as usize;
+    let dir_line_width = unicode_width::UnicodeWidthStr::width(dir_display.as_str());
+    let scroll_offset = dir_line_width.saturating_sub(middle_width) as u16;
+    let is_truncated = scroll_offset > 0;
+    let middle_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(if is_truncated { 1 } else { 0 }),
+            Constraint::Min(0),
+        ])
+        .split(layout[2]);
+    if is_truncated {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled("…", Style::default().fg(GRAY)))),
+            middle_chunks[0],
+        );
     }
-    f.render_widget(Paragraph::new(Line::from(top_spans)), top_area);
+    let text_width = middle_chunks[1].width as usize;
+    let text_scroll = dir_line_width.saturating_sub(text_width) as u16;
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            &dir_display,
+            Style::default().fg(GRAY),
+        )))
+        .scroll((0, text_scroll)),
+        middle_chunks[1],
+    );
+
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            &right_text,
+            Style::default().fg(GRAY),
+        ))),
+        layout[3],
+    );
 
     // --- Left: hotkey hints (ctrl+g dashboard, [ctrl+v git], ctrl+b prefix) ---
     let is_git =
