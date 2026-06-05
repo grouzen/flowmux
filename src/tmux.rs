@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use crossterm::terminal;
 use regex::Regex;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
-use tmux_interface::{NewWindow, SendKeys, Tmux};
+use tmux_interface::{NewWindow, Tmux};
 
 static SESSION: OnceLock<String> = OnceLock::new();
 
@@ -108,25 +108,33 @@ pub fn new_window(dir: &str, name: &str) -> Result<usize> {
 
 /// Send keys to a tmux pane target (e.g. `mysession:1.0`).
 pub fn send_keys(target: &str, keys: &str) -> Result<()> {
-    Tmux::with_command(SendKeys::new().target_pane(target).key(keys).build())
+    Command::new("tmux")
+        .args(["send-keys", "-t", target, keys])
         .status()
         .with_context(|| format!("failed to send keys to {}", target))?;
     Ok(())
 }
 
 /// Send a literal byte string to a tmux pane target, bypassing key-name
-/// lookup (`send-keys -l`).  Used to forward raw escape sequences such as
-/// SGR mouse events directly to the application running inside the pane.
+/// lookup.  Uses `load-buffer` + `paste-buffer` instead of `send-keys -l`
+/// because tmux silently drops `;` when passed as a standalone argument to
+/// `send-keys` (tmux treats `;` as a command separator regardless of `-l`).
 pub fn send_literal(target: &str, data: &str) -> Result<()> {
-    Tmux::with_command(
-        SendKeys::new()
-            .target_pane(target)
-            .disable_lookup()
-            .key(data)
-            .build(),
-    )
-    .status()
-    .with_context(|| format!("failed to send literal to {}", target))?;
+    use std::io::Write;
+    let mut child = Command::new("tmux")
+        .args(["load-buffer", "-b", "stable_buf", "-"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .context("failed to spawn tmux load-buffer")?;
+    if let Some(ref mut stdin) = child.stdin {
+        stdin.write_all(data.as_bytes())?;
+    }
+    child.wait().context("tmux load-buffer failed")?;
+
+    Command::new("tmux")
+        .args(["paste-buffer", "-t", target, "-b", "stable_buf"])
+        .status()
+        .with_context(|| format!("failed to paste buffer to {}", target))?;
     Ok(())
 }
 

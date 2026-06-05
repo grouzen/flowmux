@@ -1276,12 +1276,18 @@ impl App {
                 }
             }
             _ => {
-                // Forward key to tmux pane
                 if let Some(entry) = self.agents.get(idx) {
                     let pane = entry.config.pane.clone();
+                    let is_plain_char = matches!(key.code, KeyCode::Char(_))
+                        && !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT);
                     let keys = key_event_to_tmux(&key);
                     if !keys.is_empty() {
-                        let _ = tmux::send_keys(&pane, &keys);
+                        if is_plain_char {
+                            let _ = tmux::send_literal(&pane, &keys);
+                        } else {
+                            let _ = tmux::send_keys(&pane, &keys);
+                        }
                     }
                 }
             }
