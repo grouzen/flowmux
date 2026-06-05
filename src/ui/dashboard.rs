@@ -303,23 +303,19 @@ fn render_card(
     let ctx_text = if let Some(ctx) = &entry.meta.context {
         let used = format_tokens(ctx.used);
         if let Some(total) = ctx.total {
-            format!("{}/{}", used, format_tokens(total))
+            format!("{} {}/{}", ICON_CTX, used, format_tokens(total))
         } else {
-            used
+            format!("{} {}", ICON_CTX, used)
         }
     } else {
-        "∞/∞".to_string()
+        format!("{} ∞/∞", ICON_CTX)
     };
 
-    let work_text = if entry.meta.total_work_ms > 0 {
-        format!(
-            "  {} {}",
-            ICON_TIME,
-            format_uptime(entry.meta.total_work_ms)
-        )
-    } else {
-        String::new()
-    };
+    let work_text = format!(
+        "  {} {}",
+        ICON_TIME,
+        format_uptime(entry.meta.total_work_ms)
+    );
     let left_text = format!("{}{}", ctx_text, work_text);
 
     // Status badge: colored bg pill " ● Running "

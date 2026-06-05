@@ -56,6 +56,8 @@ pub const ICON_STOP: &str = "■";
 pub const ICON_ERR: &str = "✗";
 /// U+25CB WHITE CIRCLE — idle status.
 pub const ICON_IDLE: &str = "○";
+/// U+2261 IDENTICAL TO — context / token usage.
+pub const ICON_CTX: &str = "≡";
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -84,7 +86,7 @@ pub fn format_uptime(ms: u64) -> String {
     } else if secs > 0 {
         format!("{}s", secs)
     } else {
-        "< 1s".to_string()
+        "0s".to_string()
     }
 }
 
