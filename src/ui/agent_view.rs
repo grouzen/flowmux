@@ -222,7 +222,7 @@ pub fn render_agent_view(
             + " next waiting".len()
             + 1
             + ctrlr_key.len()
-            + " next running".len()
+            + " next running/idle".len()
             + 1
             + ctrlb_key.len()
             + " prefix".len()) as u16
@@ -237,7 +237,7 @@ pub fn render_agent_view(
             + " next waiting".len()
             + 1
             + ctrlr_key.len()
-            + " next running".len()
+            + " next running/idle".len()
             + 1
             + ctrlb_key.len()
             + " prefix".len()) as u16
@@ -274,7 +274,7 @@ pub fn render_agent_view(
         ctrlr_key,
         Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
     ));
-    nav_spans.push(Span::styled(" next running", Style::default().fg(FG)));
+    nav_spans.push(Span::styled(" next running/idle", Style::default().fg(FG)));
     nav_spans.push(Span::raw(" "));
     nav_spans.push(Span::styled(
         ctrlb_key,

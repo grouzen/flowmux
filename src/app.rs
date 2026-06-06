@@ -1279,7 +1279,7 @@ impl App {
                 }
             }
             KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.switch_to_next_by_status(AgentStatus::Running);
+                self.switch_to_next_running();
             }
             KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.switch_to_next_by_status(AgentStatus::WaitingForInput);
@@ -1893,6 +1893,56 @@ impl App {
             .into_iter()
             .map(|(i, _)| i)
             .collect();
+
+        matches.sort_by(|&a, &b| {
+            let ta = self.agents[a]
+                .meta
+                .status_changed_at
+                .unwrap_or(now);
+            let tb = self.agents[b]
+                .meta
+                .status_changed_at
+                .unwrap_or(now);
+            ta.cmp(&tb)
+        });
+
+        if matches.is_empty() {
+            return;
+        }
+
+        let current = self.selected;
+        let next = match matches.iter().position(|&i| i == current) {
+            Some(pos) => matches[(pos + 1) % matches.len()],
+            None => matches[0],
+        };
+
+        if next != current {
+            self.selected = next;
+            self.state = AppState::AgentView(next);
+            self.agent_view_state = AgentViewState::default();
+            self.dirty = true;
+        }
+    }
+
+    fn switch_to_next_running(&mut self) {
+        let now = std::time::Instant::now();
+        let mut matches: Vec<usize> = self
+            .agents
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.meta.status == AgentStatus::Running)
+            .map(|(i, _)| i)
+            .collect();
+
+        if matches.is_empty() {
+            matches = self
+                .agents
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.meta.status == AgentStatus::Idle)
+                .map(|(i, _)| i)
+                .collect();
+        }
 
         matches.sort_by(|&a, &b| {
             let ta = self.agents[a]
