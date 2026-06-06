@@ -187,7 +187,40 @@ async fn main() -> Result<()> {
             // Draw only when state has changed since the last frame.
             if app.dirty {
                 app.dirty = false;
+
+                // Detect status count changes on every render frame (catches
+                // changes from both dashboard tick and agent view tick).
+                let current_running = app
+                    .agents
+                    .iter()
+                    .filter(|a| matches!(a.meta.status, models::AgentStatus::Running))
+                    .count();
+                let current_waiting = app
+                    .agents
+                    .iter()
+                    .filter(|a| matches!(a.meta.status, models::AgentStatus::WaitingForInput))
+                    .count();
+
+                if app.notification.initialized {
+                    let running_decrease =
+                        app.notification.prev_running.saturating_sub(current_running);
+                    let waiting_increase =
+                        current_waiting.saturating_sub(app.notification.prev_waiting);
+
+                    if running_decrease > waiting_increase {
+                        app.notification.running_blink = Some(std::time::Instant::now());
+                    }
+                    if current_waiting > app.notification.prev_waiting {
+                        app.notification.waiting_blink = Some(std::time::Instant::now());
+                    }
+                }
+                app.notification.prev_running = current_running;
+                app.notification.prev_waiting = current_waiting;
+                app.notification.initialized = true;
+
                 let state = app.state.clone();
+                let blink_running = app.notification.should_render_blink_running();
+                let blink_waiting = app.notification.should_render_blink_waiting();
                 terminal.draw(|f| {
                     let area = f.area();
                     match &state {
@@ -201,6 +234,8 @@ async fn main() -> Result<()> {
                                 &mut app.card_response_heights,
                                 &mut app.card_response_widths,
                                 false,
+                                blink_running,
+                                blink_waiting,
                             );
                         }
                         app::AppState::AgentView(idx) => {
@@ -212,6 +247,8 @@ async fn main() -> Result<()> {
                                     entry,
                                     &app.agents,
                                     app.host_colors,
+                                    blink_running,
+                                    blink_waiting,
                                 );
                             }
                         }
@@ -225,6 +262,8 @@ async fn main() -> Result<()> {
                                 &mut app.card_response_heights,
                                 &mut app.card_response_widths,
                                 true,
+                                blink_running,
+                                blink_waiting,
                             );
                             ui::create_agent::render_create_agent(f, area, &app.create_state);
                         }
@@ -238,6 +277,8 @@ async fn main() -> Result<()> {
                                 &mut app.card_response_heights,
                                 &mut app.card_response_widths,
                                 true,
+                                blink_running,
+                                blink_waiting,
                             );
                             let name = app
                                 .agents
@@ -259,13 +300,29 @@ async fn main() -> Result<()> {
                         }
                         app::AppState::GitViewer(gv) => {
                             if let Some(entry) = app.agents.get(gv.agent_idx) {
-                                ui::git_viewer::render_git_viewer(f, area, gv, entry, &app.agents, app.host_colors);
+                                ui::git_viewer::render_git_viewer(
+                                    f,
+                                    area,
+                                    gv,
+                                    entry,
+                                    &app.agents,
+                                    app.host_colors,
+                                    blink_running,
+                                    blink_waiting,
+                                );
                             }
                         }
                         app::AppState::TerminalView(tv) => {
                             if let Some(entry) = app.agents.get(tv.agent_idx) {
                                 ui::terminal_view::render_terminal_view(
-                                    f, area, tv, entry, &app.agents, app.host_colors,
+                                    f,
+                                    area,
+                                    tv,
+                                    entry,
+                                    &app.agents,
+                                    app.host_colors,
+                                    blink_running,
+                                    blink_waiting,
                                 );
                             }
                         }

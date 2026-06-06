@@ -18,6 +18,8 @@ pub fn render_agent_view(
     agent_entry: &AgentEntry,
     agents: &[AgentEntry],
     host_colors: HostColors,
+    blink_running: bool,
+    blink_waiting: bool,
 ) {
     // Split into top info bar, content area, and bottom status bar
     let chunks = Layout::default()
@@ -259,28 +261,9 @@ pub fn render_agent_view(
     // --- Right: PREFIX badge (conditional) + agent statuses + brand ---
     let (brand, brand_width) = brand_line(false);
 
-    let agent_status_spans: Vec<Span> = vec![
-        Span::styled(
-            format!(" {} {} running", ICON_RUN, running),
-            Style::default().fg(GREEN),
-        ),
-        Span::styled(
-            format!(" {} {} waiting", ICON_WAIT, waiting),
-            Style::default().fg(YELLOW),
-        ),
-        Span::styled(
-            format!(" {} {} idle", ICON_IDLE, idle),
-            Style::default().fg(CYAN),
-        ),
-        Span::raw(" "),
-    ];
-    let status_width = unicode_width::UnicodeWidthStr::width(
-        format!(
-            " {} {} running {} {} waiting {} {} idle ",
-            ICON_RUN, running, ICON_WAIT, waiting, ICON_IDLE, idle
-        )
-        .as_str(),
-    ) as u16;
+    let (mut agent_status_spans, status_width) =
+        status_count_spans(running, waiting, idle, blink_running, blink_waiting, false);
+    agent_status_spans.push(Span::raw(" "));
 
     if state.prefix_active {
         let prefix_text = " PREFIX ";

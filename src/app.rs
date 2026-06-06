@@ -11,6 +11,52 @@ use crate::tmux;
 use crate::ui::dashboard::grid_layout;
 
 // ---------------------------------------------------------------------------
+// StatusNotification — blink tracking for status bar
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+pub struct StatusNotification {
+    pub prev_running: usize,
+    pub prev_waiting: usize,
+    pub running_blink: Option<std::time::Instant>,
+    pub waiting_blink: Option<std::time::Instant>,
+    pub initialized: bool,
+}
+
+const BLINK_DURATION: std::time::Duration = std::time::Duration::from_secs(3);
+const BLINK_INTERVAL_MS: u128 = 500;
+
+impl StatusNotification {
+    pub fn is_blinking_running(&self) -> bool {
+        self.running_blink
+            .map(|t| t.elapsed() < BLINK_DURATION)
+            .unwrap_or(false)
+    }
+
+    pub fn is_blinking_waiting(&self) -> bool {
+        self.waiting_blink
+            .map(|t| t.elapsed() < BLINK_DURATION)
+            .unwrap_or(false)
+    }
+
+    pub fn blink_phase(start: std::time::Instant) -> bool {
+        (start.elapsed().as_millis() / BLINK_INTERVAL_MS).is_multiple_of(2)
+    }
+
+    pub fn should_render_blink_running(&self) -> bool {
+        self.running_blink
+            .map(|t| t.elapsed() < BLINK_DURATION && Self::blink_phase(t))
+            .unwrap_or(false)
+    }
+
+    pub fn should_render_blink_waiting(&self) -> bool {
+        self.waiting_blink
+            .map(|t| t.elapsed() < BLINK_DURATION && Self::blink_phase(t))
+            .unwrap_or(false)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // AppState
 // ---------------------------------------------------------------------------
 
@@ -410,6 +456,7 @@ pub struct App {
     /// Host terminal default colors (fg/bg), probed once at startup via OSC 10/11.
     /// Used as the default bg/fg for ghostty cells without explicit colors.
     pub host_colors: HostColors,
+    pub notification: StatusNotification,
 }
 
 impl App {
@@ -441,6 +488,7 @@ impl App {
             card_response_heights: vec![0u16; card_count],
             card_response_widths: vec![0u16; card_count],
             host_colors,
+            notification: StatusNotification::default(),
         }
     }
 
@@ -540,14 +588,23 @@ impl App {
                 // handle_agent_view_tick sets self.dirty = true only when
                 // the captured output has actually changed.
                 self.handle_agent_view_tick().await;
+                if self.notification.is_blinking_running() || self.notification.is_blinking_waiting() {
+                    self.dirty = true;
+                }
                 true
             }
             Event::GitViewerTick => {
                 self.handle_git_viewer_tick().await;
+                if self.notification.is_blinking_running() || self.notification.is_blinking_waiting() {
+                    self.dirty = true;
+                }
                 true
             }
             Event::TerminalViewTick => {
                 self.handle_terminal_view_tick().await;
+                if self.notification.is_blinking_running() || self.notification.is_blinking_waiting() {
+                    self.dirty = true;
+                }
                 true
             }
         }
@@ -1008,6 +1065,7 @@ impl App {
     async fn handle_dashboard_tick(&mut self) {
         let len = self.adapters.len();
         let mut config_dirty = false;
+
         for i in 0..len {
             let status = self.adapters[i].get_status().await;
             let context = self.adapters[i].get_context().await;
@@ -1035,6 +1093,7 @@ impl App {
                 entry.meta.total_work_ms = total_work_ms;
             }
         }
+
         // Ensure card_scroll has an entry for every agent (agents may be added at runtime).
         if self.card_scroll.len() < self.agents.len() {
             self.card_scroll.resize(self.agents.len(), 0);

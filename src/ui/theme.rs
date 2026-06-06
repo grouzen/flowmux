@@ -109,3 +109,59 @@ pub fn brand_line(dimmed: bool) -> (Line<'static>, u16) {
     ]);
     (line, display_width)
 }
+
+/// Returns status count spans and their total display width.
+///
+/// When `blink_running` or `blink_waiting` is true, the corresponding status
+/// field has its fg/bg colors swapped (blink effect).
+pub fn status_count_spans(
+    running: usize,
+    waiting: usize,
+    idle: usize,
+    blink_running: bool,
+    blink_waiting: bool,
+    dimmed: bool,
+) -> (Vec<Span<'static>>, u16) {
+    let base = if dimmed {
+        Style::default().add_modifier(Modifier::DIM)
+    } else {
+        Style::default()
+    };
+
+    let running_style = if blink_running {
+        base.fg(BG).bg(GREEN)
+    } else {
+        base.fg(GREEN)
+    };
+
+    let waiting_style = if blink_waiting {
+        base.fg(BG).bg(YELLOW)
+    } else {
+        base.fg(YELLOW)
+    };
+
+    let spans = vec![
+        Span::styled(
+            format!(" {} {} running", ICON_RUN, running),
+            running_style,
+        ),
+        Span::styled(
+            format!(" {} {} waiting", ICON_WAIT, waiting),
+            waiting_style,
+        ),
+        Span::styled(
+            format!(" {} {} idle ", ICON_IDLE, idle),
+            base.fg(CYAN),
+        ),
+    ];
+
+    let width = unicode_width::UnicodeWidthStr::width(
+        format!(
+            " {} {} running {} {} waiting {} {} idle ",
+            ICON_RUN, running, ICON_WAIT, waiting, ICON_IDLE, idle
+        )
+        .as_str(),
+    ) as u16;
+
+    (spans, width)
+}
