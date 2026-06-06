@@ -351,10 +351,7 @@ fn render_card(
     } else {
         dir_str
     };
-    let info_a = Line::from(vec![
-        Span::styled(format!("{} ", ICON_DIR), ds(dimmed).fg(GRAY)),
-        Span::styled(dir_display, ds(dimmed).fg(GRAY)),
-    ]);
+    let dir_prefix = format!("{} ", ICON_DIR);
 
     // --- Info row B: agent_type · model_name (only if known) ---
     let agent_type = entry.config.agent_type_str();
@@ -431,7 +428,11 @@ fn render_card(
             Paragraph::new(Span::styled(truncate(text, usable), ds(dimmed).fg(FG)))
                 .style(ds(dimmed).bg(BG1))
         } else {
-            Paragraph::new("").style(ds(dimmed).bg(BG1))
+            Paragraph::new(Span::styled(
+                "No prompt yet",
+                ds(dimmed).fg(GRAY).add_modifier(Modifier::ITALIC),
+            ))
+            .style(ds(dimmed).bg(BG1))
         };
         f.render_widget(content, text_inner);
     };
@@ -449,7 +450,52 @@ fn render_card(
         .split(header_area);
 
     render_centered(f, header_splits[0], row0, row0_h);
-    f.render_widget(Paragraph::new(info_a), header_splits[1]);
+    // Render directory row with left-truncation (same approach as agent_view top bar)
+    {
+        let slot = header_splits[1];
+        let prefix_width = unicode_width::UnicodeWidthStr::width(dir_prefix.as_str()) as u16;
+        let dir_area = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(prefix_width), Constraint::Min(0)])
+            .split(slot);
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                &dir_prefix,
+                ds(dimmed).fg(GRAY),
+            ))),
+            dir_area[0],
+        );
+        let dir_text_width = dir_area[1].width as usize;
+        let dir_line_width =
+            unicode_width::UnicodeWidthStr::width(dir_display.as_str());
+        let is_truncated = dir_line_width > dir_text_width;
+        let text_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(if is_truncated { 1 } else { 0 }),
+                Constraint::Min(0),
+            ])
+            .split(dir_area[1]);
+        if is_truncated {
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    "…",
+                    ds(dimmed).fg(GRAY),
+                ))),
+                text_chunks[0],
+            );
+        }
+        let text_w = text_chunks[1].width as usize;
+        let text_scroll = dir_line_width.saturating_sub(text_w) as u16;
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                &dir_display,
+                ds(dimmed).fg(GRAY),
+            )))
+            .scroll((0, text_scroll)),
+            text_chunks[1],
+        );
+    }
     f.render_widget(Paragraph::new(info_b), header_splits[2]);
     render_prompt(f, header_splits[3], fp_text);
 
@@ -495,7 +541,20 @@ fn render_card(
                 f.render_widget(hint, hint_area);
             }
         }
-        _ => {}
+        _ => {
+            let hint_top = content_area.height.saturating_sub(1) / 2;
+            let hint_area = Rect {
+                y: content_area.y + hint_top,
+                height: 1,
+                ..content_area
+            };
+            let hint = Paragraph::new(Span::styled(
+                "No response yet",
+                ds(dimmed).fg(GRAY).add_modifier(Modifier::ITALIC),
+            ))
+            .alignment(Alignment::Center);
+            f.render_widget(hint, hint_area);
+        }
     }
 
     (content_area.height, content_area.width)
