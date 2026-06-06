@@ -60,6 +60,8 @@ pub fn render_dashboard(
     card_response_heights: &mut Vec<u16>,
     card_response_widths: &mut Vec<u16>,
     dimmed: bool,
+    blink_running: bool,
+    blink_waiting: bool,
 ) {
     // Split into main area and keybindings bar at bottom
     let chunks = Layout::default()
@@ -70,7 +72,7 @@ pub fn render_dashboard(
     let main_area = chunks[0];
     let bar_area = chunks[1];
 
-    render_keybindings_bar(f, bar_area, agents, dimmed);
+    render_keybindings_bar(f, bar_area, agents, dimmed, blink_running, blink_waiting);
     render_grid(
         f,
         main_area,
@@ -574,7 +576,14 @@ fn push_keybind<'a>(spans: &mut Vec<Span<'a>>, key: &'a str, action: &'a str, di
     spans.push(Span::styled(format!(" {}", action), ds(dimmed).fg(FG)));
 }
 
-fn render_keybindings_bar(f: &mut Frame, area: Rect, agents: &[AgentEntry], dimmed: bool) {
+fn render_keybindings_bar(
+    f: &mut Frame,
+    area: Rect,
+    agents: &[AgentEntry],
+    dimmed: bool,
+    blink_running: bool,
+    blink_waiting: bool,
+) {
     let running = count_running(agents);
     let waiting = count_waiting(agents);
     let idle = count_idle(agents);
@@ -595,27 +604,8 @@ fn render_keybindings_bar(f: &mut Frame, area: Rect, agents: &[AgentEntry], dimm
     push_keybind(&mut spans, "q", "quit", dimmed);
 
     // Right: agent status counts (leading space separates from middle chunk; trailing space before brand)
-    let status_width = unicode_width::UnicodeWidthStr::width(
-        format!(
-            " {} {} running {} {} waiting {} {} idle ",
-            ICON_RUN, running, ICON_WAIT, waiting, ICON_IDLE, idle
-        )
-        .as_str(),
-    ) as u16;
-    let status_spans: Vec<Span> = vec![
-        Span::styled(
-            format!(" {} {} running", ICON_RUN, running),
-            ds(dimmed).fg(GREEN),
-        ),
-        Span::styled(
-            format!(" {} {} waiting", ICON_WAIT, waiting),
-            ds(dimmed).fg(YELLOW),
-        ),
-        Span::styled(
-            format!(" {} {} idle ", ICON_IDLE, idle),
-            ds(dimmed).fg(CYAN),
-        ),
-    ];
+    let (status_spans, status_width) =
+        status_count_spans(running, waiting, idle, blink_running, blink_waiting, dimmed);
 
     let (brand, brand_width) = brand_line(dimmed);
 
