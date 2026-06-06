@@ -118,19 +118,20 @@ pub fn model_context_window(model: &str) -> Option<u64> {
 pub(crate) struct ClaudeRuntime {
     hook_state: HookStateMap,
     persist_tx: tokio::sync::mpsc::UnboundedSender<claude_hook_server::HookPersistEvent>,
+    port: u16,
 }
 
 impl ClaudeRuntime {
     /// Spawn the hook server and a background persist task, return a runtime
     /// handle.  `session_name` is used by the persist task to find the correct
     /// config file when patching session_id / transcript_path.
-    pub(crate) fn start(port: u16, session_name: String) -> Self {
+    pub(crate) fn start(base_port: u16, session_name: String) -> Self {
         let hook_state: HookStateMap = Arc::new(Mutex::new(HashMap::new()));
         let (persist_tx, mut persist_rx) =
             tokio::sync::mpsc::unbounded_channel::<claude_hook_server::HookPersistEvent>();
 
         let persist_tx_clone = persist_tx.clone();
-        claude_hook_server::spawn_hook_server(hook_state.clone(), persist_tx_clone, port);
+        let port = claude_hook_server::spawn_hook_server(hook_state.clone(), persist_tx_clone, base_port);
 
         // Background task: receive persist events and patch the session config file.
         tokio::spawn(async move {
@@ -161,7 +162,14 @@ impl ClaudeRuntime {
         Self {
             hook_state,
             persist_tx,
+            port,
         }
+    }
+
+    /// The actual port the hook server is listening on (may differ from
+    /// the base port when multiple instances are running).
+    pub(crate) fn port(&self) -> u16 {
+        self.port
     }
 
     /// Create a `ClaudeAdapter` for a given `stable_agent_id`, pre-inserting
@@ -360,9 +368,10 @@ const STABLE_HOOK_EVENTS: &[&str] = &[
     "SessionEnd",
 ];
 
-/// Return `true` if `hooks_root` already contains at least one stable hook
-/// entry (identified by a URL ending in `/hook` pointing to `127.0.0.1`).
-fn has_stable_hooks(hooks_root: &Value) -> bool {
+/// Return `true` if `hooks_root` contains a stable hook entry for the
+/// given `port` (identified by the exact URL `http://127.0.0.1:<port>/hook`).
+fn has_stable_hooks_for_port(hooks_root: &Value, port: u16) -> bool {
+    let url = format!("http://127.0.0.1:{}{}", port, HOOK_URL_PATH);
     let Some(obj) = hooks_root.as_object() else {
         return false;
     };
@@ -375,8 +384,7 @@ fn has_stable_hooks(hooks_root: &Value) -> bool {
                 continue;
             };
             for h in inner {
-                let url = h.get("url").and_then(Value::as_str).unwrap_or("");
-                if url.contains("127.0.0.1") && url.ends_with(HOOK_URL_PATH) {
+                if h.get("url").and_then(Value::as_str) == Some(&url) {
                     return true;
                 }
             }
@@ -386,10 +394,10 @@ fn has_stable_hooks(hooks_root: &Value) -> bool {
 }
 
 /// Return `true` if all events in `STABLE_HOOK_EVENTS` have a stable hook
-/// registered in `hooks_root`.  A `false` return means the installation is
-/// stale (e.g. stable was updated and new events were added) and a re-install
-/// is required.
-fn has_all_stable_hook_events(hooks_root: &Value) -> bool {
+/// registered for the given `port` in `hooks_root`.  A `false` return means
+/// the installation is incomplete or stale and a re-install is required.
+fn has_all_stable_hook_events_for_port(hooks_root: &Value, port: u16) -> bool {
+    let url = format!("http://127.0.0.1:{}{}", port, HOOK_URL_PATH);
     let Some(obj) = hooks_root.as_object() else {
         return false;
     };
@@ -401,19 +409,15 @@ fn has_all_stable_hook_events(hooks_root: &Value) -> bool {
             let Some(inner) = hook_group.get("hooks").and_then(Value::as_array) else {
                 return false;
             };
-            inner.iter().any(|h| {
-                let url = h.get("url").and_then(Value::as_str).unwrap_or("");
-                url.contains("127.0.0.1") && url.ends_with(HOOK_URL_PATH)
-            })
+            inner.iter().any(|h| h.get("url").and_then(Value::as_str) == Some(&url))
         })
     })
 }
 
-/// Remove all stable hook entries from the hooks object (in-place).
-///
-/// A hook group is considered a stable entry when it contains at least one
-/// `http` hook whose URL points to `127.0.0.1` and ends with `/hook`.
-fn remove_stable_hooks(hooks_root: &mut Value) {
+/// Remove stable hook entries for a specific `port` from the hooks object
+/// (in-place).  Entries for other ports are preserved.
+fn remove_stable_hooks_for_port(hooks_root: &mut Value, port: u16) {
+    let url = format!("http://127.0.0.1:{}{}", port, HOOK_URL_PATH);
     let Some(obj) = hooks_root.as_object_mut() else {
         return;
     };
@@ -425,11 +429,68 @@ fn remove_stable_hooks(hooks_root: &mut Value) {
             let Some(inner) = hook_group.get("hooks").and_then(Value::as_array) else {
                 return true;
             };
-            !inner.iter().any(|h| {
-                let url = h.get("url").and_then(Value::as_str).unwrap_or("");
-                url.contains("127.0.0.1") && url.ends_with(HOOK_URL_PATH)
-            })
+            !inner.iter().any(|h| h.get("url").and_then(Value::as_str) == Some(&url))
         });
+    }
+}
+
+/// Extract all unique stable hook ports from the hooks object.
+fn extract_stable_ports(hooks_root: &Value) -> Vec<u16> {
+    let mut ports = Vec::new();
+    let Some(obj) = hooks_root.as_object() else {
+        return ports;
+    };
+    for event_val in obj.values() {
+        let Some(arr) = event_val.as_array() else {
+            continue;
+        };
+        for hook_group in arr {
+            let Some(inner) = hook_group.get("hooks").and_then(Value::as_array) else {
+                continue;
+            };
+            for h in inner {
+                if let Some(url) = h.get("url").and_then(Value::as_str) {
+                    if url.contains("127.0.0.1") && url.ends_with(HOOK_URL_PATH) {
+                        if let Some(port_str) = url
+                            .strip_prefix("http://127.0.0.1:")
+                            .and_then(|s| s.strip_suffix(HOOK_URL_PATH))
+                        {
+                            if let Ok(port) = port_str.parse::<u16>() {
+                                if !ports.contains(&port) {
+                                    ports.push(port);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    ports
+}
+
+/// Return `true` if a TCP connection to `127.0.0.1:<port>` succeeds within
+/// 100ms, indicating the hook server is still alive.
+fn is_port_alive(port: u16) -> bool {
+    use std::time::Duration;
+    let addr = format!("127.0.0.1:{}", port);
+    match std::net::TcpStream::connect_timeout(
+        &addr.parse().unwrap(),
+        Duration::from_millis(100),
+    ) {
+        Ok(_) => true,
+        Err(_) => false,
+    }
+}
+
+/// Remove hook entries for stable instances whose servers are no longer
+/// running (dead ports).  Preserves entries for live ports.
+fn cleanup_dead_hooks(hooks_root: &mut Value) {
+    let ports = extract_stable_ports(hooks_root);
+    for port in ports {
+        if !is_port_alive(port) {
+            remove_stable_hooks_for_port(hooks_root, port);
+        }
     }
 }
 
@@ -437,14 +498,16 @@ fn settings_path() -> Option<std::path::PathBuf> {
     dirs::home_dir().map(|h| h.join(".claude").join("settings.json"))
 }
 
-/// Merge stable's HTTP hooks into `~/.claude/settings.json`.
+/// Merge stable's HTTP hooks into `~/.claude/settings.json` for this instance's port.
 ///
-/// This is a no-op if the hooks are already present for any port (idempotent).
-/// To update the port, call `uninstall_hooks()` first.
+/// - Cleans up hooks from dead stable instances first.
+/// - No-op if all expected events are already registered for this port.
+/// - Upgrades stale/partial installations for this port by removing and
+///   re-adding them.
+/// - Preserves hooks from other live stable instances running on different ports.
 pub fn install_hooks(port: u16) -> Result<()> {
     let path = settings_path().context("cannot determine home directory")?;
 
-    // Read existing JSON or start from an empty object.
     let mut root: Value = if path.exists() {
         let raw = std::fs::read_to_string(&path).with_context(|| format!("read {:?}", path))?;
         serde_json::from_str(&raw).with_context(|| format!("parse {:?}", path))?
@@ -452,25 +515,21 @@ pub fn install_hooks(port: u16) -> Result<()> {
         serde_json::json!({})
     };
 
-    // Ensure the "hooks" key exists.
     let hooks = root
         .as_object_mut()
         .context("settings.json root is not an object")?
         .entry("hooks")
         .or_insert_with(|| serde_json::json!({}));
 
-    // Nothing to do if all expected hook events are already registered.
-    // If only some events are present (stale install from an older version),
-    // remove the existing stable entries and re-merge the full set.
-    if has_all_stable_hook_events(hooks) {
+    cleanup_dead_hooks(hooks);
+
+    if has_all_stable_hook_events_for_port(hooks, port) {
         return Ok(());
     }
-    if has_stable_hooks(hooks) {
-        // Partial / stale install — strip old entries before re-merging.
-        remove_stable_hooks(hooks);
+    if has_stable_hooks_for_port(hooks, port) {
+        remove_stable_hooks_for_port(hooks, port);
     }
 
-    // Merge our four-event block into the existing hooks object.
     let new_block = build_hooks_block(port);
     let hooks_obj = hooks.as_object_mut().context("hooks is not an object")?;
     let new_obj = new_block.as_object().unwrap();
@@ -485,6 +544,26 @@ pub fn install_hooks(port: u16) -> Result<()> {
         if let Some(entries) = new_entries.as_array() {
             arr.extend(entries.iter().cloned());
         }
+    }
+
+    write_settings(&path, &root)
+}
+
+/// Remove this instance's hook entries from `~/.claude/settings.json`.
+/// Hooks from other stable instances are preserved.
+#[allow(dead_code)]
+pub fn uninstall_hooks(port: u16) -> Result<()> {
+    let path = settings_path().context("cannot determine home directory")?;
+
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let raw = std::fs::read_to_string(&path).with_context(|| format!("read {:?}", path))?;
+    let mut root: Value = serde_json::from_str(&raw).with_context(|| format!("parse {:?}", path))?;
+
+    if let Some(hooks) = root.get_mut("hooks") {
+        remove_stable_hooks_for_port(hooks, port);
     }
 
     write_settings(&path, &root)
@@ -517,16 +596,15 @@ mod tests {
         root
     }
 
-    /// Helper: run the install logic against an in-memory Value.
     fn install_hooks_into(root: &mut Value, port: u16) {
         let hooks = root
             .as_object_mut()
             .unwrap()
             .entry("hooks")
             .or_insert_with(|| serde_json::json!({}));
-        if !has_all_stable_hook_events(hooks) {
-            if has_stable_hooks(hooks) {
-                remove_stable_hooks(hooks);
+        if !has_all_stable_hook_events_for_port(hooks, port) {
+            if has_stable_hooks_for_port(hooks, port) {
+                remove_stable_hooks_for_port(hooks, port);
             }
             let new_block = build_hooks_block(port);
             let hooks_obj = hooks.as_object_mut().unwrap();
@@ -544,20 +622,10 @@ mod tests {
     }
 
     #[test]
-    fn install_adds_four_events() {
+    fn install_adds_all_events() {
         let root = make_settings(15100);
         let hooks = root.get("hooks").unwrap().as_object().unwrap();
-        for event in &[
-            "SessionStart",
-            "UserPromptSubmit",
-            "PreToolUse",
-            "PostToolUse",
-            "SubagentStop",
-            "PermissionRequest",
-            "Notification",
-            "Stop",
-            "SessionEnd",
-        ] {
+        for event in STABLE_HOOK_EVENTS {
             assert!(hooks.contains_key(*event), "missing event: {event}");
         }
     }
@@ -565,7 +633,6 @@ mod tests {
     #[test]
     fn install_is_idempotent() {
         let mut root = make_settings(15100);
-        // Second install should not duplicate entries.
         install_hooks_into(&mut root, 15100);
         let hooks = root.get("hooks").unwrap().as_object().unwrap();
         let start_arr = hooks["SessionStart"].as_array().unwrap();
@@ -576,11 +643,11 @@ mod tests {
     fn uninstall_removes_stable_entries() {
         let mut root = make_settings(15100);
         if let Some(hooks) = root.get_mut("hooks") {
-            remove_stable_hooks(hooks);
+            remove_stable_hooks_for_port(hooks, 15100);
         }
         let hooks = root.get("hooks").unwrap();
         assert!(
-            !has_stable_hooks(hooks),
+            !has_stable_hooks_for_port(hooks, 15100),
             "stable hooks still present after removal"
         );
     }
@@ -596,9 +663,8 @@ mod tests {
         });
         install_hooks_into(&mut root, 15100);
         if let Some(hooks) = root.get_mut("hooks") {
-            remove_stable_hooks(hooks);
+            remove_stable_hooks_for_port(hooks, 15100);
         }
-        // The user's "command" hook should still be present.
         let arr = root["hooks"]["SessionStart"].as_array().unwrap();
         assert_eq!(arr.len(), 1, "user hook was incorrectly removed");
         let inner = arr[0]["hooks"].as_array().unwrap();
@@ -607,7 +673,6 @@ mod tests {
 
     #[test]
     fn stale_install_is_upgraded() {
-        // Simulate an old stable install that only has 4 events registered.
         let old_url = "http://127.0.0.1:15100/hook";
         let stable_entry = serde_json::json!([{
             "hooks": [{"type": "http", "url": old_url}]
@@ -621,15 +686,13 @@ mod tests {
             }
         });
 
-        // The stale root should be detected as incomplete.
         let hooks = root.get("hooks").unwrap();
-        assert!(has_stable_hooks(hooks), "should detect existing hooks");
+        assert!(has_stable_hooks_for_port(hooks, 15100), "should detect existing hooks");
         assert!(
-            !has_all_stable_hook_events(hooks),
+            !has_all_stable_hook_events_for_port(hooks, 15100),
             "should detect stale install"
         );
 
-        // After re-install all 8 events must be present with a single entry each.
         install_hooks_into(&mut root, 15100);
         let hooks = root.get("hooks").unwrap().as_object().unwrap();
         for event in STABLE_HOOK_EVENTS {
@@ -639,6 +702,61 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing event after upgrade: {event}"));
             assert_eq!(arr.len(), 1, "duplicate hook groups for {event}");
         }
+    }
+
+    #[test]
+    fn two_ports_coexist() {
+        let mut root = serde_json::json!({});
+        install_hooks_into(&mut root, 15100);
+        install_hooks_into(&mut root, 15101);
+
+        let hooks_val = root.get("hooks").unwrap();
+        let hooks = hooks_val.as_object().unwrap();
+        for event in STABLE_HOOK_EVENTS {
+            let arr = hooks
+                .get(*event)
+                .and_then(Value::as_array)
+                .unwrap_or_else(|| panic!("missing event: {event}"));
+            assert_eq!(arr.len(), 2, "expected two hook groups for {event} (one per port)");
+        }
+
+        let hooks = root.get("hooks").unwrap();
+        assert!(has_all_stable_hook_events_for_port(hooks, 15100));
+        assert!(has_all_stable_hook_events_for_port(hooks, 15101));
+    }
+
+    #[test]
+    fn uninstall_preserves_other_port() {
+        let mut root = serde_json::json!({});
+        install_hooks_into(&mut root, 15100);
+        install_hooks_into(&mut root, 15101);
+
+        if let Some(hooks) = root.get_mut("hooks") {
+            remove_stable_hooks_for_port(hooks, 15100);
+        }
+
+        let hooks = root.get("hooks").unwrap();
+        assert!(!has_stable_hooks_for_port(hooks, 15100));
+        assert!(has_all_stable_hook_events_for_port(hooks, 15101));
+    }
+
+    #[test]
+    fn extract_ports_finds_both() {
+        let mut root = serde_json::json!({});
+        install_hooks_into(&mut root, 15100);
+        install_hooks_into(&mut root, 15101);
+
+        let hooks = root.get("hooks").unwrap();
+        let mut ports = extract_stable_ports(hooks);
+        ports.sort();
+        assert_eq!(ports, vec![15100, 15101]);
+    }
+
+    #[test]
+    fn extract_ports_empty() {
+        let root = serde_json::json!({"hooks": {}});
+        let ports = extract_stable_ports(root.get("hooks").unwrap());
+        assert!(ports.is_empty());
     }
 
     #[test]

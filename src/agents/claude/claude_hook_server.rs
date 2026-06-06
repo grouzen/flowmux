@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::BufRead;
+use std::net::TcpListener as StdTcpListener;
 use std::sync::{Arc, Mutex};
 
 use axum::extract::Extension;
@@ -87,10 +88,12 @@ async fn hook_handler(
     };
 
     // The entry must have been pre-inserted by App before the agent launches.
+    // With fan-out from multiple stable instances, this server may receive
+    // hooks for agents it doesn't own — silently ignore them.
     {
         let map = state.hook_state.lock().unwrap();
         if !map.contains_key(&agent_id) {
-            return StatusCode::BAD_REQUEST;
+            return StatusCode::OK;
         }
     }
 
@@ -299,11 +302,22 @@ fn session_id_from_transcript_path(transcript_path: &str) -> Option<String> {
 // Spawn the hook server
 // ---------------------------------------------------------------------------
 
+fn find_free_port(from: u16) -> u16 {
+    let mut port = from;
+    loop {
+        if StdTcpListener::bind(format!("127.0.0.1:{}", port)).is_ok() {
+            return port;
+        }
+        port += 1;
+    }
+}
+
 pub fn spawn_hook_server(
     hook_state: HookStateMap,
     persist_tx: UnboundedSender<HookPersistEvent>,
-    port: u16,
-) {
+    base_port: u16,
+) -> u16 {
+    let port = find_free_port(base_port);
     tokio::spawn(async move {
         let state = HookServerState {
             hook_state,
@@ -314,14 +328,10 @@ pub fn spawn_hook_server(
             .layer(Extension(state));
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
             .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "hook server: failed to bind 127.0.0.1:{port} — {e}\n\
-                     Tip: change claude_hook_server_port in ~/.config/stable/config.toml"
-                )
-            });
+            .expect("bind should succeed after find_free_port");
         axum::serve(listener, app).await.unwrap();
     });
+    port
 }
 
 // ---------------------------------------------------------------------------
