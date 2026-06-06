@@ -6,6 +6,7 @@ mod ghostty;
 mod git;
 mod global_config;
 mod host_terminal;
+mod model_registry;
 mod models;
 mod runner;
 mod tmux;

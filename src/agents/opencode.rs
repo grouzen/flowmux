@@ -809,7 +809,10 @@ impl AgentAdapter for OpenCodeAdapter {
             .unwrap_or("")
             .to_string();
 
-        let total = self.resolve_context_total(&provider_id, &model_id).await;
+        let total = match self.resolve_context_total(&provider_id, &model_id).await {
+            Some(v) if v > 0 => Some(v),
+            _ => crate::model_registry::model_context_window(&model_id),
+        };
 
         // Persist the model ID so the card can display it.
         if !model_id.is_empty() {
