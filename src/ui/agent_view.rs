@@ -199,12 +199,14 @@ pub fn render_agent_view(
         layout[3],
     );
 
-    // --- Left: hotkey hints (ctrl+g dashboard, [ctrl+v git], ctrl+b prefix) ---
+    // --- Left: hotkey hints (ctrl+g dashboard, [ctrl+v git], ctrl+t terminal, ctrl+w waiting, ctrl+r running, ctrl+b prefix) ---
     let is_git =
         crate::git::find_git_root(std::path::Path::new(&agent_entry.config.directory)).is_some();
     let ctrlg_key = " ctrl+g ";
     let ctrlb_key = " ctrl+b ";
     let ctrlv_key = " ctrl+v ";
+    let ctrlr_key = " ctrl+r ";
+    let ctrlw_key = " ctrl+w ";
     let ctrlt_key = " ctrl+t ";
     let nav_width = if is_git {
         (ctrlg_key.len()
@@ -216,6 +218,12 @@ pub fn render_agent_view(
             + ctrlt_key.len()
             + " terminal".len()
             + 1
+            + ctrlw_key.len()
+            + " next waiting".len()
+            + 1
+            + ctrlr_key.len()
+            + " next running/idle".len()
+            + 1
             + ctrlb_key.len()
             + " prefix".len()) as u16
     } else {
@@ -224,6 +232,12 @@ pub fn render_agent_view(
             + 1
             + ctrlt_key.len()
             + " terminal".len()
+            + 1
+            + ctrlw_key.len()
+            + " next waiting".len()
+            + 1
+            + ctrlr_key.len()
+            + " next running/idle".len()
             + 1
             + ctrlb_key.len()
             + " prefix".len()) as u16
@@ -249,6 +263,18 @@ pub fn render_agent_view(
         Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
     ));
     nav_spans.push(Span::styled(" terminal", Style::default().fg(FG)));
+    nav_spans.push(Span::raw(" "));
+    nav_spans.push(Span::styled(
+        ctrlw_key,
+        Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
+    ));
+    nav_spans.push(Span::styled(" next waiting", Style::default().fg(FG)));
+    nav_spans.push(Span::raw(" "));
+    nav_spans.push(Span::styled(
+        ctrlr_key,
+        Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
+    ));
+    nav_spans.push(Span::styled(" next running/idle", Style::default().fg(FG)));
     nav_spans.push(Span::raw(" "));
     nav_spans.push(Span::styled(
         ctrlb_key,
