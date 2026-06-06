@@ -163,6 +163,7 @@ async fn main() -> Result<()> {
             last_model_response: adapter.get_last_model_response().await,
             model_name: adapter.get_model_name().await,
             total_work_ms: adapter.get_total_work_ms().await,
+            status_changed_at: None,
         };
         agents.push(AgentEntry {
             config: agent_config.clone(),

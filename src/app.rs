@@ -1027,6 +1027,9 @@ impl App {
             }
 
             if let Some(entry) = self.agents.get_mut(i) {
+                if entry.meta.status != status {
+                    entry.meta.status_changed_at = Some(std::time::Instant::now());
+                }
                 entry.meta.status = status;
                 entry.meta.context = context;
                 entry.meta.first_prompt = first_prompt;
@@ -1274,6 +1277,12 @@ impl App {
                         let _ = tmux::send_keys(&entry.config.pane, "NPage");
                     }
                 }
+            }
+            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.switch_to_next_by_status(AgentStatus::Running);
+            }
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.switch_to_next_by_status(AgentStatus::WaitingForInput);
             }
             _ => {
                 if let Some(entry) = self.agents.get(idx) {
@@ -1872,6 +1881,48 @@ impl App {
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
+
+    fn switch_to_next_by_status(&mut self, target: AgentStatus) {
+        let now = std::time::Instant::now();
+        let mut matches: Vec<usize> = self
+            .agents
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.meta.status == target)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|(i, _)| i)
+            .collect();
+
+        matches.sort_by(|&a, &b| {
+            let ta = self.agents[a]
+                .meta
+                .status_changed_at
+                .unwrap_or(now);
+            let tb = self.agents[b]
+                .meta
+                .status_changed_at
+                .unwrap_or(now);
+            ta.cmp(&tb)
+        });
+
+        if matches.is_empty() {
+            return;
+        }
+
+        let current = self.selected;
+        let next = match matches.iter().position(|&i| i == current) {
+            Some(pos) => matches[(pos + 1) % matches.len()],
+            None => matches[0],
+        };
+
+        if next != current {
+            self.selected = next;
+            self.state = AppState::AgentView(next);
+            self.agent_view_state = AgentViewState::default();
+            self.dirty = true;
+        }
+    }
 
     fn remove_agent(&mut self, idx: usize, remove_worktree: bool) {
         if idx < self.agents.len() {
