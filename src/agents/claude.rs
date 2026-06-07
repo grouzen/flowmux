@@ -133,6 +133,12 @@ pub(crate) struct ClaudeRuntime {
     port: u16,
 }
 
+impl Drop for ClaudeRuntime {
+    fn drop(&mut self) {
+        let _ = uninstall_hooks(self.port);
+    }
+}
+
 impl ClaudeRuntime {
     /// Spawn the hook server and a background persist task, return a runtime
     /// handle.  `session_name` is used by the persist task to find the correct
@@ -563,22 +569,24 @@ pub fn install_hooks(port: u16) -> Result<()> {
 
 /// Remove this instance's hook entries from `~/.claude/settings.json`.
 /// Hooks from other stable instances are preserved.
-#[allow(dead_code)]
 pub fn uninstall_hooks(port: u16) -> Result<()> {
     let path = settings_path().context("cannot determine home directory")?;
+    uninstall_hooks_at(&path, port)
+}
 
+fn uninstall_hooks_at(path: &std::path::Path, port: u16) -> Result<()> {
     if !path.exists() {
         return Ok(());
     }
 
-    let raw = std::fs::read_to_string(&path).with_context(|| format!("read {:?}", path))?;
+    let raw = std::fs::read_to_string(path).with_context(|| format!("read {:?}", path))?;
     let mut root: Value = serde_json::from_str(&raw).with_context(|| format!("parse {:?}", path))?;
 
     if let Some(hooks) = root.get_mut("hooks") {
         remove_stable_hooks_for_port(hooks, port);
     }
 
-    write_settings(&path, &root)
+    write_settings(path, &root)
 }
 
 /// Atomically write `value` as pretty-printed JSON to `path`
@@ -769,5 +777,29 @@ mod tests {
         let root = serde_json::json!({"hooks": {}});
         let ports = extract_stable_ports(root.get("hooks").unwrap());
         assert!(ports.is_empty());
+    }
+
+    #[test]
+    fn uninstall_hooks_removes_entries_from_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "stable-test-uninstall-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+
+        let root = make_settings(15100);
+        write_settings(&path, &root).unwrap();
+
+        uninstall_hooks_at(&path, 15100).unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let updated: Value = serde_json::from_str(&raw).unwrap();
+        assert!(
+            !has_stable_hooks_for_port(&updated, 15100),
+            "hooks for port 15100 should be removed"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
