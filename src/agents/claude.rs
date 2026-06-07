@@ -26,6 +26,45 @@ impl ClaudeAdapter {
             hook_state,
         }
     }
+
+    fn maybe_reparse_transcript(&self) {
+        let transcript_path = {
+            let map = self.hook_state.lock().unwrap();
+            let Some(entry) = map.get(&self.stable_agent_id) else {
+                return;
+            };
+            if entry.context_used.is_some() {
+                return;
+            }
+            match entry.transcript_path.clone() {
+                Some(p) => p,
+                None => return,
+            }
+        };
+
+        let Some(info) = claude_hook_server::parse_transcript(&transcript_path) else {
+            return;
+        };
+
+        let mut map = self.hook_state.lock().unwrap();
+        if let Some(entry) = map.get_mut(&self.stable_agent_id) {
+            if entry.context_used.is_none() {
+                entry.context_used = Some(info.context_used);
+            }
+            if entry.total_work_ms == 0 {
+                entry.total_work_ms = info.total_work_ms;
+            }
+            if entry.model_name.is_none() && info.model_name.is_some() {
+                entry.model_name = info.model_name;
+            }
+            if entry.last_model_response.is_none() && info.last_response_text.is_some() {
+                entry.last_model_response = info.last_response_text;
+            }
+            if entry.first_prompt.is_none() && info.first_prompt.is_some() {
+                entry.first_prompt = info.first_prompt;
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -38,6 +77,7 @@ impl AgentAdapter for ClaudeAdapter {
     }
 
     async fn get_context(&self) -> Option<ContextInfo> {
+        self.maybe_reparse_transcript();
         let map = self.hook_state.lock().unwrap();
         let entry = map.get(&self.stable_agent_id)?;
         let context_used = entry.context_used?;
@@ -52,22 +92,25 @@ impl AgentAdapter for ClaudeAdapter {
     }
 
     async fn get_first_prompt(&self) -> Option<String> {
+        self.maybe_reparse_transcript();
         let map = self.hook_state.lock().unwrap();
         map.get(&self.stable_agent_id)?.first_prompt.clone()
     }
 
     async fn get_last_model_response(&self) -> Option<String> {
+        self.maybe_reparse_transcript();
         let map = self.hook_state.lock().unwrap();
         map.get(&self.stable_agent_id)?.last_model_response.clone()
     }
 
     async fn get_model_name(&self) -> Option<String> {
+        self.maybe_reparse_transcript();
         let map = self.hook_state.lock().unwrap();
         map.get(&self.stable_agent_id)?.model_name.clone()
     }
 
-    /// Returns total model generation time summed from `TurnDuration` transcript entries.
     async fn get_total_work_ms(&self) -> u64 {
+        self.maybe_reparse_transcript();
         let map = self.hook_state.lock().unwrap();
         map.get(&self.stable_agent_id)
             .map(|s| s.total_work_ms)
