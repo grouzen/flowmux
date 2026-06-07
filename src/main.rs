@@ -298,6 +298,8 @@ async fn main() -> Result<()> {
                                 name,
                                 has_worktree,
                                 remove_state.remove_worktree,
+                                remove_state.stop_agent,
+                                remove_state.focus,
                             );
                         }
                         app::AppState::GitViewer(gv) => {
