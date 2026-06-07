@@ -357,7 +357,7 @@ pub struct TranscriptInfo {
 /// Returns `None` if the file cannot be opened or contains no assistant entries.
 pub fn parse_transcript(transcript_path: &str) -> Option<TranscriptInfo> {
     use claude_code_transcripts::types::{
-        AssistantContentBlock, Entry, UserContent, UserContentBlock, UserRole,
+        AssistantContentBlock, Entry, SystemSubtype, UserContent, UserContentBlock, UserRole,
     };
 
     let file = std::fs::File::open(transcript_path).ok()?;
@@ -367,9 +367,10 @@ pub fn parse_transcript(transcript_path: &str) -> Option<TranscriptInfo> {
     let mut last_context_used: Option<u64> = None;
     let mut last_response_text: Option<String> = None;
     let mut last_model_name: Option<String> = None;
-    let mut total_work_ms: u64 = 0;
 
-    // For computing per-turn work time from timestamps.
+    let mut turn_duration_sum_ms: u64 = 0;
+
+    let mut ts_total_work_ms: u64 = 0;
     let mut current_turn_user_ts: Option<i64> = None;
     let mut current_turn_last_assistant_ts: Option<i64> = None;
 
@@ -385,15 +386,19 @@ pub fn parse_transcript(transcript_path: &str) -> Option<TranscriptInfo> {
 
         match entry {
             Entry::User(u) => {
-                // Skip tool results, meta entries, and internal command messages.
-                if u.source_tool_use_id.is_some() {
-                    continue;
-                }
                 if u.envelope.is_meta == Some(true) {
                     continue;
                 }
                 if !matches!(u.message.role, UserRole::User) {
                     continue;
+                }
+                if let UserContent::Blocks(blocks) = &u.message.content {
+                    if blocks
+                        .iter()
+                        .any(|b| matches!(b, UserContentBlock::ToolResult { .. }))
+                    {
+                        continue;
+                    }
                 }
 
                 let text = match &u.message.content {
@@ -408,21 +413,17 @@ pub fn parse_transcript(transcript_path: &str) -> Option<TranscriptInfo> {
                     UserContent::Other(_) => None,
                 };
 
-                // Skip internal command scaffolding (XML-tagged messages injected
-                // by Claude Code for slash-commands, stdout, etc.).
                 let text = match text {
                     Some(t) if t.trim_start().starts_with('<') => None,
                     other => other,
                 };
 
                 if text.is_some() {
-                    // A new real human turn begins — accumulate time for the
-                    // previous turn before resetting.
                     if let (Some(u_ts), Some(a_ts)) =
                         (current_turn_user_ts, current_turn_last_assistant_ts)
                     {
                         let delta = a_ts.saturating_sub(u_ts).max(0) as u64;
-                        total_work_ms += delta;
+                        ts_total_work_ms += delta;
                     }
                     current_turn_user_ts = parse_ts_ms(&u.envelope.timestamp);
                     current_turn_last_assistant_ts = None;
@@ -448,29 +449,36 @@ pub fn parse_transcript(transcript_path: &str) -> Option<TranscriptInfo> {
                 });
 
                 last_context_used = Some(context_used);
-                // Only advance last_response_text when there is an actual text
-                // block.  Tool-use-only assistant entries (no Text block) must
-                // not overwrite a previously captured response with None — that
-                // would make every Stop event after a tool-use turn appear as if
-                // there was no response.
                 if response_text.is_some() {
                     last_response_text = response_text;
                 }
                 last_model_name = a.message.model.clone();
 
-                // Update the latest assistant timestamp for this turn.
                 current_turn_last_assistant_ts = parse_ts_ms(&a.envelope.timestamp);
+            }
+
+            Entry::System(s) => {
+                if matches!(s.subtype, SystemSubtype::TurnDuration) {
+                    if let Some(ms) = s.duration_ms {
+                        turn_duration_sum_ms += ms as u64;
+                    }
+                }
             }
 
             _ => {}
         }
     }
 
-    // Accumulate time for the last (most recent) turn.
     if let (Some(u_ts), Some(a_ts)) = (current_turn_user_ts, current_turn_last_assistant_ts) {
         let delta = a_ts.saturating_sub(u_ts).max(0) as u64;
-        total_work_ms += delta;
+        ts_total_work_ms += delta;
     }
+
+    let total_work_ms = if turn_duration_sum_ms > 0 {
+        turn_duration_sum_ms
+    } else {
+        ts_total_work_ms
+    };
 
     last_context_used.map(|context_used| TranscriptInfo {
         context_used,
@@ -488,4 +496,95 @@ fn parse_ts_ms(ts: &str) -> Option<i64> {
     DateTime::parse_from_rfc3339(ts)
         .ok()
         .map(|dt| dt.timestamp_millis())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn make_transcript(lines: &[&str]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("stable-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("transcript.jsonl");
+        let mut f = std::fs::File::create(&path).unwrap();
+        for line in lines {
+            writeln!(f, "{}", line).unwrap();
+        }
+        f.flush().unwrap();
+        path
+    }
+
+    fn cleanup(path: &std::path::Path) {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::remove_dir_all(parent);
+        }
+    }
+
+    const USER_T0: &str = r#"{"type":"user","message":{"role":"user","content":"hello"},"uuid":"u1","parentUuid":null,"isSidechain":false,"sessionId":"s1","timestamp":"2026-01-01T00:00:00.000Z"}"#;
+    const ASSISTANT_T5: &str = r#"{"type":"assistant","message":{"id":"m1","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"hi"}],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":100,"output_tokens":50}},"uuid":"a1","parentUuid":"u1","isSidechain":false,"sessionId":"s1","timestamp":"2026-01-01T00:00:05.000Z"}"#;
+    const TOOL_RESULT_T50: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu1","content":"result"}]},"uuid":"tr1","parentUuid":"a1","isSidechain":false,"sessionId":"s1","timestamp":"2026-01-01T00:00:50.000Z"}"#;
+    const ASSISTANT_T60: &str = r#"{"type":"assistant","message":{"id":"m2","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"done"}],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":200,"output_tokens":100}},"uuid":"a2","parentUuid":"tr1","isSidechain":false,"sessionId":"s1","timestamp":"2026-01-01T00:01:00.000Z"}"#;
+
+    #[test]
+    fn parse_transcript_skips_tool_results() {
+        let path = make_transcript(&[USER_T0, ASSISTANT_T5, TOOL_RESULT_T50, ASSISTANT_T60]);
+        let info = parse_transcript(path.to_str().unwrap()).unwrap();
+        cleanup(&path);
+        assert_eq!(info.total_work_ms, 60_000);
+    }
+
+    #[test]
+    fn parse_transcript_multiple_turns() {
+        let path = make_transcript(&[
+            r#"{"type":"user","message":{"role":"user","content":"first"},"uuid":"u1","parentUuid":null,"isSidechain":false,"sessionId":"s1","timestamp":"2026-01-01T00:00:00.000Z"}"#,
+            r#"{"type":"assistant","message":{"id":"m1","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"r1"}],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":100,"output_tokens":50}},"uuid":"a1","parentUuid":"u1","isSidechain":false,"sessionId":"s1","timestamp":"2026-01-01T00:00:10.000Z"}"#,
+            r#"{"type":"user","message":{"role":"user","content":"second"},"uuid":"u2","parentUuid":"a1","isSidechain":false,"sessionId":"s1","timestamp":"2026-01-01T00:01:40.000Z"}"#,
+            r#"{"type":"assistant","message":{"id":"m2","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"r2"}],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":200,"output_tokens":100}},"uuid":"a2","parentUuid":"u2","isSidechain":false,"sessionId":"s1","timestamp":"2026-01-01T00:02:00.000Z"}"#,
+        ]);
+        let info = parse_transcript(path.to_str().unwrap()).unwrap();
+        cleanup(&path);
+        assert_eq!(info.total_work_ms, 30_000);
+    }
+
+    #[test]
+    fn parse_transcript_skips_meta_entries() {
+        let path = make_transcript(&[
+            r#"{"type":"user","message":{"role":"user","content":"real prompt"},"uuid":"u1","parentUuid":null,"isSidechain":false,"isMeta":false,"sessionId":"s1","timestamp":"2026-01-01T00:00:00.000Z"}"#,
+            r#"{"type":"user","message":{"role":"user","content":"meta prompt"},"uuid":"u2","parentUuid":"u1","isSidechain":false,"isMeta":true,"sessionId":"s1","timestamp":"2026-01-01T00:00:05.000Z"}"#,
+            r#"{"type":"assistant","message":{"id":"m1","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"hi"}],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":100,"output_tokens":50}},"uuid":"a1","parentUuid":"u2","isSidechain":false,"sessionId":"s1","timestamp":"2026-01-01T00:00:10.000Z"}"#,
+        ]);
+        let info = parse_transcript(path.to_str().unwrap()).unwrap();
+        cleanup(&path);
+        assert_eq!(info.total_work_ms, 10_000);
+    }
+
+    #[test]
+    fn parse_transcript_prefers_turn_duration_over_timestamps() {
+        let path = make_transcript(&[
+            USER_T0,
+            ASSISTANT_T5,
+            TOOL_RESULT_T50,
+            ASSISTANT_T60,
+            r#"{"type":"system","subtype":"turn_duration","durationMs":12958,"messageCount":15,"uuid":"s1","parentUuid":"a2","isSidechain":false,"isMeta":false,"sessionId":"s1","timestamp":"2026-01-01T00:01:00.100Z"}"#,
+        ]);
+        let info = parse_transcript(path.to_str().unwrap()).unwrap();
+        cleanup(&path);
+        assert_eq!(info.total_work_ms, 12958);
+    }
+
+    #[test]
+    fn parse_transcript_sums_multiple_turn_durations() {
+        let path = make_transcript(&[
+            USER_T0,
+            ASSISTANT_T5,
+            r#"{"type":"system","subtype":"turn_duration","durationMs":5000,"messageCount":3,"uuid":"s1","parentUuid":"a1","isSidechain":false,"isMeta":false,"sessionId":"s1","timestamp":"2026-01-01T00:00:05.100Z"}"#,
+            r#"{"type":"user","message":{"role":"user","content":"second"},"uuid":"u2","parentUuid":"a1","isSidechain":false,"sessionId":"s1","timestamp":"2026-01-01T00:01:00.000Z"}"#,
+            ASSISTANT_T60,
+            r#"{"type":"system","subtype":"turn_duration","durationMs":8000,"messageCount":4,"uuid":"s2","parentUuid":"a2","isSidechain":false,"isMeta":false,"sessionId":"s1","timestamp":"2026-01-01T00:01:05.100Z"}"#,
+        ]);
+        let info = parse_transcript(path.to_str().unwrap()).unwrap();
+        cleanup(&path);
+        assert_eq!(info.total_work_ms, 13000);
+    }
 }

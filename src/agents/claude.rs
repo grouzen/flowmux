@@ -41,7 +41,10 @@ impl AgentAdapter for ClaudeAdapter {
         let map = self.hook_state.lock().unwrap();
         let entry = map.get(&self.stable_agent_id)?;
         let context_used = entry.context_used?;
-        let total = entry.model_name.as_deref().and_then(model_context_window);
+        let total = entry
+            .model_name
+            .as_deref()
+            .and_then(crate::model_registry::model_context_window);
         Some(ContextInfo {
             used: context_used,
             total,
@@ -74,40 +77,6 @@ impl AgentAdapter for ClaudeAdapter {
     fn get_cached_session_id(&self) -> Option<String> {
         let map = self.hook_state.lock().unwrap();
         map.get(&self.stable_agent_id)?.session_id.clone()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Claude model context-window table
-// ---------------------------------------------------------------------------
-
-/// Return the context-window size (in tokens) for a known Claude model ID.
-///
-/// Source: <https://docs.anthropic.com/en/docs/about-claude/models>
-///
-/// Most Claude 3+ models ship with a 200 k token context window.  Some newer
-/// models (Opus 4.6+, Sonnet 4.6) have been upgraded to 1 M tokens, while the
-/// legacy Claude 2 / Instant lines have smaller windows.  Any unrecognised
-/// `claude-*` string defaults to 200 k so that newly released models are
-/// handled gracefully without a code change.
-pub fn model_context_window(model: &str) -> Option<u64> {
-    const HUNDRED_K: &[&str] = &["claude-2.0", "claude-instant-1"];
-    const ONE_MILLION: &[&str] = &["claude-opus-4-6", "claude-opus-4-7", "claude-sonnet-4-6"];
-
-    for prefix in HUNDRED_K {
-        if model.starts_with(prefix) {
-            return Some(100_000);
-        }
-    }
-    for prefix in ONE_MILLION {
-        if model.starts_with(prefix) {
-            return Some(1_000_000);
-        }
-    }
-    if model.starts_with("claude") {
-        Some(200_000)
-    } else {
-        None
     }
 }
 
@@ -757,51 +726,5 @@ mod tests {
         let root = serde_json::json!({"hooks": {}});
         let ports = extract_stable_ports(root.get("hooks").unwrap());
         assert!(ports.is_empty());
-    }
-
-    #[test]
-    fn context_window_legacy_100k() {
-        assert_eq!(model_context_window("claude-2.0"), Some(100_000));
-        assert_eq!(model_context_window("claude-2.0-100k"), Some(100_000));
-        assert_eq!(model_context_window("claude-instant-1"), Some(100_000));
-        assert_eq!(model_context_window("claude-instant-1.2"), Some(100_000));
-    }
-
-    #[test]
-    fn context_window_1m() {
-        assert_eq!(model_context_window("claude-opus-4-6"), Some(1_000_000));
-        assert_eq!(model_context_window("claude-opus-4-7"), Some(1_000_000));
-        assert_eq!(model_context_window("claude-sonnet-4-6"), Some(1_000_000));
-    }
-
-    #[test]
-    fn context_window_200k() {
-        assert_eq!(
-            model_context_window("claude-sonnet-4-5-20250929"),
-            Some(200_000)
-        );
-        assert_eq!(model_context_window("claude-sonnet-4-5"), Some(200_000));
-        assert_eq!(
-            model_context_window("claude-haiku-4-5-20251001"),
-            Some(200_000)
-        );
-        assert_eq!(model_context_window("claude-haiku-4-5"), Some(200_000));
-        assert_eq!(model_context_window("claude-opus-4-5"), Some(200_000));
-        assert_eq!(model_context_window("claude-opus-4-1"), Some(200_000));
-        assert_eq!(
-            model_context_window("claude-sonnet-4-20250514"),
-            Some(200_000)
-        );
-        assert_eq!(
-            model_context_window("claude-opus-4-20250514"),
-            Some(200_000)
-        );
-    }
-
-    #[test]
-    fn context_window_non_claude() {
-        assert_eq!(model_context_window("gpt-4"), None);
-        assert_eq!(model_context_window("gemini-pro"), None);
-        assert_eq!(model_context_window(""), None);
     }
 }

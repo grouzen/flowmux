@@ -18,6 +18,8 @@ pub fn render_agent_view(
     agent_entry: &AgentEntry,
     agents: &[AgentEntry],
     host_colors: HostColors,
+    blink_running: bool,
+    blink_waiting: bool,
 ) {
     // Split into top info bar, content area, and bottom status bar
     let chunks = Layout::default()
@@ -199,12 +201,14 @@ pub fn render_agent_view(
         layout[3],
     );
 
-    // --- Left: hotkey hints (ctrl+g dashboard, [ctrl+v git], ctrl+b prefix) ---
+    // --- Left: hotkey hints (ctrl+g dashboard, [ctrl+v git], ctrl+t terminal, ctrl+w waiting, ctrl+r running, ctrl+b prefix) ---
     let is_git =
         crate::git::find_git_root(std::path::Path::new(&agent_entry.config.directory)).is_some();
     let ctrlg_key = " ctrl+g ";
     let ctrlb_key = " ctrl+b ";
     let ctrlv_key = " ctrl+v ";
+    let ctrlr_key = " ctrl+r ";
+    let ctrlw_key = " ctrl+w ";
     let ctrlt_key = " ctrl+t ";
     let nav_width = if is_git {
         (ctrlg_key.len()
@@ -216,6 +220,12 @@ pub fn render_agent_view(
             + ctrlt_key.len()
             + " terminal".len()
             + 1
+            + ctrlw_key.len()
+            + " next waiting".len()
+            + 1
+            + ctrlr_key.len()
+            + " next running/idle".len()
+            + 1
             + ctrlb_key.len()
             + " prefix".len()) as u16
     } else {
@@ -224,6 +234,12 @@ pub fn render_agent_view(
             + 1
             + ctrlt_key.len()
             + " terminal".len()
+            + 1
+            + ctrlw_key.len()
+            + " next waiting".len()
+            + 1
+            + ctrlr_key.len()
+            + " next running/idle".len()
             + 1
             + ctrlb_key.len()
             + " prefix".len()) as u16
@@ -251,6 +267,18 @@ pub fn render_agent_view(
     nav_spans.push(Span::styled(" terminal", Style::default().fg(FG)));
     nav_spans.push(Span::raw(" "));
     nav_spans.push(Span::styled(
+        ctrlw_key,
+        Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
+    ));
+    nav_spans.push(Span::styled(" next waiting", Style::default().fg(FG)));
+    nav_spans.push(Span::raw(" "));
+    nav_spans.push(Span::styled(
+        ctrlr_key,
+        Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
+    ));
+    nav_spans.push(Span::styled(" next running/idle", Style::default().fg(FG)));
+    nav_spans.push(Span::raw(" "));
+    nav_spans.push(Span::styled(
         ctrlb_key,
         Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
     ));
@@ -259,28 +287,9 @@ pub fn render_agent_view(
     // --- Right: PREFIX badge (conditional) + agent statuses + brand ---
     let (brand, brand_width) = brand_line(false);
 
-    let agent_status_spans: Vec<Span> = vec![
-        Span::styled(
-            format!(" {} {} running", ICON_RUN, running),
-            Style::default().fg(GREEN),
-        ),
-        Span::styled(
-            format!(" {} {} waiting", ICON_WAIT, waiting),
-            Style::default().fg(YELLOW),
-        ),
-        Span::styled(
-            format!(" {} {} idle", ICON_IDLE, idle),
-            Style::default().fg(CYAN),
-        ),
-        Span::raw(" "),
-    ];
-    let status_width = unicode_width::UnicodeWidthStr::width(
-        format!(
-            " {} {} running {} {} waiting {} {} idle ",
-            ICON_RUN, running, ICON_WAIT, waiting, ICON_IDLE, idle
-        )
-        .as_str(),
-    ) as u16;
+    let (mut agent_status_spans, status_width) =
+        status_count_spans(running, waiting, idle, blink_running, blink_waiting, false);
+    agent_status_spans.push(Span::raw(" "));
 
     if state.prefix_active {
         let prefix_text = " PREFIX ";

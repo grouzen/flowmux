@@ -60,6 +60,8 @@ pub fn render_dashboard(
     card_response_heights: &mut Vec<u16>,
     card_response_widths: &mut Vec<u16>,
     dimmed: bool,
+    blink_running: bool,
+    blink_waiting: bool,
 ) {
     // Split into main area and keybindings bar at bottom
     let chunks = Layout::default()
@@ -70,7 +72,7 @@ pub fn render_dashboard(
     let main_area = chunks[0];
     let bar_area = chunks[1];
 
-    render_keybindings_bar(f, bar_area, agents, dimmed);
+    render_keybindings_bar(f, bar_area, agents, dimmed, blink_running, blink_waiting);
     render_grid(
         f,
         main_area,
@@ -351,10 +353,7 @@ fn render_card(
     } else {
         dir_str
     };
-    let info_a = Line::from(vec![
-        Span::styled(format!("{} ", ICON_DIR), ds(dimmed).fg(GRAY)),
-        Span::styled(dir_display, ds(dimmed).fg(GRAY)),
-    ]);
+    let dir_prefix = format!("{} ", ICON_DIR);
 
     // --- Info row B: agent_type · model_name (only if known) ---
     let agent_type = entry.config.agent_type_str();
@@ -431,7 +430,11 @@ fn render_card(
             Paragraph::new(Span::styled(truncate(text, usable), ds(dimmed).fg(FG)))
                 .style(ds(dimmed).bg(BG1))
         } else {
-            Paragraph::new("").style(ds(dimmed).bg(BG1))
+            Paragraph::new(Span::styled(
+                "No prompt yet",
+                ds(dimmed).fg(GRAY).add_modifier(Modifier::ITALIC),
+            ))
+            .style(ds(dimmed).bg(BG1))
         };
         f.render_widget(content, text_inner);
     };
@@ -449,7 +452,52 @@ fn render_card(
         .split(header_area);
 
     render_centered(f, header_splits[0], row0, row0_h);
-    f.render_widget(Paragraph::new(info_a), header_splits[1]);
+    // Render directory row with left-truncation (same approach as agent_view top bar)
+    {
+        let slot = header_splits[1];
+        let prefix_width = unicode_width::UnicodeWidthStr::width(dir_prefix.as_str()) as u16;
+        let dir_area = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(prefix_width), Constraint::Min(0)])
+            .split(slot);
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                &dir_prefix,
+                ds(dimmed).fg(GRAY),
+            ))),
+            dir_area[0],
+        );
+        let dir_text_width = dir_area[1].width as usize;
+        let dir_line_width =
+            unicode_width::UnicodeWidthStr::width(dir_display.as_str());
+        let is_truncated = dir_line_width > dir_text_width;
+        let text_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(if is_truncated { 1 } else { 0 }),
+                Constraint::Min(0),
+            ])
+            .split(dir_area[1]);
+        if is_truncated {
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    "…",
+                    ds(dimmed).fg(GRAY),
+                ))),
+                text_chunks[0],
+            );
+        }
+        let text_w = text_chunks[1].width as usize;
+        let text_scroll = dir_line_width.saturating_sub(text_w) as u16;
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                &dir_display,
+                ds(dimmed).fg(GRAY),
+            )))
+            .scroll((0, text_scroll)),
+            text_chunks[1],
+        );
+    }
     f.render_widget(Paragraph::new(info_b), header_splits[2]);
     render_prompt(f, header_splits[3], fp_text);
 
@@ -495,7 +543,20 @@ fn render_card(
                 f.render_widget(hint, hint_area);
             }
         }
-        _ => {}
+        _ => {
+            let hint_top = content_area.height.saturating_sub(1) / 2;
+            let hint_area = Rect {
+                y: content_area.y + hint_top,
+                height: 1,
+                ..content_area
+            };
+            let hint = Paragraph::new(Span::styled(
+                "No response yet",
+                ds(dimmed).fg(GRAY).add_modifier(Modifier::ITALIC),
+            ))
+            .alignment(Alignment::Center);
+            f.render_widget(hint, hint_area);
+        }
     }
 
     (content_area.height, content_area.width)
@@ -515,7 +576,14 @@ fn push_keybind<'a>(spans: &mut Vec<Span<'a>>, key: &'a str, action: &'a str, di
     spans.push(Span::styled(format!(" {}", action), ds(dimmed).fg(FG)));
 }
 
-fn render_keybindings_bar(f: &mut Frame, area: Rect, agents: &[AgentEntry], dimmed: bool) {
+fn render_keybindings_bar(
+    f: &mut Frame,
+    area: Rect,
+    agents: &[AgentEntry],
+    dimmed: bool,
+    blink_running: bool,
+    blink_waiting: bool,
+) {
     let running = count_running(agents);
     let waiting = count_waiting(agents);
     let idle = count_idle(agents);
@@ -536,27 +604,8 @@ fn render_keybindings_bar(f: &mut Frame, area: Rect, agents: &[AgentEntry], dimm
     push_keybind(&mut spans, "q", "quit", dimmed);
 
     // Right: agent status counts (leading space separates from middle chunk; trailing space before brand)
-    let status_width = unicode_width::UnicodeWidthStr::width(
-        format!(
-            " {} {} running {} {} waiting {} {} idle ",
-            ICON_RUN, running, ICON_WAIT, waiting, ICON_IDLE, idle
-        )
-        .as_str(),
-    ) as u16;
-    let status_spans: Vec<Span> = vec![
-        Span::styled(
-            format!(" {} {} running", ICON_RUN, running),
-            ds(dimmed).fg(GREEN),
-        ),
-        Span::styled(
-            format!(" {} {} waiting", ICON_WAIT, waiting),
-            ds(dimmed).fg(YELLOW),
-        ),
-        Span::styled(
-            format!(" {} {} idle ", ICON_IDLE, idle),
-            ds(dimmed).fg(CYAN),
-        ),
-    ];
+    let (status_spans, status_width) =
+        status_count_spans(running, waiting, idle, blink_running, blink_waiting, dimmed);
 
     let (brand, brand_width) = brand_line(dimmed);
 
