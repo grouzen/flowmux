@@ -2,25 +2,25 @@
 
 A keyboard-driven TUI dashboard to orchestrate CLI agents for 10x engineers.
 
-Install Stable to keep your trusty steed's harness under the solid roof!
+Install Stable to keep your trusty steed's  harness under the solid roof! :horse:
 
-# Behold
+## Table of Contents
 
-## Dashboard view
+- [Behold](#behold)
+- [Why](#why)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Configuration](#configuration)
+- [Supported Agents](#supported-agents)
+- [Plan](#plan)
+- [Architecture](#architecture)
+- [Contributing](#contributing)
 
-![](/docs/demo/dashboard-view.png)
+## Behold
 
-## Agent view
+![](/docs/demo/screencast.gif)
 
-OpenCode
-
-![](/docs/demo/agent-view-opencode.png)
-
-Claude Code
-
-![](/docs/demo/agent-view-claude-code.png)
-
-# What
+## 🤔 Why
 
 - Opinionated agent manager done my way, because I couldn't find one that's built the way I need.
 - Not laser-focused on software development only!
@@ -31,19 +31,243 @@ Claude Code
 - Survives tmux restarts.
 - Single binary, no stupid js runtimes!
 
-# Plan
+## ✨ Features
 
-- [ ] improve agent status detection
-- [ ] quick switching through: running, waiting (idle), last responded agents.
-- [ ] split-screen mode to watch several running agents.
-- [ ] git awarness: branch names, worktrees, diff views.
-- [ ] filtering (with fuzzysearch): by name, agent type, working directory, etc.
-- [ ] search in agent sessions history
+### Multi-Agent Orchestration
 
-# Tech considerations
+- Run multiple CLI agents concurrently in isolated tmux panes
+- Grid-based dashboard showing all agents at a glance
+- Real-time status tracking: running, waiting for input, stopped
+- Context usage monitoring and model name display
+- Last model response preview rendered as markdown
 
-- Built in Rust :heart: btw!
+### Quick Navigation
+
+- Jump to next running agent (`Ctrl+r`) or next waiting agent (`Ctrl+w`)
+- Vim-style navigation (`h/j/k/l`) with arrow key support
+- Mouse support: click to select, scroll to browse responses
+- Reorder agent cards on the fly (`Ctrl+arrows`)
+
+### Survives Restarts
+
+- Auto-resumes dead agent panes on startup (e.g., after tmux restart)
+- Configuration persists across sessions
+
+### Git Worktree Integration
+
+- Automatically create isolated git worktrees per agent
+- Each agent works on its own branch without conflicts
+- Optional worktree cleanup when removing agents
+- Perfect for parallel feature development
+
+### In-App Notifications
+
+- Visual indicators when agent status changes
+- Blinking status bar highlights running→waiting transitions
+- Instant awareness without constant monitoring
+
+### Configurable Git Viewer
+
+- Launch your favorite git UI (lazygit, tig, etc) with `Ctrl+v`
+- Configured via `git_viewer` in `~/.config/stable/config.toml`
+- Opens in the agent's working directory
+
+### Persistent Terminal
+
+- Dedicated terminal per agent (`Ctrl+t`) in the agent's working directory
+- Persists across agent view sessions
+- Useful for quick commands, git operations, or file editing
+
+### Prefix Mode
+
+- `Ctrl+b` arms prefix mode: next key forwarded directly to the agent
+- Bypass stable's keybindings when you need to send intercepted keys
+- Works in agent view, git viewer, and terminal view
+
+## 📦 Installation
+
+### 📝 From source
+
+Requires [Rust](https://rustup.rs/) (Edition 2024) and [Zig v0.15.2](https://ziglang.org/) (for building vendored libghostty-vt).
+
+```bash
+cargo build --release
+```
+
+The binary will be at `target/release/stable`.
+
+Or install directly:
+
+```bash
+cargo install --path .
+```
+
+## 🚀 Usage
+
+### Prerequisites
+
+- **tmux** must be installed and available in `$PATH`
+- At least one supported agent CLI (`opencode` or `claude`)
+
+### Launch
+
+```bash
+# Launch with default tmux session name "stable"
+stable
+
+# Launch with custom session name
+stable --tmux-session my-session
+
+# Specify custom worktrees location
+stable --git-worktrees-location /path/to/worktrees
+
+# Enable specific agents only
+stable --enabled-agents opencode,claude
+```
+
+### CLI Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--tmux-session` | `stable` | Name of the tmux session to use |
+| `--git-worktrees-location` | `~/.local/share/stable/worktrees` | Base directory for git worktrees created by stable |
+| `--enabled-agents` | *(all discovered)* | Comma-separated list of agent types to enable (e.g., `opencode,claude`). Overrides `enabled_agents` in global config |
+
+### Keybindings
+
+#### Dashboard
+
+| Key | Action |
+|-----|--------|
+| `q` | Quit |
+| `n` | Create new agent |
+| `d` | Delete selected agent |
+| `Enter` | Open agent view |
+| `h` / `←` | Navigate left |
+| `l` / `→` | Navigate right |
+| `k` / `↑` | Navigate up |
+| `j` / `↓` | Navigate down |
+| `Ctrl+h` / `Ctrl+←` | Move card left |
+| `Ctrl+l` / `Ctrl+→` | Move card right |
+| `Ctrl+k` / `Ctrl+↑` | Move card up |
+| `Ctrl+j` / `Ctrl+↓` | Move card down |
+| `PageUp` | Scroll response up |
+| `PageDown` | Scroll response down |
+| Mouse click | Select agent |
+| Mouse scroll | Scroll response |
+
+#### Agent View
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+g` | Return to dashboard |
+| `Ctrl+b` | Arm prefix mode (next key forwarded to pane) |
+| `Ctrl+v` | Open git viewer (if `git_viewer` configured and in git repo) |
+| `Ctrl+t` | Open persistent terminal in agent's working directory |
+| `Ctrl+r` | Jump to next running/idle agent |
+| `Ctrl+w` | Jump to next waiting agent |
+| `PageUp` / `PageDown` | Scroll pane |
+| Mouse scroll | Scroll pane |
+
+All other keys are forwarded to the agent's tmux pane.
+
+#### Git Viewer
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+b` | Arm prefix mode (next key forwarded to pane) |
+| `Ctrl+v` | Close git viewer, return to agent view |
+| `Ctrl+g` | Close git viewer, return to dashboard |
+
+All other keys are forwarded to the git viewer's tmux pane.
+
+#### Terminal View
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+b` | Arm prefix mode (next key forwarded to pane) |
+| `Ctrl+t` | Close terminal, return to agent view |
+| `Ctrl+g` | Close terminal, return to dashboard |
+
+All other keys are forwarded to the terminal's tmux pane.
+
+## ⚙️ Configuration
+
+### Global Configuration
+
+Located at `~/.config/stable/config.toml`:
+
+```toml
+# Base port for Claude Code hook server (default: 15100)
+claude_hook_server_port = 15100
+
+# External git viewer command (optional)
+# Examples: "lazygit", "lazydiff diff"
+git_viewer = "lazygit"
+
+# Whitelist of agent types to enable (optional)
+# When omitted, all discovered agents are available
+enabled_agents = ["opencode", "claude"]
+```
+
+### Per-Session Configuration
+
+Automatically managed at `~/.config/stable/sessions/<session>.toml`. Contains the list of agents with their pane targets, directories, and session IDs. You typically don't need to edit this manually.
+
+## 🤖 Supported Agents
+
+### OpenCode
+
+- Auto-detected via `$PATH` (`opencode` binary)
+- Connects via HTTP + SSE event stream for real-time updates
+
+### Claude Code
+
+- Auto-detected via `$PATH` (`claude` binary)
+- Integrates via hook server for status callbacks
+- Falls back to transcript parsing for context information
+
+## 🗺️ Plan
+
+- [x] Improve agent status detection
+- [x] Quick switching through: running, waiting (idle), last responded agents
+- [x] Git awareness: branch names, worktrees, diff views
+- [ ] Per-project dashboards
+- [ ] Support more agents: Codex, Pi, etc.
+- [ ] Session history
+- [ ] Filtering (with fuzzysearch): by name, agent type, working directory, etc.
+- [ ] Split-screen mode to watch several running agents
+
+## 📝 Architecture
+
+See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed technical documentation.
+
+### Tech Stack
+
+- **Rust** with Ratatui TUI framework
+- **Tokio** async runtime
+- **tmux** for process isolation and pane management
+- **libghostty-vt** (vendored) for faithful terminal emulation
+- **git2** for repository detection and worktree management
+
+### Tech Notes
+
+- Built in Rust ❤️ btw!
 - Consumes around 100MB of memory and does not burn your CPU!
 - Depends on tmux, so you must install it!
 - The code is garbage because I vibe coded it!
-- Supported harnesses: OpenCode, Claude Code (pi is the next one?)
+
+
+## 🤝 Contributing
+
+Contributions are welcome! Please ensure your changes build successfully:
+
+```bash
+cargo build
+```
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes using [Conventional Commits](https://www.conventionalcommits.org/) (`git commit -m 'feat: add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
