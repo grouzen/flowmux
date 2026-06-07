@@ -18,19 +18,7 @@ Install Stable to keep your trusty steed's  harness under the solid roof! :horse
 
 ## Behold
 
-### Dashboard view
-
-![](/docs/demo/dashboard-view.png)
-
-### Agent view
-
-OpenCode
-
-![](/docs/demo/agent-view-opencode.png)
-
-Claude Code
-
-![](/docs/demo/agent-view-claude-code.png)
+![](/docs/demo/screencast.gif)
 
 ## 🤔 Why
 
