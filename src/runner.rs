@@ -102,10 +102,7 @@ impl AgentRunner {
                 transcript_path,
             } => {
                 self.ensure_claude();
-                let port = self.global_config.claude_hook_server_port;
-                // Ensure hooks are up-to-date on every restore so that an
-                // upgrade (new hook events added) takes effect on restart
-                // without requiring the user to create a new agent.
+                let port = self.claude.as_ref().unwrap().port();
                 let _ = install_hooks(port);
                 let runtime = self.claude.as_ref().unwrap();
                 runtime.restore(
@@ -174,10 +171,9 @@ impl AgentRunner {
             }
 
             AgentType::Claude => {
-                let port = self.global_config.claude_hook_server_port;
-                // Install hooks into ~/.claude/settings.json (idempotent).
-                install_hooks(port)?;
                 self.ensure_claude();
+                let port = self.claude.as_ref().unwrap().port();
+                install_hooks(port)?;
 
                 let stable_agent_id = uuid::Uuid::new_v4().to_string();
                 let window_index = tmux::new_window(&effective_dir, name)?;
@@ -239,10 +235,8 @@ impl AgentRunner {
                 session_id,
                 transcript_path: _,
             } => {
-                // Ensure the hook server is running (may not be if stable
-                // restarted and this is the first Claude operation).
                 self.ensure_claude();
-                let port = self.global_config.claude_hook_server_port;
+                let port = self.claude.as_ref().unwrap().port();
                 install_hooks(port)?;
 
                 // Open a fresh tmux window — same name and directory as before.

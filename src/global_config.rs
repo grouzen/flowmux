@@ -6,7 +6,9 @@ use std::path::PathBuf;
 /// `~/.config/stable/config.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalConfig {
-    /// Port the Claude Code hook server listens on. Default: 15100.
+    /// Base port for the Claude Code hook server.  The first instance binds
+    /// to this port; subsequent instances automatically find the next free
+    /// port.  Default: 15100.
     #[serde(default = "default_hook_port")]
     pub claude_hook_server_port: u16,
 
