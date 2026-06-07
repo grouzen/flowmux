@@ -1,4 +1,7 @@
 use std::io::{self, Read, Write};
+use std::os::unix::io::AsRawFd;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -53,18 +56,35 @@ fn probe_host_colors_inner() -> Result<HostColors> {
 
     // Read responses with timeout using a channel
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_clone = stop.clone();
+
+    let handle = std::thread::spawn(move || {
         let mut stdin = io::stdin();
+        let fd = stdin.as_raw_fd();
         let mut buf = [0u8; 1];
         loop {
-            match stdin.read(&mut buf) {
-                Ok(0) => break,
-                Ok(_) => {
-                    if tx.send(buf[0]).is_err() {
-                        break;
+            if stop_clone.load(Ordering::Relaxed) {
+                break;
+            }
+            let mut pfd = libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let ret = unsafe { libc::poll(&mut pfd, 1, 50) };
+            if ret > 0 && (pfd.revents & libc::POLLIN) != 0 {
+                match stdin.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        if tx.send(buf[0]).is_err() {
+                            break;
+                        }
                     }
+                    Err(_) => break,
                 }
-                Err(_) => break,
+            } else if ret < 0 {
+                break;
             }
         }
     });
@@ -88,6 +108,10 @@ fn probe_host_colors_inner() -> Result<HostColors> {
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
+
+    // Signal the reader thread to stop and wait for it to finish
+    stop.store(true, Ordering::Relaxed);
+    let _ = handle.join();
 
     // Parse responses
     let fg = parse_osc_response(&response, 10);
