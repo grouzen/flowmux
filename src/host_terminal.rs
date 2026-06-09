@@ -1,5 +1,4 @@
-use std::io::{self, Read, Write};
-use std::os::unix::io::AsRawFd;
+use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -48,7 +47,7 @@ fn probe_host_colors_inner() -> Result<HostColors> {
     // Send OSC 10 and 11 queries through tmux passthrough
     // Format: \x1bPtmux;\x1b<sequence>\x1b\\
     // Query: \x1b]10;?\x1b\\ and \x1b]11;?\x1b\\
-    let query = b"\x1bPtmux;\x1b\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b\\";
+    let query = b"\x1bPtmux;\x1b\x1b]10;?\x1b\x1b\\\x1b\x1b]11;?\x1b\x1b\\\x1b\\";
 
     let mut stdout = io::stdout();
     stdout.write_all(query)?;
@@ -60,8 +59,7 @@ fn probe_host_colors_inner() -> Result<HostColors> {
     let stop_clone = stop.clone();
 
     let handle = std::thread::spawn(move || {
-        let mut stdin = io::stdin();
-        let fd = stdin.as_raw_fd();
+        let fd = libc::STDIN_FILENO;
         let mut buf = [0u8; 1];
         loop {
             if stop_clone.load(Ordering::Relaxed) {
@@ -74,14 +72,17 @@ fn probe_host_colors_inner() -> Result<HostColors> {
             };
             let ret = unsafe { libc::poll(&mut pfd, 1, 50) };
             if ret > 0 && (pfd.revents & libc::POLLIN) != 0 {
-                match stdin.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(_) => {
+                let n = unsafe {
+                    libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, 1)
+                };
+                match n {
+                    0 => break,
+                    1 => {
                         if tx.send(buf[0]).is_err() {
                             break;
                         }
                     }
-                    Err(_) => break,
+                    _ => break,
                 }
             } else if ret < 0 {
                 break;
