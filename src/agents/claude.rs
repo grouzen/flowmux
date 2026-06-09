@@ -15,14 +15,14 @@ use claude_hook_server::{ClaudeHookState, HookStateMap};
 // ---------------------------------------------------------------------------
 
 pub struct ClaudeAdapter {
-    stable_agent_id: String,
+    flowmux_agent_id: String,
     hook_state: HookStateMap,
 }
 
 impl ClaudeAdapter {
-    pub fn new(stable_agent_id: String, hook_state: HookStateMap) -> Self {
+    pub fn new(flowmux_agent_id: String, hook_state: HookStateMap) -> Self {
         Self {
-            stable_agent_id,
+            flowmux_agent_id,
             hook_state,
         }
     }
@@ -30,7 +30,7 @@ impl ClaudeAdapter {
     fn maybe_reparse_transcript(&self) {
         let transcript_path = {
             let map = self.hook_state.lock().unwrap();
-            let Some(entry) = map.get(&self.stable_agent_id) else {
+            let Some(entry) = map.get(&self.flowmux_agent_id) else {
                 return;
             };
             if entry.context_used.is_some() {
@@ -47,7 +47,7 @@ impl ClaudeAdapter {
         };
 
         let mut map = self.hook_state.lock().unwrap();
-        if let Some(entry) = map.get_mut(&self.stable_agent_id) {
+        if let Some(entry) = map.get_mut(&self.flowmux_agent_id) {
             if entry.context_used.is_none() {
                 entry.context_used = Some(info.context_used);
             }
@@ -71,7 +71,7 @@ impl ClaudeAdapter {
 impl AgentAdapter for ClaudeAdapter {
     async fn get_status(&self) -> AgentStatus {
         let map = self.hook_state.lock().unwrap();
-        map.get(&self.stable_agent_id)
+        map.get(&self.flowmux_agent_id)
             .map(|s| s.status.clone())
             .unwrap_or(AgentStatus::Unknown)
     }
@@ -79,7 +79,7 @@ impl AgentAdapter for ClaudeAdapter {
     async fn get_context(&self) -> Option<ContextInfo> {
         self.maybe_reparse_transcript();
         let map = self.hook_state.lock().unwrap();
-        let entry = map.get(&self.stable_agent_id)?;
+        let entry = map.get(&self.flowmux_agent_id)?;
         let context_used = entry.context_used?;
         let total = entry
             .model_name
@@ -94,32 +94,32 @@ impl AgentAdapter for ClaudeAdapter {
     async fn get_first_prompt(&self) -> Option<String> {
         self.maybe_reparse_transcript();
         let map = self.hook_state.lock().unwrap();
-        map.get(&self.stable_agent_id)?.first_prompt.clone()
+        map.get(&self.flowmux_agent_id)?.first_prompt.clone()
     }
 
     async fn get_last_model_response(&self) -> Option<String> {
         self.maybe_reparse_transcript();
         let map = self.hook_state.lock().unwrap();
-        map.get(&self.stable_agent_id)?.last_model_response.clone()
+        map.get(&self.flowmux_agent_id)?.last_model_response.clone()
     }
 
     async fn get_model_name(&self) -> Option<String> {
         self.maybe_reparse_transcript();
         let map = self.hook_state.lock().unwrap();
-        map.get(&self.stable_agent_id)?.model_name.clone()
+        map.get(&self.flowmux_agent_id)?.model_name.clone()
     }
 
     async fn get_total_work_ms(&self) -> u64 {
         self.maybe_reparse_transcript();
         let map = self.hook_state.lock().unwrap();
-        map.get(&self.stable_agent_id)
+        map.get(&self.flowmux_agent_id)
             .map(|s| s.total_work_ms)
             .unwrap_or(0)
     }
 
     fn get_cached_session_id(&self) -> Option<String> {
         let map = self.hook_state.lock().unwrap();
-        map.get(&self.stable_agent_id)?.session_id.clone()
+        map.get(&self.flowmux_agent_id)?.session_id.clone()
     }
 }
 
@@ -157,12 +157,12 @@ impl ClaudeRuntime {
                 if let Ok(mut config) = crate::config::Config::load(&session_name) {
                     for agent in config.agents.iter_mut() {
                         if let crate::config::AgentKind::Claude {
-                            stable_agent_id,
+                            flowmux_agent_id,
                             session_id,
                             transcript_path,
                         } = &mut agent.kind
                         {
-                            if *stable_agent_id == event.stable_agent_id {
+                            if *flowmux_agent_id == event.flowmux_agent_id {
                                 if let Some(sid) = event.session_id.clone() {
                                     *session_id = Some(sid);
                                 }
@@ -190,15 +190,15 @@ impl ClaudeRuntime {
         self.port
     }
 
-    /// Create a `ClaudeAdapter` for a given `stable_agent_id`, pre-inserting
+    /// Create a `ClaudeAdapter` for a given `flowmux_agent_id`, pre-inserting
     /// a default entry in the shared map if one doesn't already exist.
-    pub(crate) fn make_adapter(&self, stable_agent_id: String) -> ClaudeAdapter {
+    pub(crate) fn make_adapter(&self, flowmux_agent_id: String) -> ClaudeAdapter {
         {
             let mut map = self.hook_state.lock().unwrap();
-            map.entry(stable_agent_id.clone())
+            map.entry(flowmux_agent_id.clone())
                 .or_insert_with(ClaudeHookState::default);
         }
-        ClaudeAdapter::new(stable_agent_id, self.hook_state.clone())
+        ClaudeAdapter::new(flowmux_agent_id, self.hook_state.clone())
     }
 
     /// Pre-populate the hook state from persisted config so that the dashboard
@@ -248,12 +248,12 @@ impl ClaudeRuntime {
             // Persist the (possibly newly inferred) transcript_path back to
             // the config file so future restarts don't need to re-infer it.
             let _ = self.persist_tx.send(claude_hook_server::HookPersistEvent {
-                stable_agent_id: id.to_owned(),
+                flowmux_agent_id: id.to_owned(),
                 session_id: entry.session_id.clone(),
                 transcript_path: Some(path.clone()),
             });
         } else if entry.session_id.is_some() {
-            // If we have a session_id but no transcript_path yet (e.g., stable restarted
+            // If we have a session_id but no transcript_path yet (e.g., flowmux restarted
             // before the first Stop hook), assume the agent is waiting for input.
             entry.status = AgentStatus::Idle;
         }
@@ -319,12 +319,12 @@ fn infer_transcript_path(session_id: &str, directory: Option<&str>) -> Option<St
 // Hook installation
 // ---------------------------------------------------------------------------
 
-/// The URL pattern that identifies stable's hook entries inside
+/// The URL pattern that identifies flowmux's hook entries inside
 /// `~/.claude/settings.json`.  Used to detect whether installation is
 /// already present and to remove stale entries when the port changes.
 const HOOK_URL_PATH: &str = "/hook";
 
-/// Build the four-event hooks block that stable merges into
+/// Build the four-event hooks block that flowmux merges into
 /// `~/.claude/settings.json`.
 fn build_hooks_block(port: u16) -> Value {
     let url = format!("http://127.0.0.1:{}{}", port, HOOK_URL_PATH);
@@ -334,8 +334,8 @@ fn build_hooks_block(port: u16) -> Value {
             "hooks": [{
                 "type": "http",
                 "url": url,
-                "headers": { "X-Stable-Agent-Id": "$STABLE_AGENT_ID" },
-                "allowedEnvVars": ["STABLE_AGENT_ID"]
+                "headers": { "X-Flowmux-Agent-Id": "$FLOWMUX_AGENT_ID" },
+                "allowedEnvVars": ["FLOWMUX_AGENT_ID"]
             }]
         }]);
         (event.to_owned(), entry)
@@ -349,8 +349,8 @@ fn build_hooks_block(port: u16) -> Value {
         "hooks": [{
             "type": "http",
             "url": url,
-            "headers": { "X-Stable-Agent-Id": "$STABLE_AGENT_ID" },
-            "allowedEnvVars": ["STABLE_AGENT_ID"]
+            "headers": { "X-Flowmux-Agent-Id": "$FLOWMUX_AGENT_ID" },
+            "allowedEnvVars": ["FLOWMUX_AGENT_ID"]
         }]
     }]);
 
@@ -372,9 +372,9 @@ fn build_hooks_block(port: u16) -> Value {
     Value::Object(hooks_map)
 }
 
-/// The canonical set of hook event names that stable registers.
+/// The canonical set of hook event names that flowmux registers.
 /// Changing this list is enough to trigger a re-install on the next run.
-const STABLE_HOOK_EVENTS: &[&str] = &[
+const FLOWMUX_HOOK_EVENTS: &[&str] = &[
     "SessionStart",
     "UserPromptSubmit",
     "PreToolUse",
@@ -386,9 +386,9 @@ const STABLE_HOOK_EVENTS: &[&str] = &[
     "SessionEnd",
 ];
 
-/// Return `true` if `hooks_root` contains a stable hook entry for the
+/// Return `true` if `hooks_root` contains a flowmux hook entry for the
 /// given `port` (identified by the exact URL `http://127.0.0.1:<port>/hook`).
-fn has_stable_hooks_for_port(hooks_root: &Value, port: u16) -> bool {
+fn has_flowmux_hooks_for_port(hooks_root: &Value, port: u16) -> bool {
     let url = format!("http://127.0.0.1:{}{}", port, HOOK_URL_PATH);
     let Some(obj) = hooks_root.as_object() else {
         return false;
@@ -411,15 +411,15 @@ fn has_stable_hooks_for_port(hooks_root: &Value, port: u16) -> bool {
     false
 }
 
-/// Return `true` if all events in `STABLE_HOOK_EVENTS` have a stable hook
+/// Return `true` if all events in `FLOWMUX_HOOK_EVENTS` have a flowmux hook
 /// registered for the given `port` in `hooks_root`.  A `false` return means
 /// the installation is incomplete or stale and a re-install is required.
-fn has_all_stable_hook_events_for_port(hooks_root: &Value, port: u16) -> bool {
+fn has_all_flowmux_hook_events_for_port(hooks_root: &Value, port: u16) -> bool {
     let url = format!("http://127.0.0.1:{}{}", port, HOOK_URL_PATH);
     let Some(obj) = hooks_root.as_object() else {
         return false;
     };
-    STABLE_HOOK_EVENTS.iter().all(|event| {
+    FLOWMUX_HOOK_EVENTS.iter().all(|event| {
         let Some(arr) = obj.get(*event).and_then(Value::as_array) else {
             return false;
         };
@@ -432,9 +432,9 @@ fn has_all_stable_hook_events_for_port(hooks_root: &Value, port: u16) -> bool {
     })
 }
 
-/// Remove stable hook entries for a specific `port` from the hooks object
+/// Remove flowmux hook entries for a specific `port` from the hooks object
 /// (in-place).  Entries for other ports are preserved.
-fn remove_stable_hooks_for_port(hooks_root: &mut Value, port: u16) {
+fn remove_flowmux_hooks_for_port(hooks_root: &mut Value, port: u16) {
     let url = format!("http://127.0.0.1:{}{}", port, HOOK_URL_PATH);
     let Some(obj) = hooks_root.as_object_mut() else {
         return;
@@ -452,8 +452,8 @@ fn remove_stable_hooks_for_port(hooks_root: &mut Value, port: u16) {
     }
 }
 
-/// Extract all unique stable hook ports from the hooks object.
-fn extract_stable_ports(hooks_root: &Value) -> Vec<u16> {
+/// Extract all unique flowmux hook ports from the hooks object.
+fn extract_flowmux_ports(hooks_root: &Value) -> Vec<u16> {
     let mut ports = Vec::new();
     let Some(obj) = hooks_root.as_object() else {
         return ports;
@@ -501,13 +501,13 @@ fn is_port_alive(port: u16) -> bool {
     }
 }
 
-/// Remove hook entries for stable instances whose servers are no longer
+/// Remove hook entries for flowmux instances whose servers are no longer
 /// running (dead ports).  Preserves entries for live ports.
 fn cleanup_dead_hooks(hooks_root: &mut Value) {
-    let ports = extract_stable_ports(hooks_root);
+    let ports = extract_flowmux_ports(hooks_root);
     for port in ports {
         if !is_port_alive(port) {
-            remove_stable_hooks_for_port(hooks_root, port);
+            remove_flowmux_hooks_for_port(hooks_root, port);
         }
     }
 }
@@ -516,13 +516,13 @@ fn settings_path() -> Option<std::path::PathBuf> {
     dirs::home_dir().map(|h| h.join(".claude").join("settings.json"))
 }
 
-/// Merge stable's HTTP hooks into `~/.claude/settings.json` for this instance's port.
+/// Merge flowmux's HTTP hooks into `~/.claude/settings.json` for this instance's port.
 ///
-/// - Cleans up hooks from dead stable instances first.
+/// - Cleans up hooks from dead flowmux instances first.
 /// - No-op if all expected events are already registered for this port.
 /// - Upgrades stale/partial installations for this port by removing and
 ///   re-adding them.
-/// - Preserves hooks from other live stable instances running on different ports.
+/// - Preserves hooks from other live flowmux instances running on different ports.
 pub fn install_hooks(port: u16) -> Result<()> {
     let path = settings_path().context("cannot determine home directory")?;
 
@@ -541,11 +541,11 @@ pub fn install_hooks(port: u16) -> Result<()> {
 
     cleanup_dead_hooks(hooks);
 
-    if has_all_stable_hook_events_for_port(hooks, port) {
+    if has_all_flowmux_hook_events_for_port(hooks, port) {
         return Ok(());
     }
-    if has_stable_hooks_for_port(hooks, port) {
-        remove_stable_hooks_for_port(hooks, port);
+    if has_flowmux_hooks_for_port(hooks, port) {
+        remove_flowmux_hooks_for_port(hooks, port);
     }
 
     let new_block = build_hooks_block(port);
@@ -568,7 +568,7 @@ pub fn install_hooks(port: u16) -> Result<()> {
 }
 
 /// Remove this instance's hook entries from `~/.claude/settings.json`.
-/// Hooks from other stable instances are preserved.
+/// Hooks from other flowmux instances are preserved.
 pub fn uninstall_hooks(port: u16) -> Result<()> {
     let path = settings_path().context("cannot determine home directory")?;
     uninstall_hooks_at(&path, port)
@@ -583,7 +583,7 @@ fn uninstall_hooks_at(path: &std::path::Path, port: u16) -> Result<()> {
     let mut root: Value = serde_json::from_str(&raw).with_context(|| format!("parse {:?}", path))?;
 
     if let Some(hooks) = root.get_mut("hooks") {
-        remove_stable_hooks_for_port(hooks, port);
+        remove_flowmux_hooks_for_port(hooks, port);
     }
 
     write_settings(path, &root)
@@ -622,9 +622,9 @@ mod tests {
             .unwrap()
             .entry("hooks")
             .or_insert_with(|| serde_json::json!({}));
-        if !has_all_stable_hook_events_for_port(hooks, port) {
-            if has_stable_hooks_for_port(hooks, port) {
-                remove_stable_hooks_for_port(hooks, port);
+        if !has_all_flowmux_hook_events_for_port(hooks, port) {
+            if has_flowmux_hooks_for_port(hooks, port) {
+                remove_flowmux_hooks_for_port(hooks, port);
             }
             let new_block = build_hooks_block(port);
             let hooks_obj = hooks.as_object_mut().unwrap();
@@ -645,7 +645,7 @@ mod tests {
     fn install_adds_all_events() {
         let root = make_settings(15100);
         let hooks = root.get("hooks").unwrap().as_object().unwrap();
-        for event in STABLE_HOOK_EVENTS {
+        for event in FLOWMUX_HOOK_EVENTS {
             assert!(hooks.contains_key(*event), "missing event: {event}");
         }
     }
@@ -660,15 +660,15 @@ mod tests {
     }
 
     #[test]
-    fn uninstall_removes_stable_entries() {
+    fn uninstall_removes_flowmux_entries() {
         let mut root = make_settings(15100);
         if let Some(hooks) = root.get_mut("hooks") {
-            remove_stable_hooks_for_port(hooks, 15100);
+            remove_flowmux_hooks_for_port(hooks, 15100);
         }
         let hooks = root.get("hooks").unwrap();
         assert!(
-            !has_stable_hooks_for_port(hooks, 15100),
-            "stable hooks still present after removal"
+            !has_flowmux_hooks_for_port(hooks, 15100),
+            "flowmux hooks still present after removal"
         );
     }
 
@@ -683,7 +683,7 @@ mod tests {
         });
         install_hooks_into(&mut root, 15100);
         if let Some(hooks) = root.get_mut("hooks") {
-            remove_stable_hooks_for_port(hooks, 15100);
+            remove_flowmux_hooks_for_port(hooks, 15100);
         }
         let arr = root["hooks"]["SessionStart"].as_array().unwrap();
         assert_eq!(arr.len(), 1, "user hook was incorrectly removed");
@@ -694,28 +694,28 @@ mod tests {
     #[test]
     fn stale_install_is_upgraded() {
         let old_url = "http://127.0.0.1:15100/hook";
-        let stable_entry = serde_json::json!([{
+        let flowmux_entry = serde_json::json!([{
             "hooks": [{"type": "http", "url": old_url}]
         }]);
         let mut root = serde_json::json!({
             "hooks": {
-                "SessionStart":     stable_entry.clone(),
-                "UserPromptSubmit": stable_entry.clone(),
-                "Stop":             stable_entry.clone(),
-                "SessionEnd":       stable_entry.clone(),
+                "SessionStart":     flowmux_entry.clone(),
+                "UserPromptSubmit": flowmux_entry.clone(),
+                "Stop":             flowmux_entry.clone(),
+                "SessionEnd":       flowmux_entry.clone(),
             }
         });
 
         let hooks = root.get("hooks").unwrap();
-        assert!(has_stable_hooks_for_port(hooks, 15100), "should detect existing hooks");
+        assert!(has_flowmux_hooks_for_port(hooks, 15100), "should detect existing hooks");
         assert!(
-            !has_all_stable_hook_events_for_port(hooks, 15100),
+            !has_all_flowmux_hook_events_for_port(hooks, 15100),
             "should detect stale install"
         );
 
         install_hooks_into(&mut root, 15100);
         let hooks = root.get("hooks").unwrap().as_object().unwrap();
-        for event in STABLE_HOOK_EVENTS {
+        for event in FLOWMUX_HOOK_EVENTS {
             let arr = hooks
                 .get(*event)
                 .and_then(Value::as_array)
@@ -732,7 +732,7 @@ mod tests {
 
         let hooks_val = root.get("hooks").unwrap();
         let hooks = hooks_val.as_object().unwrap();
-        for event in STABLE_HOOK_EVENTS {
+        for event in FLOWMUX_HOOK_EVENTS {
             let arr = hooks
                 .get(*event)
                 .and_then(Value::as_array)
@@ -741,8 +741,8 @@ mod tests {
         }
 
         let hooks = root.get("hooks").unwrap();
-        assert!(has_all_stable_hook_events_for_port(hooks, 15100));
-        assert!(has_all_stable_hook_events_for_port(hooks, 15101));
+        assert!(has_all_flowmux_hook_events_for_port(hooks, 15100));
+        assert!(has_all_flowmux_hook_events_for_port(hooks, 15101));
     }
 
     #[test]
@@ -752,12 +752,12 @@ mod tests {
         install_hooks_into(&mut root, 15101);
 
         if let Some(hooks) = root.get_mut("hooks") {
-            remove_stable_hooks_for_port(hooks, 15100);
+            remove_flowmux_hooks_for_port(hooks, 15100);
         }
 
         let hooks = root.get("hooks").unwrap();
-        assert!(!has_stable_hooks_for_port(hooks, 15100));
-        assert!(has_all_stable_hook_events_for_port(hooks, 15101));
+        assert!(!has_flowmux_hooks_for_port(hooks, 15100));
+        assert!(has_all_flowmux_hook_events_for_port(hooks, 15101));
     }
 
     #[test]
@@ -767,7 +767,7 @@ mod tests {
         install_hooks_into(&mut root, 15101);
 
         let hooks = root.get("hooks").unwrap();
-        let mut ports = extract_stable_ports(hooks);
+        let mut ports = extract_flowmux_ports(hooks);
         ports.sort();
         assert_eq!(ports, vec![15100, 15101]);
     }
@@ -775,14 +775,14 @@ mod tests {
     #[test]
     fn extract_ports_empty() {
         let root = serde_json::json!({"hooks": {}});
-        let ports = extract_stable_ports(root.get("hooks").unwrap());
+        let ports = extract_flowmux_ports(root.get("hooks").unwrap());
         assert!(ports.is_empty());
     }
 
     #[test]
     fn uninstall_hooks_removes_entries_from_file() {
         let dir = std::env::temp_dir().join(format!(
-            "stable-test-uninstall-{}",
+            "flowmux-test-uninstall-{}",
             std::process::id()
         ));
         std::fs::create_dir_all(&dir).unwrap();
@@ -796,7 +796,7 @@ mod tests {
         let raw = std::fs::read_to_string(&path).unwrap();
         let updated: Value = serde_json::from_str(&raw).unwrap();
         assert!(
-            !has_stable_hooks_for_port(&updated, 15100),
+            !has_flowmux_hooks_for_port(&updated, 15100),
             "hooks for port 15100 should be removed"
         );
 

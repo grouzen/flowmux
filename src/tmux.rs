@@ -13,10 +13,10 @@ pub fn init(name: &str) {
     let _ = SESSION.set(name.to_string());
 }
 
-/// Returns the active tmux session name.  Falls back to `"stable"` if
+/// Returns the active tmux session name.  Falls back to `"flowmux"` if
 /// `init()` was never called.
 pub fn session_name() -> &'static str {
-    SESSION.get().map(String::as_str).unwrap_or("stable")
+    SESSION.get().map(String::as_str).unwrap_or("flowmux")
 }
 
 /// Replace non-`[a-zA-Z0-9_-]` chars with `-`, collapse consecutive dashes, trim edges.
@@ -68,7 +68,7 @@ pub fn ensure_session() -> Result<()> {
             .context("failed to create tmux session")?;
     }
 
-    // Raise the per-pane scrollback limit so stable's AgentView can show deep
+    // Raise the per-pane scrollback limit so flowmux's AgentView can show deep
     // history without requiring the user to touch ~/.tmux.conf.  We use the
     // global option so it applies to every new window; existing windows are
     // unaffected but that is acceptable (they were created with whatever limit
@@ -122,7 +122,7 @@ pub fn send_keys(target: &str, keys: &str) -> Result<()> {
 pub fn send_literal(target: &str, data: &str) -> Result<()> {
     use std::io::Write;
     let mut child = Command::new("tmux")
-        .args(["load-buffer", "-b", "stable_buf", "-"])
+        .args(["load-buffer", "-b", "flowmux_buf", "-"])
         .stdin(Stdio::piped())
         .spawn()
         .context("failed to spawn tmux load-buffer")?;
@@ -132,7 +132,7 @@ pub fn send_literal(target: &str, data: &str) -> Result<()> {
     child.wait().context("tmux load-buffer failed")?;
 
     Command::new("tmux")
-        .args(["paste-buffer", "-t", target, "-b", "stable_buf"])
+        .args(["paste-buffer", "-t", target, "-b", "flowmux_buf"])
         .status()
         .with_context(|| format!("failed to paste buffer to {}", target))?;
     Ok(())

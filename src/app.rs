@@ -74,7 +74,7 @@ pub struct RemoveAgentState {
 pub struct GitViewerState {
     /// Index of the agent we came from (to return to on exit).
     pub agent_idx: usize,
-    /// tmux pane target (e.g. "stable:5.0").
+    /// tmux pane target (e.g. "flowmux:5.0").
     pub pane: String,
     /// Captured pane output lines.
     pub lines: Vec<String>,
@@ -97,7 +97,7 @@ pub struct GitViewerState {
 pub struct TerminalViewState {
     /// Index of the agent we came from (to return to on exit).
     pub agent_idx: usize,
-    /// tmux pane target (e.g. "stable:5.0").
+    /// tmux pane target (e.g. "flowmux:5.0").
     pub pane: String,
     /// Captured pane output lines.
     pub lines: Vec<String>,
@@ -1287,7 +1287,7 @@ impl App {
             // Arm prefix mode: next keypress will be forwarded to the pane
             // verbatim, bypassing all app hotkeys.  This lets the user send
             // keys like Ctrl-g to the agent (e.g. Claude Code's editor shortcut)
-            // without triggering the stable dashboard switch.
+            // without triggering the flowmux dashboard switch.
             KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.agent_view_state.prefix_active = true;
                 self.dirty = true;
@@ -2054,12 +2054,11 @@ impl App {
     fn remove_agent(&mut self, idx: usize, remove_worktree: bool, stop_agent: bool) {
         if idx < self.agents.len() {
             if let Some(agent_config) = self.config.agents.get(idx) {
-                if stop_agent {
-                    if let Some(colon_pos) = agent_config.pane.find(':') {
-                        if let Some(dot_pos) = agent_config.pane[colon_pos..].find('.') {
-                            let window_target = &agent_config.pane[..colon_pos + dot_pos];
-                            let _ = tmux::kill_window(window_target);
-                        }
+                // Extract window target from pane (e.g., "flowmux:1.0" -> "flowmux:1")
+                if let Some(colon_pos) = agent_config.pane.find(':') {
+                    if let Some(dot_pos) = agent_config.pane[colon_pos..].find('.') {
+                        let window_target = &agent_config.pane[..colon_pos + dot_pos];
+                        let _ = tmux::kill_window(window_target);
                     }
                 }
 

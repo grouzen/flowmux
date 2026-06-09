@@ -97,7 +97,7 @@ impl AgentRunner {
                 Box::new(OpenCodeAdapter::new(*port, session_id.clone()))
             }
             AgentKind::Claude {
-                stable_agent_id,
+                flowmux_agent_id,
                 session_id,
                 transcript_path,
             } => {
@@ -106,12 +106,12 @@ impl AgentRunner {
                 let _ = install_hooks(port);
                 let runtime = self.claude.as_ref().unwrap();
                 runtime.restore(
-                    stable_agent_id,
+                    flowmux_agent_id,
                     session_id.clone(),
                     transcript_path.clone(),
                     Some(&config.directory),
                 );
-                Box::new(runtime.make_adapter(stable_agent_id.clone()))
+                Box::new(runtime.make_adapter(flowmux_agent_id.clone()))
             }
         }
     }
@@ -175,25 +175,25 @@ impl AgentRunner {
                 let port = self.claude.as_ref().unwrap().port();
                 install_hooks(port)?;
 
-                let stable_agent_id = uuid::Uuid::new_v4().to_string();
+                let flowmux_agent_id = uuid::Uuid::new_v4().to_string();
                 let window_index = tmux::new_window(&effective_dir, name)?;
                 let pane = format!("{}:{}.0", tmux::session_name(), window_index);
 
-                // Launch claude with the stable agent ID exported as an env var.
+                // Launch claude with the flowmux agent ID exported as an env var.
                 tmux::send_keys(
                     &pane,
-                    &format!("STABLE_AGENT_ID={} claude\n", stable_agent_id),
+                    &format!("FLOWMUX_AGENT_ID={} claude\n", flowmux_agent_id),
                 )?;
 
                 let runtime = self.claude.as_ref().unwrap();
-                let adapter = runtime.make_adapter(stable_agent_id.clone());
+                let adapter = runtime.make_adapter(flowmux_agent_id.clone());
 
                 let config = AgentConfig {
                     name: name.to_owned(),
                     pane,
                     directory: effective_dir,
                     kind: AgentKind::Claude {
-                        stable_agent_id,
+                        flowmux_agent_id,
                         session_id: None,
                         transcript_path: None,
                     },
@@ -231,7 +231,7 @@ impl AgentRunner {
             }
 
             AgentKind::Claude {
-                stable_agent_id,
+                flowmux_agent_id,
                 session_id,
                 transcript_path: _,
             } => {
@@ -243,26 +243,26 @@ impl AgentRunner {
                 let window_index = tmux::new_window(&config.directory, &config.name)?;
                 let new_pane = format!("{}:{}.0", tmux::session_name(), window_index);
 
-                // Reuse the *same* stable_agent_id so the hook_state entry
+                // Reuse the *same* flowmux_agent_id so the hook_state entry
                 // (first_prompt, context, session history) is preserved across
                 // the restart. The hook server will accept events from the new
                 // process because the entry already exists in the map.
                 let runtime = self.claude.as_ref().unwrap();
-                runtime.reset_status(stable_agent_id);
+                runtime.reset_status(flowmux_agent_id);
 
-                // Launch claude, exporting the stable agent ID.
+                // Launch claude, exporting the flowmux agent ID.
                 // If we have a prior Claude session ID, resume it so the
                 // conversation context is preserved across restarts.
                 let claude_cmd = match session_id {
                     Some(sid) => format!(
-                        "STABLE_AGENT_ID={} claude --resume {}\n",
-                        stable_agent_id, sid
+                        "FLOWMUX_AGENT_ID={} claude --resume {}\n",
+                        flowmux_agent_id, sid
                     ),
-                    None => format!("STABLE_AGENT_ID={} claude\n", stable_agent_id),
+                    None => format!("FLOWMUX_AGENT_ID={} claude\n", flowmux_agent_id),
                 };
                 tmux::send_keys(&new_pane, &claude_cmd)?;
 
-                let adapter = runtime.make_adapter(stable_agent_id.clone());
+                let adapter = runtime.make_adapter(flowmux_agent_id.clone());
                 let mut new_config = config.clone();
                 new_config.pane = new_pane;
                 Ok((new_config, Box::new(adapter)))

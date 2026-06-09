@@ -25,16 +25,16 @@ use global_config::GlobalConfig;
 use models::{AgentEntry, AgentMeta, AgentType};
 use runner::AgentRunner;
 
-/// stable — multi-agent TUI dashboard
+/// flowmux — multi-agent TUI dashboard
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
     /// Name of the tmux session to use
-    #[arg(long, default_value = "stable")]
+    #[arg(long, default_value = "flowmux")]
     tmux_session: String,
 
-    /// Base directory for git worktrees created by stable.
-    /// Defaults to ~/.local/share/stable/worktrees
+    /// Base directory for git worktrees created by flowmux.
+    /// Defaults to ~/.local/share/flowmux/worktrees
     #[arg(long)]
     git_worktrees_location: Option<PathBuf>,
 
@@ -47,18 +47,18 @@ struct Cli {
 /// Resolve the effective worktrees base directory.
 ///
 /// Uses the CLI override when provided; otherwise falls back to
-/// `~/.local/share/stable/worktrees`.
+/// `~/.local/share/flowmux/worktrees`.
 fn resolve_worktrees_base(override_path: Option<PathBuf>) -> PathBuf {
     if let Some(p) = override_path {
         return p;
     }
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("stable")
+        .join("flowmux")
         .join("worktrees")
 }
 
-/// Acquires an exclusive flock on `/tmp/stable-<session>.lock`.
+/// Acquires an exclusive flock on `/tmp/flowmux-<session>.lock`.
 ///
 /// The returned `File` must be kept alive for the duration of the process —
 /// dropping it releases the lock.  The OS also releases it automatically on
@@ -66,7 +66,7 @@ fn resolve_worktrees_base(override_path: Option<PathBuf>) -> PathBuf {
 fn acquire_session_lock(session: &str) -> Result<std::fs::File> {
     use fs2::FileExt as _;
 
-    let lock_path = PathBuf::from(format!("/tmp/stable-{session}.lock"));
+    let lock_path = PathBuf::from(format!("/tmp/flowmux-{session}.lock"));
 
     let file = std::fs::OpenOptions::new()
         .create(true)
@@ -75,7 +75,7 @@ fn acquire_session_lock(session: &str) -> Result<std::fs::File> {
 
     file.try_lock_exclusive().map_err(|_| {
         anyhow::anyhow!(
-            "Another instance of stable is already running for tmux session '{session}'."
+            "Another instance of flowmux is already running for tmux session '{session}'."
         )
     })?;
 

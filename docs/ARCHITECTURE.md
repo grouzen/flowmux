@@ -1,8 +1,8 @@
-# Stable Architecture
+# Flowmux Architecture
 
 ## Overview
 
-Stable is a keyboard-driven TUI dashboard built in Rust that orchestrates CLI agents (OpenCode, Claude Code) inside tmux panes. It provides a grid-based dashboard for monitoring multiple concurrent agent sessions, and an immersive agent view that faithfully renders the agent's terminal output using an embedded terminal emulator (Ghostty VT).
+Flowmux is a terminal-native AI agent multiplexer built in Rust that orchestrates CLI agents (OpenCode, Claude Code) inside tmux panes. It provides a grid-based dashboard for monitoring multiple concurrent agent sessions, and an immersive agent view that faithfully renders the agent's terminal output using an embedded terminal emulator (Ghostty VT).
 
 ## Technology Stack
 
@@ -68,7 +68,7 @@ Stable is a keyboard-driven TUI dashboard built in Rust that orchestrates CLI ag
        ▼                                     ▼
 ┌─────────────────────────────────────────────────────────┐
 │                    tmux Server                            │
-│  Session "stable" → Windows → Panes → Agent CLIs        │
+│  Session "flowmux" → Windows → Panes → Agent CLIs        │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -78,7 +78,7 @@ Stable is a keyboard-driven TUI dashboard built in Rust that orchestrates CLI ag
 
 Minimal bootstrap that:
 - Parses CLI arguments (`--tmux-session`, `--git-worktrees-location`, `--enabled-agents`)
-- Acquires an exclusive file lock (`/tmp/stable-<session>.lock`) to prevent duplicate instances
+- Acquires an exclusive file lock (`/tmp/flowmux-<session>.lock`) to prevent duplicate instances
 - Probes `$PATH` for agent binaries (`opencode`, `claude`)
 - Loads global and per-session configuration
 - Ensures the tmux session exists
@@ -100,7 +100,7 @@ The `App` struct is the central coordinator. It owns:
 ```rust
 enum AppState {
     Dashboard,                    // Grid of agent cards
-    AgentView(usize),            // Full-screen tmux pane viewer
+    AgentView(usize),            // Full-screen pane viewer
     CreateAgentDialog,           // New agent creation form
     RemoveAgentDialog(State),    // Removal confirmation
     GitViewer(State),            // External git viewer pane
@@ -155,9 +155,9 @@ trait AgentAdapter: Send + Sync {
 
 #### Claude Adapter (`agents/claude.rs`)
 
-- Launches `claude` in a tmux window with `STABLE_AGENT_ID` env var
+- Launches `claude` in a tmux window with `FLOWMUX_AGENT_ID` env var
 - Runs a local **hook server** (axum) that receives callbacks from Claude Code's hook mechanism
-- `ClaudeRuntime` manages a shared `HookStateMap` (Arc<Mutex<HashMap>>) keyed by stable agent ID
+- `ClaudeRuntime` manages a shared `HookStateMap` (Arc<Mutex<HashMap>>) keyed by flowmux agent ID
 - Tracks: first prompt, context usage, last response, model name, work time
 - Falls back to transcript parsing (`claude-code-transcripts`) when hook data is incomplete
 
@@ -181,7 +181,7 @@ Thin wrapper around the tmux CLI (`Command`) and `tmux_interface` crate:
 
 ### 6. Ghostty VT (`ghostty.rs` + `vendor/`)
 
-Stable vendors [libghostty-vt](https://github.com/ghostty-org/ghostty), the terminal emulation library from the Ghostty terminal emulator. It is compiled at build time via `build.rs` using Zig.
+Flowmux vendors [libghostty-vt](https://github.com/ghostty-org/ghostty), the terminal emulation library from the Ghostty terminal emulator. It is compiled at build time via `build.rs` using Zig.
 
 Purpose: **faithful rendering** of agent terminal output inside ratatui. The raw ANSI output captured from tmux panes is fed into a Ghostty `Terminal`, and the `RenderState` row/cell iterator is used to extract styled cells (colors, bold, italic, wide chars, etc.) for pixel-perfect display in the Agent View.
 
@@ -209,12 +209,12 @@ The dashboard uses a **pure grid layout** — no side panels. Cards are arranged
 ### 8. Configuration
 
 #### Per-Session (`config.rs`)
-- Stored at `~/.config/stable/sessions/<session>.toml`
+- Stored at `~/.config/flowmux/sessions/<session>.toml`
 - Contains the list of agents with their pane targets, directories, and agent-specific data (port, session IDs)
 - Atomic writes (write to `.tmp` then rename)
 
 #### Global (`global_config.rs`)
-- Stored at `~/.config/stable/config.toml`
+- Stored at `~/.config/flowmux/config.toml`
 - `claude_hook_server_port` — base port for the hook server (default: 15100)
 - `git_viewer` — external git viewer command (e.g. `"lazygit"`)
 - `enabled_agents` — whitelist of agent types
