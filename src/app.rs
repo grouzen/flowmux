@@ -712,15 +712,15 @@ impl App {
     }
 
     fn handle_agent_view_mouse(&mut self, mouse: MouseEvent, idx: usize) {
-        let is_claude = self
+        let uses_captured_scrollback = self
             .agents
             .get(idx)
-            .map(|e| matches!(e.config.kind, AgentKind::Claude { .. }))
+            .map(|e| uses_captured_scrollback(&e.config.kind))
             .unwrap_or(false);
 
         match mouse.kind {
             MouseEventKind::ScrollUp => {
-                if is_claude {
+                if uses_captured_scrollback {
                     self.agent_view_state.view_scroll = self
                         .agent_view_state
                         .view_scroll
@@ -733,7 +733,7 @@ impl App {
                 return;
             }
             MouseEventKind::ScrollDown => {
-                if is_claude {
+                if uses_captured_scrollback {
                     self.agent_view_state.view_scroll =
                         self.agent_view_state.view_scroll.saturating_sub(3);
                     self.dirty = true;
@@ -1308,7 +1308,7 @@ impl App {
             }
             KeyCode::PageUp => {
                 if let Some(entry) = self.agents.get(idx) {
-                    if matches!(entry.config.kind, AgentKind::Claude { .. }) {
+                    if uses_captured_scrollback(&entry.config.kind) {
                         let page = crossterm::terminal::size()
                             .map(|(_, h)| h as usize)
                             .unwrap_or(24)
@@ -1326,7 +1326,7 @@ impl App {
             }
             KeyCode::PageDown => {
                 if let Some(entry) = self.agents.get(idx) {
-                    if matches!(entry.config.kind, AgentKind::Claude { .. }) {
+                    if uses_captured_scrollback(&entry.config.kind) {
                         let page = crossterm::terminal::size()
                             .map(|(_, h)| h as usize)
                             .unwrap_or(24)
@@ -2161,6 +2161,32 @@ fn wrapped_line_count(text: &ratatui::text::Text, width: u16) -> u16 {
 fn unicode_display_width(s: &str) -> usize {
     use unicode_width::UnicodeWidthStr;
     UnicodeWidthStr::width(s)
+}
+
+fn uses_captured_scrollback(kind: &AgentKind) -> bool {
+    matches!(kind, AgentKind::Claude { .. } | AgentKind::Codex { .. })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_and_codex_use_captured_scrollback() {
+        assert!(uses_captured_scrollback(&AgentKind::Claude {
+            flowmux_agent_id: "claude-test".to_string(),
+            session_id: None,
+            transcript_path: None,
+        }));
+        assert!(uses_captured_scrollback(&AgentKind::Codex {
+            port: 16100,
+            session_id: None,
+        }));
+        assert!(!uses_captured_scrollback(&AgentKind::Opencode {
+            port: 14100,
+            session_id: None,
+        }));
+    }
 }
 
 fn key_event_to_tmux(key: &KeyEvent) -> String {
