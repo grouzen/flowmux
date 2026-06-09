@@ -26,7 +26,7 @@ Install Flowmux to keep your trusty steed's  harness under the solid roof! :hors
 - Not laser-focused on software development only!
 - Pure grid layout, no left panel bullshit!
 - Keyboard-driven navigation and interaction with sane amount of mouse support.
-- Auto-detection of installed agent CLIs, hooks are installed on first run.
+- Auto-detection of installed agent CLIs; Claude hooks are installed on first run.
 - Focus on quick navigation through active agent sessions and history.
 - Survives tmux restarts.
 - Single binary, no stupid js runtimes!
@@ -107,7 +107,7 @@ cargo install --path .
 ### Prerequisites
 
 - **tmux** must be installed and available in `$PATH`
-- At least one supported agent CLI (`opencode` or `claude`)
+- At least one supported agent CLI (`opencode`, `claude`, or `codex`)
 
 ### Launch
 
@@ -122,7 +122,7 @@ flowmux --tmux-session my-session
 flowmux --git-worktrees-location /path/to/worktrees
 
 # Enable specific agents only
-flowmux --enabled-agents opencode,claude
+flowmux --enabled-agents opencode,claude,codex
 ```
 
 ### CLI Options
@@ -131,7 +131,7 @@ flowmux --enabled-agents opencode,claude
 |--------|---------|-------------|
 | `--tmux-session` | `flowmux` | Name of the tmux session to use |
 | `--git-worktrees-location` | `~/.local/share/flowmux/worktrees` | Base directory for git worktrees created by flowmux |
-| `--enabled-agents` | *(all discovered)* | Comma-separated list of agent types to enable (e.g., `opencode,claude`). Overrides `enabled_agents` in global config |
+| `--enabled-agents` | *(all discovered)* | Comma-separated list of agent types to enable (e.g., `opencode,claude,codex`). Overrides `enabled_agents` in global config |
 
 ### Keybindings
 
@@ -207,7 +207,7 @@ git_viewer = "lazygit"
 
 # Whitelist of agent types to enable (optional)
 # When omitted, all discovered agents are available
-enabled_agents = ["opencode", "claude"]
+enabled_agents = ["opencode", "claude", "codex"]
 ```
 
 ### Per-Session Configuration
@@ -227,13 +227,27 @@ Automatically managed at `~/.config/flowmux/sessions/<session>.toml`. Contains t
 - Integrates via hook server for status callbacks
 - Falls back to transcript parsing for context information
 
+### Codex
+
+- Auto-detected via `$PATH` (`codex` binary)
+- Launches a dedicated local `codex app-server` for each agent
+- Connects through the app-server WebSocket JSON-RPC protocol for status, approvals,
+  responses, token usage, and session IDs
+- Resumes prior threads with `codex resume --remote`
+- Uses rollout files only as a fallback for model/context metadata not included in
+  stable thread responses
+
+Codex's app-server protocol is currently marked experimental by the CLI. Flowmux
+parses its JSON payloads defensively, but Codex releases may still require adapter
+updates.
+
 ## 🗺️ Plan
 
 - [x] Improve agent status detection
 - [x] Quick switching through: running, waiting (idle), last responded agents
 - [x] Git awareness: branch names, worktrees, diff views
 - [ ] Per-project dashboards
-- [ ] Support more agents: Codex, Pi, etc.
+- [ ] Support more agents: Pi, etc.
 - [ ] Session history
 - [ ] Filtering (with fuzzysearch): by name, agent type, working directory, etc.
 - [ ] Split-screen mode to watch several running agents

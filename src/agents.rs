@@ -16,4 +16,5 @@ pub trait AgentAdapter: Send + Sync {
 }
 
 pub mod claude;
+pub mod codex;
 pub mod opencode;

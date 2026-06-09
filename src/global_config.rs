@@ -17,7 +17,7 @@ pub struct GlobalConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_viewer: Option<String>,
 
-    /// List of agent type names to enable (e.g. ["opencode", "claude"]).
+    /// List of agent type names to enable (e.g. ["opencode", "claude", "codex"]).
     /// When `None`, all discovered agents are available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled_agents: Option<Vec<String>>,

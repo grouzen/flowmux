@@ -38,7 +38,7 @@ struct Cli {
     #[arg(long)]
     git_worktrees_location: Option<PathBuf>,
 
-    /// Comma-separated list of agent types to enable (e.g. "opencode,claude").
+    /// Comma-separated list of agent types to enable (e.g. "opencode,claude,codex").
     /// Overrides the global config's `enabled_agents` setting.
     #[arg(long, value_delimiter = ',')]
     enabled_agents: Option<Vec<String>>,

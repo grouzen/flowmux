@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use crate::agent_discovery::DiscoveredAgents;
 use crate::agents::AgentAdapter;
 use crate::agents::claude::{ClaudeRuntime, install_hooks};
+use crate::agents::codex::CodexAdapter;
 use crate::agents::opencode::OpenCodeAdapter;
 use crate::config::{AgentConfig, AgentKind};
 use crate::git;
@@ -18,7 +19,7 @@ use crate::tmux;
 /// Central coordinator for agent lifecycle: discovery, restore, create, restart.
 ///
 /// `App` holds a single `AgentRunner` and delegates all agent creation / restart
-/// calls through it.  Direct imports of `OpenCodeAdapter` or `ClaudeAdapter`
+/// calls through it. Direct imports of concrete agent adapters
 /// are restricted to this module.
 pub struct AgentRunner {
     discovered: DiscoveredAgents,
@@ -28,7 +29,7 @@ pub struct AgentRunner {
     /// Base directory under which git worktrees are stored.
     /// Populated from the `--git-worktrees-location` CLI arg or a default.
     pub worktrees_base: PathBuf,
-    /// Optional list of enabled agent type names (e.g. ["opencode", "claude"]).
+    /// Optional list of enabled agent type names (e.g. ["opencode", "claude", "codex"]).
     /// When `None`, all discovered agents are available.
     enabled_agents: Option<Vec<String>>,
 }
@@ -58,7 +59,7 @@ impl AgentRunner {
     // -----------------------------------------------------------------------
     /// Returns all agent types whose binaries were found on `$PATH` and that
     /// are enabled (if an explicit enabled list is configured).
-    /// The order is stable: Opencode first, Claude second.  Future agent types
+    /// The order is stable: Opencode first, Claude second, Codex third. Future agent types
     /// should be appended here; callers must not hardcode the list.
     pub fn available_agent_types(&self) -> Vec<AgentType> {
         let mut types = Vec::new();
@@ -67,6 +68,9 @@ impl AgentRunner {
         }
         if self.discovered.claude.is_some() {
             types.push(AgentType::Claude);
+        }
+        if self.discovered.codex.is_some() {
+            types.push(AgentType::Codex);
         }
         if let Some(ref enabled) = self.enabled_agents {
             types.retain(|t| enabled.iter().any(|e| e == t.name()));
@@ -113,6 +117,11 @@ impl AgentRunner {
                 );
                 Box::new(runtime.make_adapter(flowmux_agent_id.clone()))
             }
+            AgentKind::Codex { port, session_id } => Box::new(CodexAdapter::new(
+                *port,
+                config.directory.clone(),
+                session_id.clone(),
+            )),
         }
     }
 
@@ -201,6 +210,22 @@ impl AgentRunner {
                 };
                 Ok((config, Box::new(adapter)))
             }
+
+            AgentType::Codex => {
+                let (adapter, window_index) = CodexAdapter::create(&effective_dir, name).await?;
+                let pane = format!("{}:{}.0", tmux::session_name(), window_index);
+                let config = AgentConfig {
+                    name: name.to_owned(),
+                    pane,
+                    directory: effective_dir,
+                    kind: AgentKind::Codex {
+                        port: adapter.port,
+                        session_id: None,
+                    },
+                    git_repo_root: stored_repo_root,
+                };
+                Ok((config, Box::new(adapter)))
+            }
         }
     }
 
@@ -265,6 +290,22 @@ impl AgentRunner {
                 let adapter = runtime.make_adapter(flowmux_agent_id.clone());
                 let mut new_config = config.clone();
                 new_config.pane = new_pane;
+                Ok((new_config, Box::new(adapter)))
+            }
+
+            AgentKind::Codex { .. } => {
+                let session_id = config.session_id().map(str::to_owned);
+                let (adapter, window_index, port) =
+                    CodexAdapter::restart(&config.directory, &config.name, session_id.as_deref())
+                        .await?;
+                let mut new_config = config.clone();
+                new_config.pane = format!("{}:{}.0", tmux::session_name(), window_index);
+                if let AgentKind::Codex {
+                    port: stored_port, ..
+                } = &mut new_config.kind
+                {
+                    *stored_port = port;
+                }
                 Ok((new_config, Box::new(adapter)))
             }
         }
