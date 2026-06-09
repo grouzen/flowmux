@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -23,6 +24,7 @@ struct LiveCache {
     model_name: Option<String>,
     context: Option<ContextInfo>,
     total_work_ms: u64,
+    completed_turn_ids: HashSet<String>,
     rollout_path: Option<String>,
     rollout_offset: u64,
     history_initialized: bool,
@@ -37,6 +39,7 @@ impl Default for LiveCache {
             model_name: None,
             context: None,
             total_work_ms: 0,
+            completed_turn_ids: HashSet::new(),
             rollout_path: None,
             rollout_offset: 0,
             history_initialized: false,
@@ -490,13 +493,12 @@ fn handle_notification(
             if is_current_thread(params, cached_session_id) {
                 let mut cache = live_cache.write().unwrap();
                 cache.status = AgentStatus::Idle;
-                if let Some(duration) = params
-                    .get("turn")
-                    .and_then(|t| t.get("durationMs"))
-                    .and_then(Value::as_i64)
-                    .filter(|n| *n > 0)
-                {
-                    cache.total_work_ms = cache.total_work_ms.saturating_add(duration as u64);
+                if let Some(turn) = params.get("turn") {
+                    record_turn_duration(
+                        &mut cache,
+                        turn.get("id").and_then(Value::as_str),
+                        turn.get("durationMs").and_then(Value::as_i64),
+                    );
                 }
             }
         }
@@ -557,12 +559,15 @@ fn update_from_thread(
     if let Some(turns) = thread.get("turns").and_then(Value::as_array)
         && (!cache.history_initialized || !turns.is_empty())
     {
-        cache.total_work_ms = turns
-            .iter()
-            .filter_map(|turn| turn.get("durationMs").and_then(Value::as_i64))
-            .filter(|duration| *duration > 0)
-            .map(|duration| duration as u64)
-            .sum();
+        cache.total_work_ms = 0;
+        cache.completed_turn_ids.clear();
+        for turn in turns {
+            record_turn_duration(
+                &mut cache,
+                turn.get("id").and_then(Value::as_str),
+                turn.get("durationMs").and_then(Value::as_i64),
+            );
+        }
         cache.last_model_response = turns
             .iter()
             .rev()
@@ -641,9 +646,28 @@ fn enrich_from_rollout(path: &str, cache: &mut LiveCache) {
                     cache.context = Some(ContextInfo { used, total });
                 }
             }
+            Some("event_msg")
+                if payload.get("type").and_then(Value::as_str) == Some("task_complete") =>
+            {
+                record_turn_duration(
+                    cache,
+                    payload.get("turn_id").and_then(Value::as_str),
+                    payload.get("duration_ms").and_then(Value::as_i64),
+                );
+            }
             _ => {}
         }
     }
+}
+
+fn record_turn_duration(cache: &mut LiveCache, turn_id: Option<&str>, duration_ms: Option<i64>) {
+    let (Some(turn_id), Some(duration_ms)) = (turn_id, duration_ms) else {
+        return;
+    };
+    if duration_ms <= 0 || !cache.completed_turn_ids.insert(turn_id.to_owned()) {
+        return;
+    }
+    cache.total_work_ms = cache.total_work_ms.saturating_add(duration_ms as u64);
 }
 
 fn status_from_value(status: Option<&Value>) -> AgentStatus {
@@ -724,6 +748,7 @@ mod tests {
             "preview": "Fix the tests",
             "status": {"type": "idle"},
             "turns": [{
+                "id": "turn-1",
                 "durationMs": 1200,
                 "items": [{"type": "agentMessage", "text": "Done"}]
             }]
@@ -738,6 +763,38 @@ mod tests {
         assert_eq!(cache.last_model_response.as_deref(), Some("Done"));
         assert_eq!(cache.total_work_ms, 1200);
         assert!(cache.history_initialized);
+    }
+
+    #[test]
+    fn rollout_task_complete_tracks_and_deduplicates_work_time() {
+        let path = std::env::temp_dir().join(format!(
+            "flowmux-codex-duration-{}.jsonl",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-1\",\"duration_ms\":1629}}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-2\",\"duration_ms\":2371}}\n"
+            ),
+        )
+        .unwrap();
+
+        let mut cache = LiveCache::default();
+        enrich_from_rollout(path.to_str().unwrap(), &mut cache);
+        enrich_from_rollout(path.to_str().unwrap(), &mut cache);
+
+        assert_eq!(cache.total_work_ms, 4000);
+        assert_eq!(cache.completed_turn_ids.len(), 2);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn app_server_and_rollout_duration_do_not_double_count() {
+        let mut cache = LiveCache::default();
+        record_turn_duration(&mut cache, Some("turn-1"), Some(1500));
+        record_turn_duration(&mut cache, Some("turn-1"), Some(1500));
+        assert_eq!(cache.total_work_ms, 1500);
     }
 
     #[tokio::test]
