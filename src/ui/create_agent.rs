@@ -290,7 +290,7 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
         };
         f.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::raw(left_pad()),
+                Span::raw(label_pad()),
                 Span::styled(checkbox, checkbox_style),
                 Span::styled(" Create git worktree", label_style),
                 Span::styled(
