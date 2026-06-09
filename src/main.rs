@@ -182,6 +182,7 @@ async fn main() -> Result<()> {
         }
     };
     let mut app = App::new(config, agents, agent_adapters, runner, host_colors);
+    crossterm::terminal::enable_raw_mode()?;
     app.spawn_tasks();
 
     tui::run(|mut terminal| async move {

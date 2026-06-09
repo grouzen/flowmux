@@ -28,3 +28,4 @@ fs2              = "0.4"
 claude-code-transcripts = "0.1.8"
 chrono                  = { version = "0.4", default-features = false, features = ["std"] }
 git2                    = { version = "0.20", default-features = false }
+libc                    = "0.2"

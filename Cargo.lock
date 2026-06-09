@@ -2525,6 +2525,7 @@ dependencies = [
  "fs2",
  "futures",
  "git2",
+ "libc",
  "ratatui",
  "regex",
  "reqwest",
