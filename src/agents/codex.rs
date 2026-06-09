@@ -493,6 +493,7 @@ fn handle_notification(
             if is_current_thread(params, cached_session_id) {
                 let mut cache = live_cache.write().unwrap();
                 cache.status = AgentStatus::Idle;
+                cache.history_initialized = false;
                 if let Some(turn) = params.get("turn") {
                     record_turn_duration(
                         &mut cache,
@@ -559,8 +560,6 @@ fn update_from_thread(
     if let Some(turns) = thread.get("turns").and_then(Value::as_array)
         && (!cache.history_initialized || !turns.is_empty())
     {
-        cache.total_work_ms = 0;
-        cache.completed_turn_ids.clear();
         for turn in turns {
             record_turn_duration(
                 &mut cache,
@@ -654,6 +653,14 @@ fn enrich_from_rollout(path: &str, cache: &mut LiveCache) {
                     payload.get("turn_id").and_then(Value::as_str),
                     payload.get("duration_ms").and_then(Value::as_i64),
                 );
+            }
+            Some("event_msg")
+                if payload.get("type").and_then(Value::as_str) == Some("agent_message")
+                    && payload.get("phase").and_then(Value::as_str) == Some("final_answer") =>
+            {
+                if let Some(message) = payload.get("message").and_then(Value::as_str) {
+                    cache.last_model_response = Some(message.to_owned());
+                }
             }
             _ => {}
         }
@@ -795,6 +802,65 @@ mod tests {
         record_turn_duration(&mut cache, Some("turn-1"), Some(1500));
         record_turn_duration(&mut cache, Some("turn-1"), Some(1500));
         assert_eq!(cache.total_work_ms, 1500);
+    }
+
+    #[test]
+    fn turn_completion_schedules_history_refresh() {
+        let session = Arc::new(Mutex::new(Some("thread-1".to_string())));
+        let cache = Arc::new(RwLock::new(LiveCache {
+            history_initialized: true,
+            ..LiveCache::default()
+        }));
+        let params = json!({
+            "threadId": "thread-1",
+            "turn": {"id": "turn-2", "durationMs": 900}
+        });
+
+        handle_notification("turn/completed", &params, "", &session, &cache);
+
+        {
+            let cached = cache.read().unwrap();
+            assert_eq!(cached.status, AgentStatus::Idle);
+            assert!(!cached.history_initialized);
+            assert_eq!(cached.total_work_ms, 900);
+        }
+
+        let thread = json!({
+            "id": "thread-1",
+            "status": {"type": "idle"},
+            "turns": [{
+                "id": "turn-2",
+                "items": [{"type": "agentMessage", "text": "Finished"}]
+            }]
+        });
+        update_from_thread(&thread, &session, &cache, true);
+
+        let cached = cache.read().unwrap();
+        assert!(cached.history_initialized);
+        assert_eq!(cached.last_model_response.as_deref(), Some("Finished"));
+        assert_eq!(cached.total_work_ms, 900);
+    }
+
+    #[test]
+    fn rollout_updates_only_final_model_response() {
+        let path = std::env::temp_dir().join(format!(
+            "flowmux-codex-response-{}.jsonl",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"Still working\",\"phase\":\"commentary\"}}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"Finished\",\"phase\":\"final_answer\"}}\n"
+            ),
+        )
+        .unwrap();
+
+        let mut cache = LiveCache::default();
+        enrich_from_rollout(path.to_str().unwrap(), &mut cache);
+
+        assert_eq!(cache.last_model_response.as_deref(), Some("Finished"));
+        std::fs::remove_file(path).unwrap();
     }
 
     #[tokio::test]
