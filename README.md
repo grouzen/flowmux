@@ -1,6 +1,6 @@
 # Flowmux
 
-A keyboard-driven TUI dashboard to orchestrate CLI agents for 10x engineers.
+A terminal-native AI agent multiplexer to orchestrate CLI agents for 10x engineers.
 
 Install Flowmux to keep your trusty steed's  harness under the solid roof! :horse:
 

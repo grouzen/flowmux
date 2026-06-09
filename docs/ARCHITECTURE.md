@@ -2,7 +2,7 @@
 
 ## Overview
 
-Flowmux is a keyboard-driven TUI dashboard built in Rust that orchestrates CLI agents (OpenCode, Claude Code) inside tmux panes. It provides a grid-based dashboard for monitoring multiple concurrent agent sessions, and an immersive agent view that faithfully renders the agent's terminal output using an embedded terminal emulator (Ghostty VT).
+Flowmux is a terminal-native AI agent multiplexer built in Rust that orchestrates CLI agents (OpenCode, Claude Code) inside tmux panes. It provides a grid-based dashboard for monitoring multiple concurrent agent sessions, and an immersive agent view that faithfully renders the agent's terminal output using an embedded terminal emulator (Ghostty VT).
 
 ## Technology Stack
 
