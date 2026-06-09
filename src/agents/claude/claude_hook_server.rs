@@ -44,7 +44,7 @@ impl Default for ClaudeHookState {
     }
 }
 
-/// Map from `stable_agent_id` → hook state.
+/// Map from `flowmux_agent_id` → hook state.
 pub type HookStateMap = Arc<Mutex<HashMap<String, ClaudeHookState>>>;
 
 // ---------------------------------------------------------------------------
@@ -53,7 +53,7 @@ pub type HookStateMap = Arc<Mutex<HashMap<String, ClaudeHookState>>>;
 
 #[derive(Debug)]
 pub struct HookPersistEvent {
-    pub stable_agent_id: String,
+    pub flowmux_agent_id: String,
     /// `None` means "no change to session_id in config".
     pub session_id: Option<String>,
     pub transcript_path: Option<String>,
@@ -80,7 +80,7 @@ async fn hook_handler(
 ) -> StatusCode {
     // Identify which agent this hook belongs to via the custom header.
     let agent_id = match headers
-        .get("x-stable-agent-id")
+        .get("x-flowmux-agent-id")
         .and_then(|v| v.to_str().ok())
     {
         Some(id) => id.to_owned(),
@@ -88,7 +88,7 @@ async fn hook_handler(
     };
 
     // The entry must have been pre-inserted by App before the agent launches.
-    // With fan-out from multiple stable instances, this server may receive
+    // With fan-out from multiple flowmux instances, this server may receive
     // hooks for agents it doesn't own — silently ignore them.
     {
         let map = state.hook_state.lock().unwrap();
@@ -123,7 +123,7 @@ async fn hook_handler(
                 // Signal the background persist task to save session_id +
                 // transcript_path to the on-disk config for this session.
                 let _ = state.persist_tx.send(HookPersistEvent {
-                    stable_agent_id: agent_id.clone(),
+                    flowmux_agent_id: agent_id.clone(),
                     session_id: session_id.clone(),
                     transcript_path: transcript_path.clone(),
                 });
@@ -228,7 +228,7 @@ async fn hook_handler(
                 // meta info immediately without waiting for a new prompt.
                 if entry.transcript_path.is_some() || entry.session_id.is_some() {
                     let _ = state.persist_tx.send(HookPersistEvent {
-                        stable_agent_id: agent_id.clone(),
+                        flowmux_agent_id: agent_id.clone(),
                         session_id: entry.session_id.clone(),
                         transcript_path: entry.transcript_path.clone(),
                     });
@@ -504,7 +504,7 @@ mod tests {
     use std::io::Write;
 
     fn make_transcript(lines: &[&str]) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("stable-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("flowmux-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("transcript.jsonl");
         let mut f = std::fs::File::create(&path).unwrap();

@@ -1,8 +1,8 @@
-# Stable
+# Flowmux
 
 A keyboard-driven TUI dashboard to orchestrate CLI agents for 10x engineers.
 
-Install Stable to keep your trusty steed's  harness under the solid roof! :horse:
+Install Flowmux to keep your trusty steed's  harness under the solid roof! :horse:
 
 ## Table of Contents
 
@@ -69,7 +69,7 @@ Install Stable to keep your trusty steed's  harness under the solid roof! :horse
 ### Configurable Git Viewer
 
 - Launch your favorite git UI (lazygit, tig, etc) with `Ctrl+v`
-- Configured via `git_viewer` in `~/.config/stable/config.toml`
+- Configured via `git_viewer` in `~/.config/flowmux/config.toml`
 - Opens in the agent's working directory
 
 ### Persistent Terminal
@@ -81,7 +81,7 @@ Install Stable to keep your trusty steed's  harness under the solid roof! :horse
 ### Prefix Mode
 
 - `Ctrl+b` arms prefix mode: next key forwarded directly to the agent
-- Bypass stable's keybindings when you need to send intercepted keys
+- Bypass flowmux's keybindings when you need to send intercepted keys
 - Works in agent view, git viewer, and terminal view
 
 ## 📦 Installation
@@ -94,7 +94,7 @@ Requires [Rust](https://rustup.rs/) (Edition 2024) and [Zig v0.15.2](https://zig
 cargo build --release
 ```
 
-The binary will be at `target/release/stable`.
+The binary will be at `target/release/flowmux`.
 
 Or install directly:
 
@@ -112,25 +112,25 @@ cargo install --path .
 ### Launch
 
 ```bash
-# Launch with default tmux session name "stable"
-stable
+# Launch with default tmux session name "flowmux"
+flowmux
 
 # Launch with custom session name
-stable --tmux-session my-session
+flowmux --tmux-session my-session
 
 # Specify custom worktrees location
-stable --git-worktrees-location /path/to/worktrees
+flowmux --git-worktrees-location /path/to/worktrees
 
 # Enable specific agents only
-stable --enabled-agents opencode,claude
+flowmux --enabled-agents opencode,claude
 ```
 
 ### CLI Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--tmux-session` | `stable` | Name of the tmux session to use |
-| `--git-worktrees-location` | `~/.local/share/stable/worktrees` | Base directory for git worktrees created by stable |
+| `--tmux-session` | `flowmux` | Name of the tmux session to use |
+| `--git-worktrees-location` | `~/.local/share/flowmux/worktrees` | Base directory for git worktrees created by flowmux |
 | `--enabled-agents` | *(all discovered)* | Comma-separated list of agent types to enable (e.g., `opencode,claude`). Overrides `enabled_agents` in global config |
 
 ### Keybindings
@@ -195,7 +195,7 @@ All other keys are forwarded to the terminal's tmux pane.
 
 ### Global Configuration
 
-Located at `~/.config/stable/config.toml`:
+Located at `~/.config/flowmux/config.toml`:
 
 ```toml
 # Base port for Claude Code hook server (default: 15100)
@@ -212,7 +212,7 @@ enabled_agents = ["opencode", "claude"]
 
 ### Per-Session Configuration
 
-Automatically managed at `~/.config/stable/sessions/<session>.toml`. Contains the list of agents with their pane targets, directories, and session IDs. You typically don't need to edit this manually.
+Automatically managed at `~/.config/flowmux/sessions/<session>.toml`. Contains the list of agents with their pane targets, directories, and session IDs. You typically don't need to edit this manually.
 
 ## 🤖 Supported Agents
 

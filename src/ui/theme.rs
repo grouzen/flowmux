@@ -101,10 +101,10 @@ pub fn brand_line(dimmed: bool) -> (Line<'static>, u16) {
     };
     let version = env!("CARGO_PKG_VERSION");
     let display_width =
-        unicode_width::UnicodeWidthStr::width(format!(" ♥ Stable v{} ", version).as_str()) as u16;
+        unicode_width::UnicodeWidthStr::width(format!(" ♥ Flowmux v{} ", version).as_str()) as u16;
     let line = Line::from(vec![
         Span::styled(" ♥ ", base.fg(HEART_RED)),
-        Span::styled("Stable", base.fg(GRAY)),
+        Span::styled("Flowmux", base.fg(GRAY)),
         Span::styled(format!(" v{} ", version), base.fg(GRAY)),
     ]);
     (line, display_width)

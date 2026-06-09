@@ -697,6 +697,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "flowmux"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "chrono",
+ "clap",
+ "claude-code-transcripts",
+ "crossterm",
+ "dirs",
+ "fs2",
+ "futures",
+ "git2",
+ "libc",
+ "ratatui",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tmux_interface",
+ "tokio",
+ "toml",
+ "tui-markdown",
+ "unicode-width",
+ "uuid",
+ "which",
+]
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2508,36 +2538,6 @@ checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "stable"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "chrono",
- "clap",
- "claude-code-transcripts",
- "crossterm",
- "dirs",
- "fs2",
- "futures",
- "git2",
- "libc",
- "ratatui",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "tmux_interface",
- "tokio",
- "toml",
- "tui-markdown",
- "unicode-width",
- "uuid",
- "which",
 ]
 
 [[package]]

@@ -15,7 +15,7 @@ pub enum AgentKind {
         session_id: Option<String>,
     },
     Claude {
-        stable_agent_id: String,
+        flowmux_agent_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -90,11 +90,11 @@ pub struct Config {
 }
 
 /// Path to the per-session config file:
-///   `~/.config/stable/sessions/<session>.toml`
+///   `~/.config/flowmux/sessions/<session>.toml`
 pub fn config_path(session: &str) -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("stable")
+        .join("flowmux")
         .join("sessions")
         .join(format!("{}.toml", session))
 }
@@ -162,7 +162,7 @@ mod tests {
         let agents = vec![
             AgentConfig {
                 name: "oc".into(),
-                pane: "stable:1.0".into(),
+                pane: "flowmux:1.0".into(),
                 directory: "/tmp".into(),
                 kind: AgentKind::Opencode {
                     port: 9000,
@@ -172,10 +172,10 @@ mod tests {
             },
             AgentConfig {
                 name: "cl".into(),
-                pane: "stable:2.0".into(),
+                pane: "flowmux:2.0".into(),
                 directory: "/tmp/wt".into(),
                 kind: AgentKind::Claude {
-                    stable_agent_id: "abc-123".into(),
+                    flowmux_agent_id: "abc-123".into(),
                     session_id: None,
                     transcript_path: Some("/tmp/t.jsonl".into()),
                 },
