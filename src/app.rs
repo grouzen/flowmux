@@ -63,10 +63,10 @@ impl StatusNotification {
 /// State carried by the remove-agent confirmation dialog.
 #[derive(Debug, Clone)]
 pub struct RemoveAgentState {
-    /// Index of the agent to remove.
     pub idx: usize,
-    /// Whether to also remove the git worktree (only shown when the agent has one).
     pub remove_worktree: bool,
+    pub stop_agent: bool,
+    pub focus: usize,
 }
 
 /// State for the git viewer pane view.
@@ -924,6 +924,8 @@ impl App {
                     self.state = AppState::RemoveAgentDialog(RemoveAgentState {
                         idx: self.selected,
                         remove_worktree: has_worktree,
+                        stop_agent: true,
+                        focus: 0,
                     });
                 }
             }
@@ -1256,7 +1258,7 @@ impl App {
                 }
                 KeyCode::Char('d') => {
                     let remove_wt = self.agent_view_state.remove_worktree_on_stop;
-                    self.remove_agent(idx, remove_wt);
+                    self.remove_agent(idx, remove_wt, true);
                     self.state = AppState::Dashboard;
                 }
                 KeyCode::Char(' ') => {
@@ -1913,22 +1915,38 @@ impl App {
     fn handle_remove_key(&mut self, key: KeyEvent, state: RemoveAgentState) -> bool {
         match key.code {
             KeyCode::Char('y') | KeyCode::Enter => {
-                self.remove_agent(state.idx, state.remove_worktree);
+                self.remove_agent(state.idx, state.remove_worktree, state.stop_agent);
                 self.state = AppState::Dashboard;
             }
             KeyCode::Char('n') | KeyCode::Esc => {
                 self.state = AppState::Dashboard;
             }
-            // Space toggles the "remove worktree" checkbox (only when agent has one)
-            KeyCode::Char(' ') => {
+            KeyCode::Tab => {
                 let has_worktree = self
                     .agents
                     .get(state.idx)
                     .and_then(|e| e.config.git_repo_root.as_ref())
                     .is_some();
-                if has_worktree {
-                    if let AppState::RemoveAgentDialog(ref mut s) = self.state {
-                        s.remove_worktree = !s.remove_worktree;
+                let max_focus = if has_worktree { 1 } else { 0 };
+                if let AppState::RemoveAgentDialog(ref mut s) = self.state {
+                    s.focus = if s.focus >= max_focus { 0 } else { s.focus + 1 };
+                }
+            }
+            KeyCode::Char(' ') => {
+                if let AppState::RemoveAgentDialog(ref mut s) = self.state {
+                    match s.focus {
+                        0 => s.stop_agent = !s.stop_agent,
+                        1 => {
+                            let has_worktree = self
+                                .agents
+                                .get(state.idx)
+                                .and_then(|e| e.config.git_repo_root.as_ref())
+                                .is_some();
+                            if has_worktree {
+                                s.remove_worktree = !s.remove_worktree;
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -2033,15 +2051,15 @@ impl App {
         }
     }
 
-    fn remove_agent(&mut self, idx: usize, remove_worktree: bool) {
+    fn remove_agent(&mut self, idx: usize, remove_worktree: bool, stop_agent: bool) {
         if idx < self.agents.len() {
-            // Kill the tmux window before removing the agent
             if let Some(agent_config) = self.config.agents.get(idx) {
-                // Extract window target from pane (e.g., "stable:1.0" -> "stable:1")
-                if let Some(colon_pos) = agent_config.pane.find(':') {
-                    if let Some(dot_pos) = agent_config.pane[colon_pos..].find('.') {
-                        let window_target = &agent_config.pane[..colon_pos + dot_pos];
-                        let _ = tmux::kill_window(window_target);
+                if stop_agent {
+                    if let Some(colon_pos) = agent_config.pane.find(':') {
+                        if let Some(dot_pos) = agent_config.pane[colon_pos..].find('.') {
+                            let window_target = &agent_config.pane[..colon_pos + dot_pos];
+                            let _ = tmux::kill_window(window_target);
+                        }
                     }
                 }
 
