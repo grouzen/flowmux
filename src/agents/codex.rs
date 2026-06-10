@@ -211,14 +211,14 @@ async fn run_loop(
         let (mut reader, mut writer) = match connect_websocket(port).await {
             Ok(connection) => connection,
             Err(_) => {
-                mark_observer_unavailable(&live_cache);
+                mark_observer_unavailable(&cached_session_id, &live_cache);
                 sleep(Duration::from_secs(backoff)).await;
                 backoff = (backoff * 2).min(30);
                 continue;
             }
         };
         if initialize(&mut reader, &mut writer).await.is_err() {
-            mark_observer_unavailable(&live_cache);
+            mark_observer_unavailable(&cached_session_id, &live_cache);
             sleep(Duration::from_secs(backoff)).await;
             backoff = (backoff * 2).min(30);
             continue;
@@ -243,7 +243,7 @@ async fn run_loop(
             .await
             .is_err()
             {
-                mark_observer_unavailable(&live_cache);
+                mark_observer_unavailable(&cached_session_id, &live_cache);
                 sleep(Duration::from_secs(backoff)).await;
                 backoff = (backoff * 2).min(30);
                 continue;
@@ -256,23 +256,25 @@ async fn run_loop(
                     if pending.is_some_and(|request| request.sent_at.elapsed() >= REQUEST_TIMEOUT) {
                         break;
                     }
-                    if pending.is_some()
-                        || subscribed
-                        || cached_thread_id(&cached_session_id).is_some()
-                    {
+                    if pending.is_some() || subscribed {
                         continue;
                     }
+                    let thread_id = cached_thread_id(&cached_session_id);
+                    let kind = if thread_id.is_some() {
+                        RequestKind::Resume
+                    } else {
+                        RequestKind::Discover
+                    };
                     if send_request(
                         &mut writer,
                         &mut request_id,
                         &mut pending,
-                        RequestKind::Discover,
-                        None,
+                        kind,
+                        thread_id.as_deref(),
                         &directory,
                     )
                     .await
-                    .is_err()
-                    {
+                    .is_err() {
                         break;
                     }
                 }
@@ -293,8 +295,18 @@ async fn run_loop(
                     {
                         let request = pending.take().unwrap();
                         if value.get("error").is_some() {
-                            if request.kind != RequestKind::Discover {
-                                break;
+                            match request.kind {
+                                RequestKind::Discover => {}
+                                RequestKind::Resume if is_unmaterialized_thread_error(&value) => {
+                                    live_cache.write().unwrap().status = AgentStatus::Idle;
+                                    continue;
+                                }
+                                RequestKind::Reconcile if is_unmaterialized_thread_error(&value) => {
+                                    live_cache.write().unwrap().status = AgentStatus::Idle;
+                                    reconciled = true;
+                                    continue;
+                                }
+                                _ => break,
                             }
                         } else {
                             match request.kind {
@@ -372,7 +384,7 @@ async fn run_loop(
             }
         }
 
-        mark_observer_unavailable(&live_cache);
+        mark_observer_unavailable(&cached_session_id, &live_cache);
         sleep(Duration::from_secs(backoff)).await;
         backoff = (backoff * 2).min(30);
     }
@@ -865,7 +877,26 @@ fn cached_thread_id(cached_session_id: &Arc<Mutex<Option<String>>>) -> Option<St
     cached_session_id.lock().unwrap().clone()
 }
 
-fn mark_observer_unavailable(live_cache: &Arc<RwLock<LiveCache>>) {
+fn is_unmaterialized_thread_error(message: &Value) -> bool {
+    let error = message
+        .get("error")
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    error.starts_with("no rollout found for thread id ")
+        || (error.starts_with("thread ")
+            && error.contains(" is not materialized yet; ")
+            && error.contains(" unavailable before first user message"))
+}
+
+fn mark_observer_unavailable(
+    cached_session_id: &Arc<Mutex<Option<String>>>,
+    live_cache: &Arc<RwLock<LiveCache>>,
+) {
+    if cached_session_id.lock().unwrap().is_none() {
+        return;
+    }
+
     let mut cache = live_cache.write().unwrap();
     if cache.status != AgentStatus::Stopped {
         cache.status = AgentStatus::Unknown;
@@ -1003,17 +1034,27 @@ mod tests {
     }
 
     #[test]
-    fn observer_failure_is_unknown_not_stopped() {
+    fn observer_failure_keeps_fresh_agent_idle() {
+        let session_id = Arc::new(Mutex::new(None));
+        let cache = Arc::new(RwLock::new(LiveCache::default()));
+
+        mark_observer_unavailable(&session_id, &cache);
+        assert_eq!(cache.read().unwrap().status, AgentStatus::Idle);
+    }
+
+    #[test]
+    fn observer_failure_is_unknown_after_session_discovery() {
+        let session_id = Arc::new(Mutex::new(Some("thread-1".to_owned())));
         let cache = Arc::new(RwLock::new(LiveCache {
             status: AgentStatus::Running,
             ..LiveCache::default()
         }));
 
-        mark_observer_unavailable(&cache);
+        mark_observer_unavailable(&session_id, &cache);
         assert_eq!(cache.read().unwrap().status, AgentStatus::Unknown);
 
         cache.write().unwrap().status = AgentStatus::Stopped;
-        mark_observer_unavailable(&cache);
+        mark_observer_unavailable(&session_id, &cache);
         assert_eq!(cache.read().unwrap().status, AgentStatus::Stopped);
     }
 
@@ -1135,6 +1176,61 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[tokio::test]
+    async fn unmaterialized_thread_stays_idle_and_retries_resume() {
+        let listener = TokioTcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (retry_tx, retry_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let mut stream = accept_test_websocket(listener).await;
+
+            let initialize: Value =
+                serde_json::from_str(&read_test_client_text(&mut stream).await).unwrap();
+            assert_eq!(
+                initialize.get("method").and_then(Value::as_str),
+                Some("initialize")
+            );
+            write_test_server_text(&mut stream, json!({"id": 1, "result": {}})).await;
+            let _initialized = read_test_client_text(&mut stream).await;
+
+            let resume: Value =
+                serde_json::from_str(&read_test_client_text(&mut stream).await).unwrap();
+            assert_eq!(
+                resume.get("method").and_then(Value::as_str),
+                Some("thread/resume")
+            );
+            let resume_id = resume.get("id").and_then(Value::as_u64).unwrap();
+            write_test_server_text(
+                &mut stream,
+                json!({
+                    "id": resume_id,
+                    "error": {
+                        "code": -32600,
+                        "message": "no rollout found for thread id thread-1"
+                    }
+                }),
+            )
+            .await;
+
+            let retry: Value =
+                serde_json::from_str(&read_test_client_text(&mut stream).await).unwrap();
+            assert_eq!(
+                retry.get("method").and_then(Value::as_str),
+                Some("thread/resume")
+            );
+            retry_tx.send(()).unwrap();
+            sleep(Duration::from_millis(100)).await;
+        });
+
+        let adapter = CodexAdapter::new(port, "/tmp".to_string(), Some("thread-1".to_string()));
+        tokio::time::timeout(Duration::from_secs(2), retry_rx)
+            .await
+            .expect("observer did not retry thread/resume")
+            .unwrap();
+        assert_eq!(adapter.get_status().await, AgentStatus::Idle);
+        server.await.unwrap();
     }
 
     #[tokio::test]
