@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
@@ -15,7 +15,22 @@ use crate::agents::AgentAdapter;
 use crate::models::{AgentStatus, ContextInfo};
 use crate::tmux;
 
-const POLL_INTERVAL: Duration = Duration::from_millis(750);
+const DISCOVERY_INTERVAL: Duration = Duration::from_millis(750);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RequestKind {
+    Discover,
+    Resume,
+    Reconcile,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PendingRequest {
+    id: u64,
+    kind: RequestKind,
+    sent_at: Instant,
+}
 
 struct LiveCache {
     status: AgentStatus,
@@ -186,78 +201,222 @@ async fn run_loop(
         let (mut reader, mut writer) = match connect_websocket(port).await {
             Ok(connection) => connection,
             Err(_) => {
-                live_cache.write().unwrap().status = AgentStatus::Stopped;
+                mark_observer_unavailable(&live_cache);
                 sleep(Duration::from_secs(backoff)).await;
                 backoff = (backoff * 2).min(30);
                 continue;
             }
         };
-        backoff = 1;
-
         if initialize(&mut reader, &mut writer).await.is_err() {
-            live_cache.write().unwrap().status = AgentStatus::Stopped;
+            mark_observer_unavailable(&live_cache);
+            sleep(Duration::from_secs(backoff)).await;
+            backoff = (backoff * 2).min(30);
             continue;
         }
+        backoff = 1;
+        live_cache.write().unwrap().history_initialized = false;
 
-        let mut ticker = interval(POLL_INTERVAL);
+        let mut ticker = interval(DISCOVERY_INTERVAL);
         let mut request_id = 10u64;
-        let mut request_pending = false;
+        let mut pending = None;
+        let mut subscribed = false;
+
+        if let Some(thread_id) = cached_thread_id(&cached_session_id) {
+            if send_request(
+                &mut writer,
+                &mut request_id,
+                &mut pending,
+                RequestKind::Resume,
+                Some(&thread_id),
+                &directory,
+            )
+            .await
+            .is_err()
+            {
+                mark_observer_unavailable(&live_cache);
+                sleep(Duration::from_secs(backoff)).await;
+                backoff = (backoff * 2).min(30);
+                continue;
+            }
+        }
+
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
-                    if request_pending {
-                        continue;
-                    }
-                    let sid = cached_session_id.lock().unwrap().clone();
-                    let request = match sid {
-                        Some(thread_id) => {
-                            let include_turns = !live_cache.read().unwrap().history_initialized;
-                            json!({
-                                "id": request_id,
-                                "method": "thread/read",
-                                "params": {
-                                    "threadId": thread_id,
-                                    "includeTurns": include_turns
-                                }
-                            })
-                        }
-                        None => json!({
-                            "id": request_id,
-                            "method": "thread/list",
-                            "params": {
-                                "cwd": directory,
-                                "limit": 10,
-                                "sortKey": "created_at",
-                                "sortDirection": "desc"
-                            }
-                        }),
-                    };
-                    request_id += 1;
-                    if send_text(&mut writer, &request.to_string()).await.is_err() {
+                    if pending.is_some_and(|request| request.sent_at.elapsed() >= REQUEST_TIMEOUT) {
                         break;
                     }
-                    request_pending = true;
+                    if pending.is_some()
+                        || subscribed
+                        || cached_thread_id(&cached_session_id).is_some()
+                    {
+                        continue;
+                    }
+                    if send_request(
+                        &mut writer,
+                        &mut request_id,
+                        &mut pending,
+                        RequestKind::Discover,
+                        None,
+                        &directory,
+                    )
+                    .await
+                    .is_err()
+                    {
+                        break;
+                    }
                 }
                 message = read_text(&mut reader) => {
                     let Ok(Some(text)) = message else { break };
                     let Ok(value) = serde_json::from_str::<Value>(&text) else { continue };
-                    if value.get("id").is_some() {
-                        request_pending = false;
+
+                    if value.get("method").is_some() {
+                        handle_message(
+                            &value,
+                            &directory,
+                            min_created_at,
+                            &cached_session_id,
+                            &live_cache,
+                        );
+                    } else if let Some(response_id) = value.get("id").and_then(Value::as_u64)
+                        && pending.is_some_and(|request| request.id == response_id)
+                    {
+                        let request = pending.take().unwrap();
+                        if value.get("error").is_some() {
+                            if request.kind != RequestKind::Discover {
+                                break;
+                            }
+                        } else {
+                            match request.kind {
+                                RequestKind::Discover => {
+                                    handle_message(
+                                        &value,
+                                        &directory,
+                                        min_created_at,
+                                        &cached_session_id,
+                                        &live_cache,
+                                    );
+                                }
+                                RequestKind::Resume => {
+                                    if !handle_thread_response(
+                                        &value,
+                                        &cached_session_id,
+                                        &live_cache,
+                                        false,
+                                    ) {
+                                        break;
+                                    }
+                                    subscribed = true;
+                                }
+                                RequestKind::Reconcile => {
+                                    if !handle_thread_response(
+                                        &value,
+                                        &cached_session_id,
+                                        &live_cache,
+                                        true,
+                                    ) {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                     }
-                    handle_message(
-                        &value,
-                        &directory,
-                        min_created_at,
-                        &cached_session_id,
-                        &live_cache,
-                    );
+
+                    if pending.is_none() {
+                        if subscribed {
+                            if !live_cache.read().unwrap().history_initialized {
+                                let thread_id = cached_thread_id(&cached_session_id);
+                                let Some(thread_id) = thread_id else { continue };
+                                if send_request(
+                                    &mut writer,
+                                    &mut request_id,
+                                    &mut pending,
+                                    RequestKind::Reconcile,
+                                    Some(&thread_id),
+                                    &directory,
+                                )
+                                .await
+                                .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                        } else {
+                            let thread_id = cached_thread_id(&cached_session_id);
+                            if let Some(thread_id) = thread_id
+                                && send_request(
+                                &mut writer,
+                                &mut request_id,
+                                &mut pending,
+                                RequestKind::Resume,
+                                Some(&thread_id),
+                                &directory,
+                            )
+                            .await
+                            .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        live_cache.write().unwrap().status = AgentStatus::Stopped;
+        mark_observer_unavailable(&live_cache);
         sleep(Duration::from_secs(backoff)).await;
         backoff = (backoff * 2).min(30);
+    }
+}
+
+async fn send_request(
+    writer: &mut OwnedWriteHalf,
+    request_id: &mut u64,
+    pending: &mut Option<PendingRequest>,
+    kind: RequestKind,
+    thread_id: Option<&str>,
+    directory: &str,
+) -> Result<()> {
+    let id = *request_id;
+    let request = request_for(id, kind, thread_id, directory);
+    send_text(writer, &request.to_string()).await?;
+    *request_id += 1;
+    *pending = Some(PendingRequest {
+        id,
+        kind,
+        sent_at: Instant::now(),
+    });
+    Ok(())
+}
+
+fn request_for(id: u64, kind: RequestKind, thread_id: Option<&str>, directory: &str) -> Value {
+    match kind {
+        RequestKind::Discover => json!({
+            "id": id,
+            "method": "thread/list",
+            "params": {
+                "cwd": directory,
+                "limit": 10,
+                "sortKey": "created_at",
+                "sortDirection": "desc"
+            }
+        }),
+        RequestKind::Resume => json!({
+            "id": id,
+            "method": "thread/resume",
+            "params": {
+                "threadId": thread_id.expect("resume request requires a thread id"),
+                "excludeTurns": true
+            }
+        }),
+        RequestKind::Reconcile => json!({
+            "id": id,
+            "method": "thread/read",
+            "params": {
+                "threadId": thread_id.expect("reconcile request requires a thread id"),
+                "includeTurns": true
+            }
+        }),
     }
 }
 
@@ -402,10 +561,6 @@ fn handle_message(
     let Some(result) = message.get("result") else {
         return;
     };
-    if let Some(thread) = result.get("thread") {
-        update_from_thread(thread, cached_session_id, live_cache, true);
-        return;
-    }
 
     let Some(threads) = result.get("data").and_then(Value::as_array) else {
         return;
@@ -425,6 +580,25 @@ fn handle_message(
     if let Some(thread) = selected {
         update_from_thread(thread, cached_session_id, live_cache, false);
     }
+}
+
+fn handle_thread_response(
+    message: &Value,
+    cached_session_id: &Arc<Mutex<Option<String>>>,
+    live_cache: &Arc<RwLock<LiveCache>>,
+    history_loaded: bool,
+) -> bool {
+    let Some(result) = message.get("result") else {
+        return false;
+    };
+    let Some(thread) = result.get("thread") else {
+        return false;
+    };
+    update_from_thread(thread, cached_session_id, live_cache, history_loaded);
+    if let Some(model) = result.get("model").and_then(Value::as_str) {
+        live_cache.write().unwrap().model_name = Some(model.to_owned());
+    }
+    true
 }
 
 fn handle_notification(
@@ -493,13 +667,15 @@ fn handle_notification(
             if is_current_thread(params, cached_session_id) {
                 let mut cache = live_cache.write().unwrap();
                 cache.status = AgentStatus::Idle;
-                cache.history_initialized = false;
                 if let Some(turn) = params.get("turn") {
                     record_turn_duration(
                         &mut cache,
                         turn.get("id").and_then(Value::as_str),
                         turn.get("durationMs").and_then(Value::as_i64),
                     );
+                }
+                if let Some(path) = cache.rollout_path.clone() {
+                    enrich_from_rollout(&path, &mut cache);
                 }
             }
         }
@@ -712,6 +888,17 @@ fn is_current_thread(params: &Value, cached_session_id: &Arc<Mutex<Option<String
     current.is_none() || event_id == current.as_deref()
 }
 
+fn cached_thread_id(cached_session_id: &Arc<Mutex<Option<String>>>) -> Option<String> {
+    cached_session_id.lock().unwrap().clone()
+}
+
+fn mark_observer_unavailable(live_cache: &Arc<RwLock<LiveCache>>) {
+    let mut cache = live_cache.write().unwrap();
+    if cache.status != AgentStatus::Stopped {
+        cache.status = AgentStatus::Unknown;
+    }
+}
+
 fn find_free_port(from: u16) -> u16 {
     let mut port = from;
     loop {
@@ -734,6 +921,67 @@ mod tests {
     use super::*;
     use tokio::net::TcpListener as TokioTcpListener;
 
+    async fn accept_test_websocket(listener: TokioTcpListener) -> TcpStream {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut byte = [0u8; 1];
+        while !request.ends_with(b"\r\n\r\n") {
+            stream.read_exact(&mut byte).await.unwrap();
+            request.push(byte[0]);
+        }
+        stream
+            .write_all(
+                b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        stream
+    }
+
+    async fn read_test_client_text(stream: &mut TcpStream) -> String {
+        let mut header = [0u8; 2];
+        stream.read_exact(&mut header).await.unwrap();
+        assert_eq!(header[0] & 0x0f, 0x1);
+        assert_ne!(header[1] & 0x80, 0);
+        let mut length = (header[1] & 0x7f) as usize;
+        if length == 126 {
+            let mut extended = [0u8; 2];
+            stream.read_exact(&mut extended).await.unwrap();
+            length = u16::from_be_bytes(extended) as usize;
+        } else if length == 127 {
+            let mut extended = [0u8; 8];
+            stream.read_exact(&mut extended).await.unwrap();
+            length = u64::from_be_bytes(extended) as usize;
+        }
+        let mut mask = [0u8; 4];
+        stream.read_exact(&mut mask).await.unwrap();
+        let mut payload = vec![0u8; length];
+        stream.read_exact(&mut payload).await.unwrap();
+        for (index, byte) in payload.iter_mut().enumerate() {
+            *byte ^= mask[index % 4];
+        }
+        String::from_utf8(payload).unwrap()
+    }
+
+    async fn write_test_server_text(stream: &mut TcpStream, value: Value) {
+        let payload = value.to_string();
+        let mut frame = Vec::with_capacity(payload.len() + 10);
+        frame.push(0x81);
+        match payload.len() {
+            len @ 0..=125 => frame.push(len as u8),
+            len @ 126..=65535 => {
+                frame.push(126);
+                frame.extend_from_slice(&(len as u16).to_be_bytes());
+            }
+            len => {
+                frame.push(127);
+                frame.extend_from_slice(&(len as u64).to_be_bytes());
+            }
+        }
+        frame.extend_from_slice(payload.as_bytes());
+        stream.write_all(&frame).await.unwrap();
+    }
+
     #[test]
     fn maps_active_waiting_status() {
         let status = json!({
@@ -744,6 +992,26 @@ mod tests {
             status_from_value(Some(&status)),
             AgentStatus::WaitingForInput
         );
+    }
+
+    #[test]
+    fn observer_failure_is_unknown_not_stopped() {
+        let cache = Arc::new(RwLock::new(LiveCache {
+            status: AgentStatus::Running,
+            ..LiveCache::default()
+        }));
+
+        mark_observer_unavailable(&cache);
+        assert_eq!(cache.read().unwrap().status, AgentStatus::Unknown);
+
+        cache.write().unwrap().status = AgentStatus::Stopped;
+        mark_observer_unavailable(&cache);
+        assert_eq!(cache.read().unwrap().status, AgentStatus::Stopped);
+    }
+
+    #[test]
+    fn observer_request_timeout_allows_slow_startup() {
+        assert!(REQUEST_TIMEOUT >= Duration::from_secs(30));
     }
 
     #[test]
@@ -805,7 +1073,7 @@ mod tests {
     }
 
     #[test]
-    fn turn_completion_schedules_history_refresh() {
+    fn turn_completion_updates_cache_without_requiring_history_refresh() {
         let session = Arc::new(Mutex::new(Some("thread-1".to_string())));
         let cache = Arc::new(RwLock::new(LiveCache {
             history_initialized: true,
@@ -821,7 +1089,7 @@ mod tests {
         {
             let cached = cache.read().unwrap();
             assert_eq!(cached.status, AgentStatus::Idle);
-            assert!(!cached.history_initialized);
+            assert!(cached.history_initialized);
             assert_eq!(cached.total_work_ms, 900);
         }
 
@@ -839,6 +1107,32 @@ mod tests {
         assert!(cached.history_initialized);
         assert_eq!(cached.last_model_response.as_deref(), Some("Finished"));
         assert_eq!(cached.total_work_ms, 900);
+    }
+
+    #[test]
+    fn builds_subscription_and_reconciliation_requests() {
+        assert_eq!(
+            request_for(10, RequestKind::Resume, Some("thread-1"), ""),
+            json!({
+                "id": 10,
+                "method": "thread/resume",
+                "params": {
+                    "threadId": "thread-1",
+                    "excludeTurns": true
+                }
+            })
+        );
+        assert_eq!(
+            request_for(11, RequestKind::Reconcile, Some("thread-1"), ""),
+            json!({
+                "id": 11,
+                "method": "thread/read",
+                "params": {
+                    "threadId": "thread-1",
+                    "includeTurns": true
+                }
+            })
+        );
     }
 
     #[test]
@@ -861,6 +1155,147 @@ mod tests {
 
         assert_eq!(cache.last_model_response.as_deref(), Some("Finished"));
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn subscribed_observer_updates_from_events_without_recurring_reads() {
+        let listener = TokioTcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let mut stream = accept_test_websocket(listener).await;
+
+            let initialize: Value =
+                serde_json::from_str(&read_test_client_text(&mut stream).await).unwrap();
+            assert_eq!(
+                initialize.get("method").and_then(Value::as_str),
+                Some("initialize")
+            );
+            write_test_server_text(&mut stream, json!({"id": 1, "result": {}})).await;
+
+            let initialized: Value =
+                serde_json::from_str(&read_test_client_text(&mut stream).await).unwrap();
+            assert_eq!(
+                initialized.get("method").and_then(Value::as_str),
+                Some("initialized")
+            );
+
+            let discover: Value =
+                serde_json::from_str(&read_test_client_text(&mut stream).await).unwrap();
+            assert_eq!(
+                discover.get("method").and_then(Value::as_str),
+                Some("thread/list")
+            );
+            let discover_id = discover.get("id").and_then(Value::as_u64).unwrap();
+            write_test_server_text(
+                &mut stream,
+                json!({
+                    "id": discover_id,
+                    "result": {
+                        "data": [{
+                            "id": "thread-1",
+                            "cwd": "/tmp",
+                            "createdAt": 1,
+                            "parentThreadId": null,
+                            "preview": "Test prompt",
+                            "status": {"type": "idle"},
+                            "turns": []
+                        }]
+                    }
+                }),
+            )
+            .await;
+
+            let resume: Value =
+                serde_json::from_str(&read_test_client_text(&mut stream).await).unwrap();
+            assert_eq!(
+                resume.get("method").and_then(Value::as_str),
+                Some("thread/resume")
+            );
+            let resume_id = resume.get("id").and_then(Value::as_u64).unwrap();
+            write_test_server_text(
+                &mut stream,
+                json!({
+                    "id": resume_id,
+                    "result": {
+                        "model": "gpt-test",
+                        "thread": {
+                            "id": "thread-1",
+                            "preview": "Test prompt",
+                            "status": {"type": "idle"},
+                            "turns": []
+                        }
+                    }
+                }),
+            )
+            .await;
+
+            let reconcile: Value =
+                serde_json::from_str(&read_test_client_text(&mut stream).await).unwrap();
+            assert_eq!(
+                reconcile.get("method").and_then(Value::as_str),
+                Some("thread/read")
+            );
+            let reconcile_id = reconcile.get("id").and_then(Value::as_u64).unwrap();
+            write_test_server_text(
+                &mut stream,
+                json!({
+                    "id": reconcile_id,
+                    "result": {
+                        "thread": {
+                            "id": "thread-1",
+                            "preview": "Test prompt",
+                            "status": {"type": "idle"},
+                            "turns": [{
+                                "id": "turn-1",
+                                "items": [{"type": "agentMessage", "text": "Initial"}]
+                            }]
+                        }
+                    }
+                }),
+            )
+            .await;
+
+            write_test_server_text(
+                &mut stream,
+                json!({
+                    "method": "item/completed",
+                    "params": {
+                        "threadId": "thread-1",
+                        "turnId": "turn-2",
+                        "completedAtMs": 1,
+                        "item": {
+                            "id": "item-2",
+                            "type": "agentMessage",
+                            "text": "Live response"
+                        }
+                    }
+                }),
+            )
+            .await;
+
+            assert!(
+                tokio::time::timeout(
+                    Duration::from_millis(900),
+                    read_test_client_text(&mut stream)
+                )
+                .await
+                .is_err(),
+                "observer sent a recurring request after subscription"
+            );
+        });
+
+        let adapter = CodexAdapter::new(port, "/tmp".to_string(), None);
+        let mut response = None;
+        for _ in 0..50 {
+            response = adapter.get_last_model_response().await;
+            if response.as_deref() == Some("Live response") {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+
+        assert_eq!(response.as_deref(), Some("Live response"));
+        server.await.unwrap();
     }
 
     #[tokio::test]
