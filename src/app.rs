@@ -864,7 +864,7 @@ impl App {
             AppState::CreateAgentDialog => self.handle_create_key(key).await,
             AppState::RemoveAgentDialog(state) => {
                 let state = state.clone();
-                self.handle_remove_key(key, state)
+                self.handle_remove_key(key, state).await
             }
             AppState::GitViewer(_) => self.handle_git_viewer_key(key),
             AppState::TerminalView(_) => self.handle_terminal_view_key(key),
@@ -1258,7 +1258,7 @@ impl App {
                 }
                 KeyCode::Char('d') => {
                     let remove_wt = self.agent_view_state.remove_worktree_on_stop;
-                    self.remove_agent(idx, remove_wt, true);
+                    self.remove_agent(idx, remove_wt, true).await;
                     self.state = AppState::Dashboard;
                 }
                 KeyCode::Char(' ') => {
@@ -1912,10 +1912,11 @@ impl App {
     // RemoveAgentDialog key handler
     // -----------------------------------------------------------------------
 
-    fn handle_remove_key(&mut self, key: KeyEvent, state: RemoveAgentState) -> bool {
+    async fn handle_remove_key(&mut self, key: KeyEvent, state: RemoveAgentState) -> bool {
         match key.code {
             KeyCode::Char('y') | KeyCode::Enter => {
-                self.remove_agent(state.idx, state.remove_worktree, state.stop_agent);
+                self.remove_agent(state.idx, state.remove_worktree, state.stop_agent)
+                    .await;
                 self.state = AppState::Dashboard;
             }
             KeyCode::Char('n') | KeyCode::Esc => {
@@ -2051,14 +2052,19 @@ impl App {
         }
     }
 
-    fn remove_agent(&mut self, idx: usize, remove_worktree: bool, stop_agent: bool) {
+    async fn remove_agent(&mut self, idx: usize, remove_worktree: bool, stop_agent: bool) {
         if idx < self.agents.len() {
             if let Some(agent_config) = self.config.agents.get(idx) {
-                // Extract window target from pane (e.g., "flowmux:1.0" -> "flowmux:1")
-                if let Some(colon_pos) = agent_config.pane.find(':') {
-                    if let Some(dot_pos) = agent_config.pane[colon_pos..].find('.') {
-                        let window_target = &agent_config.pane[..colon_pos + dot_pos];
-                        let _ = tmux::kill_window(window_target);
+                if stop_agent {
+                    // Extract window target from pane (e.g., "flowmux:1.0" -> "flowmux:1")
+                    if let Some(colon_pos) = agent_config.pane.find(':') {
+                        if let Some(dot_pos) = agent_config.pane[colon_pos..].find('.') {
+                            let window_target = &agent_config.pane[..colon_pos + dot_pos];
+                            let _ = tmux::kill_window(window_target);
+                        }
+                    }
+                    if let Err(error) = self.adapters[idx].stop().await {
+                        eprintln!("warning: failed to stop agent: {error}");
                     }
                 }
 

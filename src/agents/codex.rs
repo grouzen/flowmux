@@ -66,6 +66,12 @@ pub struct CodexAdapter {
     _task: tokio::task::JoinHandle<()>,
 }
 
+impl Drop for CodexAdapter {
+    fn drop(&mut self) {
+        self._task.abort();
+    }
+}
+
 impl CodexAdapter {
     pub fn new(port: u16, directory: String, session_id: Option<String>) -> Self {
         Self::with_min_created_at(port, directory, session_id, 0)
@@ -124,6 +130,11 @@ impl CodexAdapter {
 
 #[async_trait]
 impl AgentAdapter for CodexAdapter {
+    async fn stop(&self) -> Result<()> {
+        self._task.abort();
+        stop_server(self.port).await
+    }
+
     async fn get_status(&self) -> AgentStatus {
         self.live_cache.read().unwrap().status.clone()
     }
@@ -157,8 +168,10 @@ async fn launch_server(dir: &str, name: &str, port: u16) -> Result<(usize, Strin
     let window_index = tmux::new_window(dir, name)?;
     let pane = format!("{}:{}.0", tmux::session_name(), window_index);
     let log_path = format!("/tmp/flowmux-codex-{port}.log");
+    let pid_path = server_pid_path(port);
     let command = format!(
-        "codex app-server --listen ws://127.0.0.1:{port} >{log_path} 2>&1 & FLOWMUX_CODEX_SERVER_PID=$!\n"
+        "codex app-server --listen ws://127.0.0.1:{port} >{log_path} 2>&1 & \
+         FLOWMUX_CODEX_SERVER_PID=$!; printf '%s\\n' \"$FLOWMUX_CODEX_SERVER_PID\" >{pid_path}\n"
     );
     tmux::send_keys(&pane, &command)?;
 
@@ -188,13 +201,70 @@ async fn app_server_ready(client: &reqwest::Client, port: u16) -> bool {
 
 fn launch_tui(pane: &str, port: u16, session_id: Option<&str>) -> Result<()> {
     let remote = format!("ws://127.0.0.1:{port}");
+    let cleanup = format!(
+        "kill \"$FLOWMUX_CODEX_SERVER_PID\" 2>/dev/null; rm -f {}\n",
+        server_pid_path(port)
+    );
     let command = match session_id {
-        Some(id) => {
-            format!("codex resume --remote {remote} {id}; kill \"$FLOWMUX_CODEX_SERVER_PID\"\n")
-        }
-        None => format!("codex --remote {remote}; kill \"$FLOWMUX_CODEX_SERVER_PID\"\n"),
+        Some(id) => format!("codex resume --remote {remote} {id}; {cleanup}"),
+        None => format!("codex --remote {remote}; {cleanup}"),
     };
     tmux::send_keys(pane, &command)
+}
+
+fn server_pid_path(port: u16) -> String {
+    format!("/tmp/flowmux-codex-{port}.pid")
+}
+
+async fn stop_server(port: u16) -> Result<()> {
+    let pid_path = server_pid_path(port);
+    let pid = std::fs::read_to_string(&pid_path)
+        .ok()
+        .and_then(|value| value.trim().parse::<i32>().ok());
+
+    let signaled_pid = pid.is_some_and(|pid| signal_server_pid(pid, port, libc::SIGTERM));
+    if !signaled_pid {
+        signal_port_owner(port, "TERM");
+    }
+
+    for _ in 0..10 {
+        if TcpStream::connect(("127.0.0.1", port)).await.is_err() {
+            let _ = std::fs::remove_file(&pid_path);
+            return Ok(());
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    let killed_pid = pid.is_some_and(|pid| signal_server_pid(pid, port, libc::SIGKILL));
+    if !killed_pid {
+        signal_port_owner(port, "KILL");
+    }
+    let _ = std::fs::remove_file(pid_path);
+    Ok(())
+}
+
+fn signal_server_pid(pid: i32, port: u16, signal: i32) -> bool {
+    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+    let matches = server_cmdline_matches_port(&cmdline, port);
+    if matches {
+        unsafe {
+            libc::kill(pid, signal);
+        }
+    }
+    matches
+}
+
+fn server_cmdline_matches_port(cmdline: &[u8], port: u16) -> bool {
+    let expected = format!("ws://127.0.0.1:{port}");
+    cmdline
+        .split(|byte| *byte == 0)
+        .any(|arg| arg == expected.as_bytes())
+}
+
+fn signal_port_owner(port: u16, signal: &str) {
+    let _ = std::process::Command::new("fuser")
+        .args(["-k", &format!("-{signal}"), &format!("{port}/tcp")])
+        .status();
 }
 
 async fn run_loop(
@@ -957,6 +1027,13 @@ mod tests {
         assert_eq!(LiveCache::default().status, AgentStatus::Idle);
     }
 
+    #[test]
+    fn server_pid_signal_requires_matching_port_argument() {
+        let cmdline = b"codex\0app-server\0--listen\0ws://127.0.0.1:32123\0";
+        assert!(server_cmdline_matches_port(cmdline, 32123));
+        assert!(!server_cmdline_matches_port(cmdline, 32124));
+    }
+
     #[tokio::test]
     async fn readiness_probe_uses_http_endpoint() {
         let listener = TokioTcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -1415,5 +1492,35 @@ mod tests {
 
         child.kill().unwrap();
         child.wait().unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an installed codex CLI"]
+    async fn installed_codex_stop_closes_server() {
+        let port = find_free_port(19100);
+        let mut child = std::process::Command::new("codex")
+            .args(["app-server", "--listen", &format!("ws://127.0.0.1:{port}")])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        std::fs::write(server_pid_path(port), child.id().to_string()).unwrap();
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(500))
+            .build()
+            .unwrap();
+        for _ in 0..25 {
+            if app_server_ready(&client, port).await {
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        assert!(app_server_ready(&client, port).await);
+
+        stop_server(port).await.unwrap();
+        child.wait().unwrap();
+        assert!(TcpStream::connect(("127.0.0.1", port)).await.is_err());
+        assert!(!std::path::Path::new(&server_pid_path(port)).exists());
     }
 }
