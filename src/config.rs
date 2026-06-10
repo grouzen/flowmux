@@ -1,6 +1,10 @@
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::PathBuf;
+
+pub const DEFAULT_PROJECT_NAME: &str = "Default";
+pub const MAX_PROJECTS: usize = 10;
 
 // ---------------------------------------------------------------------------
 // AgentKind
@@ -37,6 +41,8 @@ pub struct AgentConfig {
     pub name: String,
     pub pane: String,
     pub directory: String,
+    #[serde(default = "default_project_name")]
+    pub project: String,
     #[serde(flatten)]
     pub kind: AgentKind,
     /// Absolute path to the git repository root the worktree belongs to.
@@ -76,6 +82,10 @@ impl AgentConfig {
     }
 }
 
+fn default_project_name() -> String {
+    DEFAULT_PROJECT_NAME.to_string()
+}
+
 // ---------------------------------------------------------------------------
 // Config (runtime) / ConfigFile (on-disk)
 // ---------------------------------------------------------------------------
@@ -83,6 +93,8 @@ impl AgentConfig {
 /// Serialisable portion of the config (agents list only).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct ConfigFile {
+    #[serde(default)]
+    projects: Vec<String>,
     #[serde(default)]
     agents: Vec<AgentConfig>,
 }
@@ -92,6 +104,7 @@ struct ConfigFile {
 /// never written to disk.
 #[derive(Debug, Clone, Default)]
 pub struct Config {
+    pub projects: Vec<String>,
     pub agents: Vec<AgentConfig>,
     /// The tmux session name this config belongs to.  Set by `load()`.
     pub session_name: String,
@@ -117,6 +130,7 @@ impl Config {
                     .with_context(|| format!("create config dir {:?}", parent))?;
             }
             return Ok(Config {
+                projects: vec![default_project_name()],
                 agents: Vec::new(),
                 session_name: session.to_string(),
             });
@@ -128,10 +142,14 @@ impl Config {
         let file: ConfigFile =
             toml::from_str(&content).with_context(|| format!("parse config {:?}", path))?;
 
-        Ok(Config {
+        let mut config = Config {
+            projects: file.projects,
             agents: file.agents,
             session_name: session.to_string(),
-        })
+        };
+        config.normalize();
+
+        Ok(config)
     }
 
     pub fn save(&self) -> anyhow::Result<()> {
@@ -142,8 +160,11 @@ impl Config {
                 .with_context(|| format!("create config dir {:?}", parent))?;
         }
 
+        let mut normalized = self.clone();
+        normalized.normalize();
         let file = ConfigFile {
-            agents: self.agents.clone(),
+            projects: normalized.projects,
+            agents: normalized.agents,
         };
         let content = toml::to_string_pretty(&file).context("serialize config to TOML")?;
 
@@ -155,6 +176,50 @@ impl Config {
             .with_context(|| format!("rename config {:?} -> {:?}", tmp_path, path))?;
 
         Ok(())
+    }
+
+    pub fn normalize(&mut self) {
+        let mut projects = Vec::new();
+        let mut seen = HashSet::new();
+
+        for raw_name in &self.projects {
+            let name = raw_name.trim();
+            if name.is_empty() || !seen.insert(name.to_string()) {
+                continue;
+            }
+            projects.push(name.to_string());
+            if projects.len() == MAX_PROJECTS {
+                break;
+            }
+        }
+
+        if let Some(default_idx) = projects
+            .iter()
+            .position(|name| name == DEFAULT_PROJECT_NAME)
+        {
+            if default_idx != 0 {
+                let default = projects.remove(default_idx);
+                projects.insert(0, default);
+            }
+        } else {
+            projects.insert(0, default_project_name());
+        }
+
+        if projects.len() > MAX_PROJECTS {
+            projects.truncate(MAX_PROJECTS);
+        }
+
+        let project_set: HashSet<&str> = projects.iter().map(String::as_str).collect();
+        for agent in &mut self.agents {
+            let project = agent.project.trim();
+            if project.is_empty() || !project_set.contains(project) {
+                agent.project = default_project_name();
+            } else if agent.project != project {
+                agent.project = project.to_string();
+            }
+        }
+
+        self.projects = projects;
     }
 }
 
@@ -172,6 +237,7 @@ mod tests {
                 name: "oc".into(),
                 pane: "flowmux:1.0".into(),
                 directory: "/tmp".into(),
+                project: "Default".into(),
                 kind: AgentKind::Opencode {
                     port: 9000,
                     session_id: Some("s1".into()),
@@ -182,6 +248,7 @@ mod tests {
                 name: "cl".into(),
                 pane: "flowmux:2.0".into(),
                 directory: "/tmp/wt".into(),
+                project: "work".into(),
                 kind: AgentKind::Claude {
                     flowmux_agent_id: "abc-123".into(),
                     session_id: None,
@@ -193,6 +260,7 @@ mod tests {
                 name: "cx".into(),
                 pane: "flowmux:3.0".into(),
                 directory: "/tmp/codex".into(),
+                project: "Default".into(),
                 kind: AgentKind::Codex {
                     port: 9100,
                     session_id: Some("thread-1".into()),
@@ -203,10 +271,12 @@ mod tests {
 
         #[derive(Serialize, Deserialize)]
         struct File {
+            projects: Vec<String>,
             agents: Vec<AgentConfig>,
         }
 
         let toml_str = toml::to_string_pretty(&File {
+            projects: vec!["Default".into(), "work".into()],
             agents: agents.clone(),
         })
         .unwrap();
@@ -222,11 +292,54 @@ mod tests {
         assert_eq!(back.agents[1].name, "cl");
         assert!(matches!(back.agents[1].kind, AgentKind::Claude { .. }));
         assert_eq!(back.agents[1].session_id(), None);
+        assert_eq!(back.agents[1].project, "work");
 
         assert!(matches!(
             back.agents[2].kind,
             AgentKind::Codex { port: 9100, .. }
         ));
         assert_eq!(back.agents[2].session_id(), Some("thread-1"));
+    }
+
+    #[test]
+    fn config_normalize_adds_default_project_and_repairs_unknown_agent_projects() {
+        let mut config = Config {
+            projects: vec!["work".into(), "work".into(), "  ".into()],
+            agents: vec![
+                AgentConfig {
+                    name: "oc".into(),
+                    pane: "flowmux:1.0".into(),
+                    directory: "/tmp".into(),
+                    project: String::new(),
+                    kind: AgentKind::Opencode {
+                        port: 9000,
+                        session_id: None,
+                    },
+                    git_repo_root: None,
+                },
+                AgentConfig {
+                    name: "cl".into(),
+                    pane: "flowmux:2.0".into(),
+                    directory: "/tmp".into(),
+                    project: "missing".into(),
+                    kind: AgentKind::Claude {
+                        flowmux_agent_id: "id".into(),
+                        session_id: None,
+                        transcript_path: None,
+                    },
+                    git_repo_root: None,
+                },
+            ],
+            session_name: "flowmux".into(),
+        };
+
+        config.normalize();
+
+        assert_eq!(
+            config.projects,
+            vec!["Default".to_string(), "work".to_string()]
+        );
+        assert_eq!(config.agents[0].project, "Default");
+        assert_eq!(config.agents[1].project, "Default");
     }
 }

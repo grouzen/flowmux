@@ -219,13 +219,13 @@ All rendering functions live here, organized by view:
 | `remove_agent.rs` | Removal confirmation dialog |
 | `theme.rs` | Shared color/style constants |
 
-The dashboard uses a **pure grid layout** — no side panels. Cards are arranged in a `cols × rows` grid computed from the agent count. Each card shows: agent name, type, directory, status, context usage, model name, and the last model response (rendered as markdown).
+The dashboard uses a **pure grid layout** — no side panels. Project tabs are rendered above the grid, and the active project filters which cards are visible. Cards are arranged in a `cols × rows` grid computed from the visible agent count. Each card shows: agent name, type, directory, status, context usage, model name, and the last model response (rendered as markdown).
 
 ### 8. Configuration
 
 #### Per-Session (`config.rs`)
 - Stored at `~/.config/flowmux/sessions/<session>.toml`
-- Contains the list of agents with their pane targets, directories, and agent-specific data (port, session IDs)
+- Contains the ordered `projects` list plus agents with their pane targets, directories, project membership, and agent-specific data (port, session IDs)
 - Atomic writes (write to `.tmp` then rename)
 
 #### Global (`global_config.rs`)

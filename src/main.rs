@@ -107,7 +107,9 @@ async fn main() -> Result<()> {
     let mut config = Config::load(&cli.tmux_session)?;
 
     // Resolve enabled agents: CLI overrides global config.
-    let enabled_agents = cli.enabled_agents.or_else(|| global_config.enabled_agents.clone());
+    let enabled_agents = cli
+        .enabled_agents
+        .or_else(|| global_config.enabled_agents.clone());
 
     // Validate and warn about unknown agent names.
     if let Some(ref names) = enabled_agents {
@@ -128,7 +130,9 @@ async fn main() -> Result<()> {
     );
 
     if runner.available_agent_types().is_empty() {
-        eprintln!("error: no agents available (none discovered or all filtered out by enabled_agents)");
+        eprintln!(
+            "error: no agents available (none discovered or all filtered out by enabled_agents)"
+        );
         std::process::exit(1);
     }
 
@@ -205,8 +209,10 @@ async fn main() -> Result<()> {
                     .count();
 
                 if app.notification.initialized {
-                    let running_decrease =
-                        app.notification.prev_running.saturating_sub(current_running);
+                    let running_decrease = app
+                        .notification
+                        .prev_running
+                        .saturating_sub(current_running);
                     let waiting_increase =
                         current_waiting.saturating_sub(app.notification.prev_waiting);
 
@@ -228,11 +234,15 @@ async fn main() -> Result<()> {
                     let area = f.area();
                     match &state {
                         app::AppState::Dashboard => {
+                            let visible_indices = app.visible_agent_indices();
                             ui::dashboard::render_dashboard(
                                 f,
                                 area,
                                 &app.agents,
-                                app.selected,
+                                &visible_indices,
+                                Some(app.selected),
+                                &app.config.projects,
+                                app.active_project_idx,
                                 &app.card_scroll,
                                 &mut app.card_response_heights,
                                 &mut app.card_response_widths,
@@ -256,11 +266,15 @@ async fn main() -> Result<()> {
                             }
                         }
                         app::AppState::CreateAgentDialog => {
+                            let visible_indices = app.visible_agent_indices();
                             ui::dashboard::render_dashboard(
                                 f,
                                 area,
                                 &app.agents,
-                                app.selected,
+                                &visible_indices,
+                                Some(app.selected),
+                                &app.config.projects,
+                                app.active_project_idx,
                                 &app.card_scroll,
                                 &mut app.card_response_heights,
                                 &mut app.card_response_widths,
@@ -270,12 +284,39 @@ async fn main() -> Result<()> {
                             );
                             ui::create_agent::render_create_agent(f, area, &app.create_state);
                         }
-                        app::AppState::RemoveAgentDialog(remove_state) => {
+                        app::AppState::CreateProjectDialog => {
+                            let visible_indices = app.visible_agent_indices();
                             ui::dashboard::render_dashboard(
                                 f,
                                 area,
                                 &app.agents,
-                                app.selected,
+                                &visible_indices,
+                                Some(app.selected),
+                                &app.config.projects,
+                                app.active_project_idx,
+                                &app.card_scroll,
+                                &mut app.card_response_heights,
+                                &mut app.card_response_widths,
+                                true,
+                                blink_running,
+                                blink_waiting,
+                            );
+                            ui::create_project::render_create_project(
+                                f,
+                                area,
+                                &app.create_project_state,
+                            );
+                        }
+                        app::AppState::RemoveAgentDialog(remove_state) => {
+                            let visible_indices = app.visible_agent_indices();
+                            ui::dashboard::render_dashboard(
+                                f,
+                                area,
+                                &app.agents,
+                                &visible_indices,
+                                Some(app.selected),
+                                &app.config.projects,
+                                app.active_project_idx,
                                 &app.card_scroll,
                                 &mut app.card_response_heights,
                                 &mut app.card_response_widths,
@@ -301,6 +342,31 @@ async fn main() -> Result<()> {
                                 remove_state.remove_worktree,
                                 remove_state.stop_agent,
                                 remove_state.focus,
+                            );
+                        }
+                        app::AppState::RemoveProjectDialog(remove_state) => {
+                            let visible_indices = app.visible_agent_indices();
+                            ui::dashboard::render_dashboard(
+                                f,
+                                area,
+                                &app.agents,
+                                &visible_indices,
+                                Some(app.selected),
+                                &app.config.projects,
+                                app.active_project_idx,
+                                &app.card_scroll,
+                                &mut app.card_response_heights,
+                                &mut app.card_response_widths,
+                                true,
+                                blink_running,
+                                blink_waiting,
+                            );
+                            ui::remove_project::render_remove_project(
+                                f,
+                                area,
+                                &remove_state.name,
+                                remove_state.agent_count,
+                                remove_state.confirm_remove_agents,
                             );
                         }
                         app::AppState::GitViewer(gv) => {

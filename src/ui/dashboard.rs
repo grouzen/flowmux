@@ -1,36 +1,38 @@
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Padding, Paragraph},
-    Frame,
 };
 
 use crate::models::{AgentEntry, AgentStatus};
 use crate::ui::theme::*;
 
+pub const PROJECT_TABS_HEIGHT: u16 = 1;
+
 // ---------------------------------------------------------------------------
 // Status count helpers (used by keybindings bar)
 // ---------------------------------------------------------------------------
 
-fn count_running(agents: &[AgentEntry]) -> usize {
-    agents
+fn count_running(agents: &[AgentEntry], visible_indices: &[usize]) -> usize {
+    visible_indices
         .iter()
-        .filter(|a| matches!(a.meta.status, AgentStatus::Running))
+        .filter(|&&idx| matches!(agents[idx].meta.status, AgentStatus::Running))
         .count()
 }
 
-fn count_waiting(agents: &[AgentEntry]) -> usize {
-    agents
+fn count_waiting(agents: &[AgentEntry], visible_indices: &[usize]) -> usize {
+    visible_indices
         .iter()
-        .filter(|a| matches!(a.meta.status, AgentStatus::WaitingForInput))
+        .filter(|&&idx| matches!(agents[idx].meta.status, AgentStatus::WaitingForInput))
         .count()
 }
 
-fn count_idle(agents: &[AgentEntry]) -> usize {
-    agents
+fn count_idle(agents: &[AgentEntry], visible_indices: &[usize]) -> usize {
+    visible_indices
         .iter()
-        .filter(|a| matches!(a.meta.status, AgentStatus::Idle))
+        .filter(|&&idx| matches!(agents[idx].meta.status, AgentStatus::Idle))
         .count()
 }
 
@@ -55,7 +57,10 @@ pub fn render_dashboard(
     f: &mut Frame,
     area: Rect,
     agents: &[AgentEntry],
-    selected: usize,
+    visible_indices: &[usize],
+    selected: Option<usize>,
+    projects: &[String],
+    active_project_idx: usize,
     card_scroll: &[u16],
     card_response_heights: &mut Vec<u16>,
     card_response_widths: &mut Vec<u16>,
@@ -63,20 +68,35 @@ pub fn render_dashboard(
     blink_running: bool,
     blink_waiting: bool,
 ) {
-    // Split into main area and keybindings bar at bottom
+    // Split into tabs, main area, and keybindings bar at bottom
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(PROJECT_TABS_HEIGHT),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
         .split(area);
 
-    let main_area = chunks[0];
-    let bar_area = chunks[1];
+    let tabs_area = chunks[0];
+    let main_area = chunks[1];
+    let bar_area = chunks[2];
 
-    render_keybindings_bar(f, bar_area, agents, dimmed, blink_running, blink_waiting);
+    render_project_tabs(f, tabs_area, projects, active_project_idx, dimmed);
+    render_keybindings_bar(
+        f,
+        bar_area,
+        agents,
+        visible_indices,
+        dimmed,
+        blink_running,
+        blink_waiting,
+    );
     render_grid(
         f,
         main_area,
         agents,
+        visible_indices,
         selected,
         card_scroll,
         card_response_heights,
@@ -118,13 +138,14 @@ fn render_grid(
     f: &mut Frame,
     area: Rect,
     agents: &[AgentEntry],
-    selected: usize,
+    visible_indices: &[usize],
+    selected: Option<usize>,
     card_scroll: &[u16],
     card_response_heights: &mut Vec<u16>,
     card_response_widths: &mut Vec<u16>,
     dimmed: bool,
 ) {
-    if agents.is_empty() {
+    if visible_indices.is_empty() {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -133,14 +154,14 @@ fn render_grid(
                 Constraint::Ratio(1, 2),
             ])
             .split(area);
-        let msg = Paragraph::new("No agents. Press [n] to create one.")
+        let msg = Paragraph::new("No agents in this project. Press [n] to create one.")
             .style(ds(dimmed).fg(GRAY))
             .alignment(Alignment::Center);
         f.render_widget(msg, chunks[1]);
         return;
     }
 
-    let (cols, rows) = grid_layout(agents.len());
+    let (cols, rows) = grid_layout(visible_indices.len());
 
     let col_constraints: Vec<Constraint> = (0..cols)
         .map(|_| Constraint::Ratio(1, cols as u32))
@@ -172,18 +193,18 @@ fn render_grid(
             let slot = row * cols + col;
             let cell_area = col_areas[col];
 
-            if slot < agents.len() {
-                let scroll = card_scroll.get(slot).copied().unwrap_or(0);
+            if let Some(&agent_idx) = visible_indices.get(slot) {
+                let scroll = card_scroll.get(agent_idx).copied().unwrap_or(0);
                 let (resp_h, resp_w) = render_card(
                     f,
                     cell_area,
-                    &agents[slot],
-                    slot == selected,
+                    &agents[agent_idx],
+                    selected == Some(agent_idx),
                     scroll,
                     dimmed,
                 );
-                card_response_heights[slot] = resp_h;
-                card_response_widths[slot] = resp_w;
+                card_response_heights[agent_idx] = resp_h;
+                card_response_widths[agent_idx] = resp_w;
             }
             // Empty slots render as blank (no border)
         }
@@ -461,15 +482,11 @@ fn render_card(
             .constraints([Constraint::Length(prefix_width), Constraint::Min(0)])
             .split(slot);
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                &dir_prefix,
-                ds(dimmed).fg(GRAY),
-            ))),
+            Paragraph::new(Line::from(Span::styled(&dir_prefix, ds(dimmed).fg(GRAY)))),
             dir_area[0],
         );
         let dir_text_width = dir_area[1].width as usize;
-        let dir_line_width =
-            unicode_width::UnicodeWidthStr::width(dir_display.as_str());
+        let dir_line_width = unicode_width::UnicodeWidthStr::width(dir_display.as_str());
         let is_truncated = dir_line_width > dir_text_width;
         let text_chunks = Layout::default()
             .direction(Direction::Horizontal)
@@ -480,21 +497,15 @@ fn render_card(
             .split(dir_area[1]);
         if is_truncated {
             f.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    "…",
-                    ds(dimmed).fg(GRAY),
-                ))),
+                Paragraph::new(Line::from(Span::styled("…", ds(dimmed).fg(GRAY)))),
                 text_chunks[0],
             );
         }
         let text_w = text_chunks[1].width as usize;
         let text_scroll = dir_line_width.saturating_sub(text_w) as u16;
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                &dir_display,
-                ds(dimmed).fg(GRAY),
-            )))
-            .scroll((0, text_scroll)),
+            Paragraph::new(Line::from(Span::styled(&dir_display, ds(dimmed).fg(GRAY))))
+                .scroll((0, text_scroll)),
             text_chunks[1],
         );
     }
@@ -580,24 +591,31 @@ fn render_keybindings_bar(
     f: &mut Frame,
     area: Rect,
     agents: &[AgentEntry],
+    visible_indices: &[usize],
     dimmed: bool,
     blink_running: bool,
     blink_waiting: bool,
 ) {
-    let running = count_running(agents);
-    let waiting = count_waiting(agents);
-    let idle = count_idle(agents);
+    let running = count_running(agents, visible_indices);
+    let waiting = count_waiting(agents, visible_indices);
+    let idle = count_idle(agents, visible_indices);
 
     // Left: hotkeys
     let mut spans: Vec<Span> = Vec::new();
     spans.push(Span::raw(" "));
-    push_keybind(&mut spans, "n", "new", dimmed);
+    push_keybind(&mut spans, "n", "new agent", dimmed);
     spans.push(Span::raw(" "));
-    push_keybind(&mut spans, "d", "delete", dimmed);
+    push_keybind(&mut spans, "p", "new project", dimmed);
+    spans.push(Span::raw(" "));
+    push_keybind(&mut spans, "d", "delete agent", dimmed);
+    spans.push(Span::raw(" "));
+    push_keybind(&mut spans, "ctrl+d", "delete project", dimmed);
+    spans.push(Span::raw(" "));
+    push_keybind(&mut spans, "tab (0-9)", "switch projects", dimmed);
     spans.push(Span::raw(" "));
     push_keybind(&mut spans, "enter", "open", dimmed);
     spans.push(Span::raw(" "));
-    push_keybind(&mut spans, "ctrl+arrows", "move", dimmed);
+    push_keybind(&mut spans, "ctrl+arrows", "move card", dimmed);
     spans.push(Span::raw(" "));
     push_keybind(&mut spans, "pgup/pgdown", "scroll", dimmed);
     spans.push(Span::raw(" "));
@@ -621,4 +639,33 @@ fn render_keybindings_bar(
     f.render_widget(Paragraph::new(Line::from(spans)), bar_chunks[0]);
     f.render_widget(Paragraph::new(Line::from(status_spans)), bar_chunks[1]);
     f.render_widget(Paragraph::new(brand), bar_chunks[2]);
+}
+
+fn render_project_tabs(
+    f: &mut Frame,
+    area: Rect,
+    projects: &[String],
+    active_project_idx: usize,
+    dimmed: bool,
+) {
+    let mut spans: Vec<Span> = Vec::new();
+    spans.push(Span::raw(" "));
+
+    for (idx, project) in projects.iter().enumerate() {
+        let digit = match idx {
+            0..=8 => char::from(b'1' + idx as u8),
+            9 => '0',
+            _ => '?',
+        };
+        let label = format!(" {} {} ", digit, project);
+        let style = if idx == active_project_idx {
+            ds(dimmed).fg(BG1).bg(BLUE).add_modifier(Modifier::BOLD)
+        } else {
+            ds(dimmed).fg(FG).bg(BG2)
+        };
+        spans.push(Span::styled(label, style));
+        spans.push(Span::raw(" "));
+    }
+
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }

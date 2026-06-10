@@ -3,12 +3,12 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::time::{Duration, interval};
 
 use crate::agents::AgentAdapter;
-use crate::config::{AgentKind, Config};
+use crate::config::{AgentKind, Config, DEFAULT_PROJECT_NAME, MAX_PROJECTS};
 use crate::host_terminal::HostColors;
 use crate::models::{AgentEntry, AgentMeta, AgentStatus, AgentType};
 use crate::runner::AgentRunner;
 use crate::tmux;
-use crate::ui::dashboard::grid_layout;
+use crate::ui::dashboard::{PROJECT_TABS_HEIGHT, grid_layout};
 
 // ---------------------------------------------------------------------------
 // StatusNotification — blink tracking for status bar
@@ -67,6 +67,20 @@ pub struct RemoveAgentState {
     pub remove_worktree: bool,
     pub stop_agent: bool,
     pub focus: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CreateProjectState {
+    pub name: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RemoveProjectState {
+    pub idx: usize,
+    pub name: String,
+    pub agent_count: usize,
+    pub confirm_remove_agents: bool,
 }
 
 /// State for the git viewer pane view.
@@ -177,8 +191,10 @@ impl GitViewerState {
 pub enum AppState {
     Dashboard,
     CreateAgentDialog,
+    CreateProjectDialog,
     AgentView(usize),
     RemoveAgentDialog(RemoveAgentState),
+    RemoveProjectDialog(RemoveProjectState),
     GitViewer(GitViewerState),
     TerminalView(TerminalViewState),
 }
@@ -431,6 +447,7 @@ pub struct App {
     pub agents: Vec<AgentEntry>,
     pub adapters: Vec<Box<dyn AgentAdapter>>,
     pub state: AppState,
+    pub active_project_idx: usize,
     pub selected: usize,
     pub config: Config,
     pub runner: AgentRunner,
@@ -439,6 +456,7 @@ pub struct App {
     pub terminal_view_state: Option<TerminalViewState>,
     pub terminal_panes: std::collections::HashMap<usize, String>,
     pub create_state: CreateAgentState,
+    pub create_project_state: CreateProjectState,
     pub tx: UnboundedSender<Event>,
     pub rx: UnboundedReceiver<Event>,
     /// Set to `true` whenever state changes and a redraw is needed.
@@ -469,10 +487,11 @@ impl App {
     ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let card_count = agents.len();
-        Self {
+        let mut app = Self {
             agents,
             adapters,
             state: AppState::Dashboard,
+            active_project_idx: 0,
             selected: 0,
             config,
             runner,
@@ -481,6 +500,7 @@ impl App {
             terminal_view_state: None,
             terminal_panes: std::collections::HashMap::new(),
             create_state: CreateAgentState::default(),
+            create_project_state: CreateProjectState::default(),
             tx,
             rx,
             dirty: true, // force initial draw
@@ -489,7 +509,72 @@ impl App {
             card_response_widths: vec![0u16; card_count],
             host_colors,
             notification: StatusNotification::default(),
+        };
+        app.ensure_project_selection();
+        app
+    }
+
+    pub fn active_project_name(&self) -> &str {
+        self.config
+            .projects
+            .get(self.active_project_idx)
+            .map(String::as_str)
+            .unwrap_or(DEFAULT_PROJECT_NAME)
+    }
+
+    pub fn visible_agent_indices(&self) -> Vec<usize> {
+        visible_agent_indices_for_project(&self.agents, self.active_project_name())
+    }
+
+    fn selected_visible_position(&self, visible_indices: &[usize]) -> Option<usize> {
+        visible_indices.iter().position(|&idx| idx == self.selected)
+    }
+
+    fn ensure_project_selection(&mut self) {
+        let visible_indices = self.visible_agent_indices();
+        if visible_indices.is_empty() {
+            self.selected = self.selected.min(self.agents.len().saturating_sub(1));
+            return;
         }
+
+        if !visible_indices.contains(&self.selected) {
+            self.selected = visible_indices[0];
+        }
+    }
+
+    fn set_active_project_idx(&mut self, idx: usize) {
+        if idx >= self.config.projects.len() {
+            return;
+        }
+        self.active_project_idx = idx;
+        self.ensure_project_selection();
+        self.dirty = true;
+    }
+
+    fn cycle_projects(&mut self) {
+        if self.config.projects.is_empty() {
+            return;
+        }
+        let next = (self.active_project_idx + 1) % self.config.projects.len();
+        self.set_active_project_idx(next);
+    }
+
+    fn switch_to_project_by_digit(&mut self, digit: char) {
+        let idx = match digit {
+            '1'..='9' => digit as usize - '1' as usize,
+            '0' => 9,
+            _ => return,
+        };
+        if idx < self.config.projects.len() {
+            self.set_active_project_idx(idx);
+        }
+    }
+
+    fn current_project_agent_count(&self) -> usize {
+        self.agents
+            .iter()
+            .filter(|entry| entry.config.project == self.active_project_name())
+            .count()
     }
 
     /// Spawn background tasks (crossterm events, dashboard ticker, agent view ticker).
@@ -588,21 +673,27 @@ impl App {
                 // handle_agent_view_tick sets self.dirty = true only when
                 // the captured output has actually changed.
                 self.handle_agent_view_tick().await;
-                if self.notification.is_blinking_running() || self.notification.is_blinking_waiting() {
+                if self.notification.is_blinking_running()
+                    || self.notification.is_blinking_waiting()
+                {
                     self.dirty = true;
                 }
                 true
             }
             Event::GitViewerTick => {
                 self.handle_git_viewer_tick().await;
-                if self.notification.is_blinking_running() || self.notification.is_blinking_waiting() {
+                if self.notification.is_blinking_running()
+                    || self.notification.is_blinking_waiting()
+                {
                     self.dirty = true;
                 }
                 true
             }
             Event::TerminalViewTick => {
                 self.handle_terminal_view_tick().await;
-                if self.notification.is_blinking_running() || self.notification.is_blinking_waiting() {
+                if self.notification.is_blinking_running()
+                    || self.notification.is_blinking_waiting()
+                {
                     self.dirty = true;
                 }
                 true
@@ -611,19 +702,22 @@ impl App {
     }
 
     /// Returns the dashboard card slot index (into `self.agents`) for a given
-    /// terminal cell `(col, row)`, or `None` if the position is out of bounds
-    /// (e.g. the keybindings bar row) or the agents list is empty.
+    /// visible dashboard slot index for a given terminal cell `(col, row)`, or
+    /// `None` if the position is out of bounds.
     fn dashboard_slot_at(&self, col: u16, row: u16) -> Option<usize> {
-        let n = self.agents.len();
+        let visible_indices = self.visible_agent_indices();
+        let n = visible_indices.len();
         if n == 0 {
             return None;
         }
         let (term_w, term_h) = crossterm::terminal::size().unwrap_or((80, 24));
-        // The bottom row is the keybindings bar — ignore clicks there.
         if row >= term_h.saturating_sub(1) {
             return None;
         }
-        let main_h = term_h.saturating_sub(1);
+        if row < PROJECT_TABS_HEIGHT {
+            return None;
+        }
+        let main_h = term_h.saturating_sub(1).saturating_sub(PROJECT_TABS_HEIGHT);
         let (cols, rows) = grid_layout(n);
         let cell_w = term_w / cols as u16;
         let cell_h = main_h / rows as u16;
@@ -631,7 +725,8 @@ impl App {
             return None;
         }
         let c = (col / cell_w).min(cols as u16 - 1) as usize;
-        let r = (row / cell_h).min(rows as u16 - 1) as usize;
+        let grid_row = row.saturating_sub(PROJECT_TABS_HEIGHT);
+        let r = (grid_row / cell_h).min(rows as u16 - 1) as usize;
         let slot = r * cols + c;
         if slot < n { Some(slot) } else { None }
     }
@@ -640,35 +735,42 @@ impl App {
         match mouse.kind {
             MouseEventKind::Down(_) => {
                 if let Some(slot) = self.dashboard_slot_at(mouse.column, mouse.row) {
-                    self.selected = slot;
+                    if let Some(global_idx) = self.visible_agent_indices().get(slot).copied() {
+                        self.selected = global_idx;
+                    }
                     self.dirty = true;
                 }
             }
             MouseEventKind::ScrollUp => {
                 if let Some(slot) = self.dashboard_slot_at(mouse.column, mouse.row) {
-                    if let Some(s) = self.card_scroll.get_mut(slot) {
-                        *s = s.saturating_sub(1);
-                        self.dirty = true;
+                    if let Some(global_idx) = self.visible_agent_indices().get(slot).copied() {
+                        if let Some(s) = self.card_scroll.get_mut(global_idx) {
+                            *s = s.saturating_sub(1);
+                            self.dirty = true;
+                        }
                     }
                 }
             }
             MouseEventKind::ScrollDown => {
                 if let Some(slot) = self.dashboard_slot_at(mouse.column, mouse.row) {
+                    let Some(global_idx) = self.visible_agent_indices().get(slot).copied() else {
+                        return;
+                    };
                     let viewport_h = self
                         .card_response_heights
-                        .get(slot)
+                        .get(global_idx)
                         .copied()
                         .unwrap_or(1)
                         .max(1);
                     let content_w = self
                         .card_response_widths
-                        .get(slot)
+                        .get(global_idx)
                         .copied()
                         .unwrap_or(80)
                         .max(1);
                     let max_scroll = self
                         .agents
-                        .get(slot)
+                        .get(global_idx)
                         .and_then(|e| e.meta.last_model_response.as_deref())
                         .map(|r| {
                             let text = tui_markdown::from_str(r);
@@ -676,7 +778,7 @@ impl App {
                             total.saturating_sub(viewport_h)
                         })
                         .unwrap_or(0);
-                    if let Some(s) = self.card_scroll.get_mut(slot) {
+                    if let Some(s) = self.card_scroll.get_mut(global_idx) {
                         *s = s.saturating_add(1).min(max_scroll);
                         self.dirty = true;
                     }
@@ -862,9 +964,14 @@ impl App {
                 self.handle_agent_view_key(key, idx).await
             }
             AppState::CreateAgentDialog => self.handle_create_key(key).await,
+            AppState::CreateProjectDialog => self.handle_create_project_key(key),
             AppState::RemoveAgentDialog(state) => {
                 let state = state.clone();
                 self.handle_remove_key(key, state).await
+            }
+            AppState::RemoveProjectDialog(state) => {
+                let state = state.clone();
+                self.handle_remove_project_key(key, state).await
             }
             AppState::GitViewer(_) => self.handle_git_viewer_key(key),
             AppState::TerminalView(_) => self.handle_terminal_view_key(key),
@@ -892,10 +999,21 @@ impl App {
         let _ = self.config.save();
     }
 
+    fn move_visible_card(&mut self, visible_indices: &[usize], target_visible_idx: usize) {
+        let Some(target) = visible_indices.get(target_visible_idx).copied() else {
+            return;
+        };
+        self.move_card(target);
+    }
+
     fn handle_dashboard_key(&mut self, key: KeyEvent) -> bool {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let visible_indices = self.visible_agent_indices();
+        let selected_visible = self.selected_visible_position(&visible_indices);
         match key.code {
             KeyCode::Char('q') => return false,
+            KeyCode::Tab => self.cycle_projects(),
+            KeyCode::Char(digit @ ('0'..='9')) => self.switch_to_project_by_digit(digit),
             KeyCode::Char('n') => {
                 let available = self.runner.available_agent_types();
                 if available.is_empty() {
@@ -914,15 +1032,32 @@ impl App {
                 self.create_state = cs;
                 self.state = AppState::CreateAgentDialog;
             }
+            KeyCode::Char('p') => {
+                self.create_project_state = CreateProjectState::default();
+                self.state = AppState::CreateProjectDialog;
+            }
+            KeyCode::Char('d') if ctrl => {
+                if self.active_project_name() != DEFAULT_PROJECT_NAME {
+                    self.state = AppState::RemoveProjectDialog(RemoveProjectState {
+                        idx: self.active_project_idx,
+                        name: self.active_project_name().to_string(),
+                        agent_count: self.current_project_agent_count(),
+                        confirm_remove_agents: false,
+                    });
+                }
+            }
             KeyCode::Char('d') => {
-                if !self.agents.is_empty() {
+                if let Some(idx) = selected_visible
+                    .and_then(|pos| visible_indices.get(pos))
+                    .copied()
+                {
                     let has_worktree = self
                         .agents
-                        .get(self.selected)
+                        .get(idx)
                         .and_then(|e| e.config.git_repo_root.as_ref())
                         .is_some();
                     self.state = AppState::RemoveAgentDialog(RemoveAgentState {
-                        idx: self.selected,
+                        idx,
                         remove_worktree: has_worktree,
                         stop_agent: true,
                         focus: 0,
@@ -930,45 +1065,48 @@ impl App {
                 }
             }
             KeyCode::Enter => {
-                if !self.agents.is_empty() {
+                if let Some(idx) = selected_visible
+                    .and_then(|pos| visible_indices.get(pos))
+                    .copied()
+                {
                     self.agent_view_state = AgentViewState::default();
-                    self.state = AppState::AgentView(self.selected);
+                    self.state = AppState::AgentView(idx);
                 }
             }
             // ---------------------------------------------------------------
             // Card movement: Ctrl+arrows / Ctrl+hjkl
             // ---------------------------------------------------------------
             KeyCode::Left if ctrl => {
-                if !self.agents.is_empty() {
-                    let (cols, _) = grid_layout(self.agents.len());
+                if let Some(selected_pos) = selected_visible {
+                    let (cols, _) = grid_layout(visible_indices.len());
                     // Mirror navigate-left wrapping: not at leftmost col OR
                     // not on first row (wrap to last slot of previous row).
-                    if self.selected % cols > 0 || self.selected >= cols {
-                        self.move_card(self.selected - 1);
+                    if selected_pos % cols > 0 || selected_pos >= cols {
+                        self.move_visible_card(&visible_indices, selected_pos - 1);
                     }
                 }
             }
             KeyCode::Right if ctrl => {
-                if !self.agents.is_empty() {
+                if let Some(selected_pos) = selected_visible {
                     // Mirror navigate-right wrapping: any next card exists.
-                    if self.selected + 1 < self.agents.len() {
-                        self.move_card(self.selected + 1);
+                    if selected_pos + 1 < visible_indices.len() {
+                        self.move_visible_card(&visible_indices, selected_pos + 1);
                     }
                 }
             }
             KeyCode::Up if ctrl => {
-                if !self.agents.is_empty() {
-                    let (cols, _) = grid_layout(self.agents.len());
-                    if self.selected >= cols {
-                        self.move_card(self.selected - cols);
+                if let Some(selected_pos) = selected_visible {
+                    let (cols, _) = grid_layout(visible_indices.len());
+                    if selected_pos >= cols {
+                        self.move_visible_card(&visible_indices, selected_pos - cols);
                     }
                 }
             }
             KeyCode::Down if ctrl => {
-                if !self.agents.is_empty() {
-                    let (cols, _) = grid_layout(self.agents.len());
-                    if self.selected + cols < self.agents.len() {
-                        self.move_card(self.selected + cols);
+                if let Some(selected_pos) = selected_visible {
+                    let (cols, _) = grid_layout(visible_indices.len());
+                    if selected_pos + cols < visible_indices.len() {
+                        self.move_visible_card(&visible_indices, selected_pos + cols);
                     }
                 }
             }
@@ -976,40 +1114,40 @@ impl App {
             // Navigation: arrows / hjkl (with Left/Right row-edge wrapping)
             // ---------------------------------------------------------------
             KeyCode::Left | KeyCode::Char('h') => {
-                if !self.agents.is_empty() {
-                    let (cols, _) = grid_layout(self.agents.len());
+                if let Some(selected_pos) = selected_visible {
+                    let (cols, _) = grid_layout(visible_indices.len());
                     // Move left within row; at col 0 wrap to last slot of
                     // the previous row (same index arithmetic: selected - 1).
-                    if self.selected % cols > 0 || self.selected >= cols {
-                        self.selected -= 1;
+                    if selected_pos % cols > 0 || selected_pos >= cols {
+                        self.selected = visible_indices[selected_pos - 1];
                         self.reset_card_scroll();
                     }
                 }
             }
             KeyCode::Right | KeyCode::Char('l') => {
-                if !self.agents.is_empty() {
+                if let Some(selected_pos) = selected_visible {
                     // Move right within row; at last col wrap to first slot
                     // of the next row, as long as a next card exists.
-                    if self.selected + 1 < self.agents.len() {
-                        self.selected += 1;
+                    if selected_pos + 1 < visible_indices.len() {
+                        self.selected = visible_indices[selected_pos + 1];
                         self.reset_card_scroll();
                     }
                 }
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                if !self.agents.is_empty() {
-                    let (cols, _) = grid_layout(self.agents.len());
-                    if self.selected >= cols {
-                        self.selected -= cols;
+                if let Some(selected_pos) = selected_visible {
+                    let (cols, _) = grid_layout(visible_indices.len());
+                    if selected_pos >= cols {
+                        self.selected = visible_indices[selected_pos - cols];
                         self.reset_card_scroll();
                     }
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if !self.agents.is_empty() {
-                    let (cols, _) = grid_layout(self.agents.len());
-                    if self.selected + cols < self.agents.len() {
-                        self.selected += cols;
+                if let Some(selected_pos) = selected_visible {
+                    let (cols, _) = grid_layout(visible_indices.len());
+                    if selected_pos + cols < visible_indices.len() {
+                        self.selected = visible_indices[selected_pos + cols];
                         self.reset_card_scroll();
                     }
                 }
@@ -1297,7 +1435,8 @@ impl App {
             }
             KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 let is_git = self.agents.get(idx).is_some_and(|entry| {
-                    crate::git::find_git_root(std::path::Path::new(&entry.config.directory)).is_some()
+                    crate::git::find_git_root(std::path::Path::new(&entry.config.directory))
+                        .is_some()
                 });
                 if is_git {
                     self.launch_git_viewer(idx);
@@ -1775,6 +1914,7 @@ impl App {
                 } else if self.create_state.is_valid() {
                     let name = tmux::sanitize_name(&self.create_state.name.clone());
                     let dir = self.create_state.directory.clone();
+                    let project = self.active_project_name().to_string();
                     let agent_type = self.create_state.selected_agent_type();
                     let create_worktree = self.create_state.create_worktree
                         && self.create_state.git_repo_root.is_some();
@@ -1788,6 +1928,7 @@ impl App {
                         .create(
                             &name,
                             &dir,
+                            &project,
                             agent_type,
                             create_worktree,
                             git_repo_root.as_deref(),
@@ -1909,6 +2050,65 @@ impl App {
     }
 
     // -----------------------------------------------------------------------
+    // CreateProjectDialog key handler
+    // -----------------------------------------------------------------------
+
+    fn handle_create_project_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc => {
+                self.state = AppState::Dashboard;
+            }
+            KeyCode::Enter => {
+                let trimmed = self.create_project_state.name.trim();
+                if trimmed.is_empty() {
+                    self.create_project_state.error = Some("Project name is required".into());
+                    return true;
+                }
+                if self.config.projects.len() >= MAX_PROJECTS {
+                    self.create_project_state.error =
+                        Some(format!("Maximum {} projects", MAX_PROJECTS));
+                    return true;
+                }
+                if self
+                    .config
+                    .projects
+                    .iter()
+                    .any(|project| project == trimmed)
+                {
+                    self.create_project_state.error = Some("Project name must be unique".into());
+                    return true;
+                }
+
+                self.config.projects.push(trimmed.to_string());
+                self.config.normalize();
+                let _ = self.config.save();
+                if let Some(idx) = self.config.projects.iter().position(|p| p == trimmed) {
+                    self.set_active_project_idx(idx);
+                }
+                self.state = AppState::Dashboard;
+            }
+            KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                ctrl_w_delete(&mut self.create_project_state.name);
+                self.create_project_state.error = None;
+            }
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                ctrl_w_delete(&mut self.create_project_state.name);
+                self.create_project_state.error = None;
+            }
+            KeyCode::Backspace => {
+                self.create_project_state.name.pop();
+                self.create_project_state.error = None;
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.create_project_state.name.push(c);
+                self.create_project_state.error = None;
+            }
+            _ => {}
+        }
+        true
+    }
+
+    // -----------------------------------------------------------------------
     // RemoveAgentDialog key handler
     // -----------------------------------------------------------------------
 
@@ -1957,30 +2157,50 @@ impl App {
     }
 
     // -----------------------------------------------------------------------
+    // RemoveProjectDialog key handler
+    // -----------------------------------------------------------------------
+
+    async fn handle_remove_project_key(&mut self, key: KeyEvent, state: RemoveProjectState) -> bool {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Enter => {
+                if state.agent_count == 0 || state.confirm_remove_agents {
+                    self.remove_project(state.idx).await;
+                    self.state = AppState::Dashboard;
+                }
+            }
+            KeyCode::Char('n') | KeyCode::Esc => {
+                self.state = AppState::Dashboard;
+            }
+            KeyCode::Char(' ') => {
+                if let AppState::RemoveProjectDialog(ref mut s) = self.state {
+                    s.confirm_remove_agents = !s.confirm_remove_agents;
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
+    // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
 
     fn switch_to_next_by_status(&mut self, target: AgentStatus) {
         let now = std::time::Instant::now();
+        let active_project = self.active_project_name().to_string();
         let mut matches: Vec<usize> = self
             .agents
             .iter()
             .enumerate()
-            .filter(|(_, e)| e.meta.status == target)
+            .filter(|(_, e)| e.config.project == active_project && e.meta.status == target)
             .collect::<Vec<_>>()
             .into_iter()
             .map(|(i, _)| i)
             .collect();
 
         matches.sort_by(|&a, &b| {
-            let ta = self.agents[a]
-                .meta
-                .status_changed_at
-                .unwrap_or(now);
-            let tb = self.agents[b]
-                .meta
-                .status_changed_at
-                .unwrap_or(now);
+            let ta = self.agents[a].meta.status_changed_at.unwrap_or(now);
+            let tb = self.agents[b].meta.status_changed_at.unwrap_or(now);
             ta.cmp(&tb)
         });
 
@@ -2004,11 +2224,14 @@ impl App {
 
     fn switch_to_next_running(&mut self) {
         let now = std::time::Instant::now();
+        let active_project = self.active_project_name().to_string();
         let mut matches: Vec<usize> = self
             .agents
             .iter()
             .enumerate()
-            .filter(|(_, e)| e.meta.status == AgentStatus::Running)
+            .filter(|(_, e)| {
+                e.config.project == active_project && e.meta.status == AgentStatus::Running
+            })
             .map(|(i, _)| i)
             .collect();
 
@@ -2017,20 +2240,16 @@ impl App {
                 .agents
                 .iter()
                 .enumerate()
-                .filter(|(_, e)| e.meta.status == AgentStatus::Idle)
+                .filter(|(_, e)| {
+                    e.config.project == active_project && e.meta.status == AgentStatus::Idle
+                })
                 .map(|(i, _)| i)
                 .collect();
         }
 
         matches.sort_by(|&a, &b| {
-            let ta = self.agents[a]
-                .meta
-                .status_changed_at
-                .unwrap_or(now);
-            let tb = self.agents[b]
-                .meta
-                .status_changed_at
-                .unwrap_or(now);
+            let ta = self.agents[a].meta.status_changed_at.unwrap_or(now);
+            let tb = self.agents[b].meta.status_changed_at.unwrap_or(now);
             ta.cmp(&tb)
         });
 
@@ -2098,6 +2317,45 @@ impl App {
             if self.selected >= self.agents.len() && !self.agents.is_empty() {
                 self.selected = self.agents.len() - 1;
             }
+            self.ensure_project_selection();
+            self.dirty = true;
+        }
+    }
+
+    async fn remove_project(&mut self, project_idx: usize) {
+        let Some(project_name) = self.config.projects.get(project_idx).cloned() else {
+            return;
+        };
+        if project_name == DEFAULT_PROJECT_NAME {
+            return;
+        }
+
+        let mut agent_indices: Vec<usize> = self
+            .agents
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.config.project == project_name)
+            .map(|(idx, _)| idx)
+            .collect();
+        agent_indices.sort_unstable_by(|a, b| b.cmp(a));
+
+        for idx in agent_indices {
+            let remove_worktree = self
+                .agents
+                .get(idx)
+                .and_then(|entry| entry.config.git_repo_root.as_ref())
+                .is_some();
+            self.remove_agent(idx, remove_worktree, true).await;
+        }
+
+        if project_idx < self.config.projects.len() {
+            self.config.projects.remove(project_idx);
+            self.config.normalize();
+            let next_idx = project_idx.min(self.config.projects.len().saturating_sub(1));
+            self.active_project_idx = next_idx;
+            self.ensure_project_selection();
+            let _ = self.config.save();
+            self.dirty = true;
         }
     }
 
@@ -2133,6 +2391,19 @@ impl App {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Project helpers
+// ---------------------------------------------------------------------------
+
+fn visible_agent_indices_for_project(agents: &[AgentEntry], project: &str) -> Vec<usize> {
+    agents
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.config.project == project)
+        .map(|(idx, _)| idx)
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -2174,7 +2445,7 @@ fn uses_captured_scrollback(kind: &AgentKind) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+mod project_tests {
     use super::*;
 
     #[test]
@@ -2262,5 +2533,69 @@ fn ctrl_w_delete_path(s: &mut String) {
     } else {
         // Already at the top — floor to root rather than clearing.
         *s = "/".to_string();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{AgentConfig, AgentKind};
+
+    #[test]
+    fn visible_agent_indices_are_project_scoped() {
+        let agents = vec![
+            AgentEntry {
+                config: AgentConfig {
+                    name: "a".into(),
+                    pane: "flowmux:1.0".into(),
+                    directory: "/tmp/a".into(),
+                    project: "Default".into(),
+                    kind: AgentKind::Opencode {
+                        port: 9000,
+                        session_id: None,
+                    },
+                    git_repo_root: None,
+                },
+                meta: AgentMeta::default(),
+            },
+            AgentEntry {
+                config: AgentConfig {
+                    name: "b".into(),
+                    pane: "flowmux:2.0".into(),
+                    directory: "/tmp/b".into(),
+                    project: "work".into(),
+                    kind: AgentKind::Opencode {
+                        port: 9001,
+                        session_id: None,
+                    },
+                    git_repo_root: None,
+                },
+                meta: AgentMeta::default(),
+            },
+            AgentEntry {
+                config: AgentConfig {
+                    name: "c".into(),
+                    pane: "flowmux:3.0".into(),
+                    directory: "/tmp/c".into(),
+                    project: "work".into(),
+                    kind: AgentKind::Claude {
+                        flowmux_agent_id: "id".into(),
+                        session_id: None,
+                        transcript_path: None,
+                    },
+                    git_repo_root: None,
+                },
+                meta: AgentMeta::default(),
+            },
+        ];
+
+        assert_eq!(
+            visible_agent_indices_for_project(&agents, "Default"),
+            vec![0]
+        );
+        assert_eq!(
+            visible_agent_indices_for_project(&agents, "work"),
+            vec![1, 2]
+        );
     }
 }

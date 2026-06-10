@@ -141,7 +141,11 @@ flowmux --enabled-agents opencode,claude,codex
 |-----|--------|
 | `q` | Quit |
 | `n` | Create new agent |
+| `p` | Create new project |
 | `d` | Delete selected agent |
+| `Ctrl+d` | Remove active project |
+| `Tab` | Switch to next project |
+| `1-9`, `0` | Jump to project tabs 1-10 |
 | `Enter` | Open agent view |
 | `h` / `←` | Navigate left |
 | `l` / `→` | Navigate right |
@@ -212,7 +216,21 @@ enabled_agents = ["opencode", "claude", "codex"]
 
 ### Per-Session Configuration
 
-Automatically managed at `~/.config/flowmux/sessions/<session>.toml`. Contains the list of agents with their pane targets, directories, and session IDs. You typically don't need to edit this manually.
+Automatically managed at `~/.config/flowmux/sessions/<session>.toml`. Contains the ordered project list plus the agents with their pane targets, directories, project membership, and session IDs. You typically don't need to edit this manually.
+
+Example:
+
+```toml
+projects = ["Default", "work"]
+
+[[agents]]
+name = "research"
+pane = "flowmux:1.0"
+directory = "/tmp/research"
+project = "work"
+agent_type = "opencode"
+port = 9000
+```
 
 ## 🤖 Supported Agents
 
@@ -225,7 +243,7 @@ Automatically managed at `~/.config/flowmux/sessions/<session>.toml`. Contains t
 - [x] Improve agent status detection
 - [x] Quick switching through: running, waiting (idle), last responded agents
 - [x] Git awareness: branch names, worktrees, diff views
-- [ ] Per-project dashboards
+- [x] Per-project dashboards
 - [ ] Support more agents: Pi, etc.
 - [ ] Session history
 - [ ] Filtering (with fuzzysearch): by name, agent type, working directory, etc.

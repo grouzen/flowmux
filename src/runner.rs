@@ -133,6 +133,7 @@ impl AgentRunner {
         &mut self,
         name: &str,
         dir: &str,
+        project: &str,
         agent_type: AgentType,
         create_worktree: bool,
         git_repo_root: Option<&str>,
@@ -170,6 +171,7 @@ impl AgentRunner {
                     name: name.to_owned(),
                     pane,
                     directory: effective_dir,
+                    project: project.to_owned(),
                     kind: AgentKind::Opencode {
                         port: adapter.port,
                         session_id: None,
@@ -201,6 +203,7 @@ impl AgentRunner {
                     name: name.to_owned(),
                     pane,
                     directory: effective_dir,
+                    project: project.to_owned(),
                     kind: AgentKind::Claude {
                         flowmux_agent_id,
                         session_id: None,
@@ -218,6 +221,7 @@ impl AgentRunner {
                     name: name.to_owned(),
                     pane,
                     directory: effective_dir,
+                    project: project.to_owned(),
                     kind: AgentKind::Codex {
                         port: adapter.port,
                         session_id: None,
