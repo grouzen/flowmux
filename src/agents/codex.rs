@@ -163,8 +163,11 @@ async fn launch_server(dir: &str, name: &str, port: u16) -> Result<(usize, Strin
     );
     tmux::send_keys(&pane, &command)?;
 
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(500))
+        .build()?;
     for _ in 0..25 {
-        if connect_websocket(port).await.is_ok() {
+        if app_server_ready(&client, port).await {
             return Ok((window_index, pane));
         }
         sleep(Duration::from_millis(200)).await;
@@ -173,6 +176,15 @@ async fn launch_server(dir: &str, name: &str, port: u16) -> Result<(usize, Strin
     Err(anyhow!(
         "codex app-server did not become available; see {log_path}"
     ))
+}
+
+async fn app_server_ready(client: &reqwest::Client, port: u16) -> bool {
+    let url = format!("http://127.0.0.1:{port}/readyz");
+    client
+        .get(url)
+        .send()
+        .await
+        .is_ok_and(|response| response.status().is_success())
 }
 
 fn launch_tui(pane: &str, port: u16, session_id: Option<&str>) -> Result<()> {
@@ -960,6 +972,36 @@ mod tests {
         assert_eq!(LiveCache::default().status, AgentStatus::Idle);
     }
 
+    #[tokio::test]
+    async fn readiness_probe_uses_http_endpoint() {
+        let listener = TokioTcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).await.unwrap();
+                request.push(byte[0]);
+            }
+
+            let request = String::from_utf8(request).unwrap();
+            assert!(request.starts_with("GET /readyz HTTP/1.1\r\n"));
+            assert!(!request.to_ascii_lowercase().contains("upgrade: websocket"));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+        });
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(500))
+            .build()
+            .unwrap();
+        assert!(app_server_ready(&client, port).await);
+        server.await.unwrap();
+    }
+
     #[test]
     fn observer_failure_is_unknown_not_stopped() {
         let cache = Arc::new(RwLock::new(LiveCache {
@@ -1297,18 +1339,21 @@ mod tests {
             .spawn()
             .unwrap();
 
-        let (mut reader, mut writer) = {
-            let mut connection = None;
-            for _ in 0..25 {
-                if let Ok(value) = connect_websocket(port).await {
-                    connection = Some(value);
-                    break;
-                }
-                sleep(Duration::from_millis(100)).await;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(500))
+            .build()
+            .unwrap();
+        let mut ready = false;
+        for _ in 0..25 {
+            if app_server_ready(&client, port).await {
+                ready = true;
+                break;
             }
-            connection.expect("codex app-server did not start")
-        };
+            sleep(Duration::from_millis(100)).await;
+        }
+        assert!(ready, "codex app-server did not start");
 
+        let (mut reader, mut writer) = connect_websocket(port).await.unwrap();
         initialize(&mut reader, &mut writer).await.unwrap();
         send_text(
             &mut writer,
