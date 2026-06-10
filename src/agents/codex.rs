@@ -42,13 +42,12 @@ struct LiveCache {
     completed_turn_ids: HashSet<String>,
     rollout_path: Option<String>,
     rollout_offset: u64,
-    history_initialized: bool,
 }
 
 impl Default for LiveCache {
     fn default() -> Self {
         Self {
-            status: AgentStatus::Unknown,
+            status: AgentStatus::Idle,
             first_prompt: None,
             last_model_response: None,
             model_name: None,
@@ -57,7 +56,6 @@ impl Default for LiveCache {
             completed_turn_ids: HashSet::new(),
             rollout_path: None,
             rollout_offset: 0,
-            history_initialized: false,
         }
     }
 }
@@ -214,12 +212,12 @@ async fn run_loop(
             continue;
         }
         backoff = 1;
-        live_cache.write().unwrap().history_initialized = false;
 
         let mut ticker = interval(DISCOVERY_INTERVAL);
         let mut request_id = 10u64;
         let mut pending = None;
         let mut subscribed = false;
+        let mut reconciled = false;
 
         if let Some(thread_id) = cached_thread_id(&cached_session_id) {
             if send_request(
@@ -302,7 +300,6 @@ async fn run_loop(
                                         &value,
                                         &cached_session_id,
                                         &live_cache,
-                                        false,
                                     ) {
                                         break;
                                     }
@@ -313,10 +310,10 @@ async fn run_loop(
                                         &value,
                                         &cached_session_id,
                                         &live_cache,
-                                        true,
                                     ) {
                                         break;
                                     }
+                                    reconciled = true;
                                 }
                             }
                         }
@@ -324,7 +321,7 @@ async fn run_loop(
 
                     if pending.is_none() {
                         if subscribed {
-                            if !live_cache.read().unwrap().history_initialized {
+                            if !reconciled {
                                 let thread_id = cached_thread_id(&cached_session_id);
                                 let Some(thread_id) = thread_id else { continue };
                                 if send_request(
@@ -578,7 +575,7 @@ fn handle_message(
                 >= min_created_at
     });
     if let Some(thread) = selected {
-        update_from_thread(thread, cached_session_id, live_cache, false);
+        update_from_thread(thread, cached_session_id, live_cache);
     }
 }
 
@@ -586,7 +583,6 @@ fn handle_thread_response(
     message: &Value,
     cached_session_id: &Arc<Mutex<Option<String>>>,
     live_cache: &Arc<RwLock<LiveCache>>,
-    history_loaded: bool,
 ) -> bool {
     let Some(result) = message.get("result") else {
         return false;
@@ -594,7 +590,7 @@ fn handle_thread_response(
     let Some(thread) = result.get("thread") else {
         return false;
     };
-    update_from_thread(thread, cached_session_id, live_cache, history_loaded);
+    update_from_thread(thread, cached_session_id, live_cache);
     if let Some(model) = result.get("model").and_then(Value::as_str) {
         live_cache.write().unwrap().model_name = Some(model.to_owned());
     }
@@ -617,7 +613,7 @@ fn handle_notification(
                     && thread.get("parentThreadId").is_none_or(Value::is_null)
                     && thread.get("cwd").and_then(Value::as_str) == Some(directory);
                 if is_current || is_new_root {
-                    update_from_thread(thread, cached_session_id, live_cache, false);
+                    update_from_thread(thread, cached_session_id, live_cache);
                 }
             }
         }
@@ -711,7 +707,6 @@ fn update_from_thread(
     thread: &Value,
     cached_session_id: &Arc<Mutex<Option<String>>>,
     live_cache: &Arc<RwLock<LiveCache>>,
-    history_loaded: bool,
 ) {
     let Some(id) = thread.get("id").and_then(Value::as_str) else {
         return;
@@ -733,9 +728,7 @@ fn update_from_thread(
         .map(str::to_owned)
         .or_else(|| cache.rollout_path.clone());
 
-    if let Some(turns) = thread.get("turns").and_then(Value::as_array)
-        && (!cache.history_initialized || !turns.is_empty())
-    {
+    if let Some(turns) = thread.get("turns").and_then(Value::as_array) {
         for turn in turns {
             record_turn_duration(
                 &mut cache,
@@ -757,9 +750,6 @@ fn update_from_thread(
             .and_then(|item| item.get("text").and_then(Value::as_str))
             .map(str::to_owned)
             .or_else(|| cache.last_model_response.clone());
-    }
-    if history_loaded {
-        cache.history_initialized = true;
     }
 
     if let Some(path) = cache.rollout_path.clone() {
@@ -802,43 +792,14 @@ fn enrich_from_rollout(path: &str, cache: &mut LiveCache) {
         };
         let kind = value.get("type").and_then(Value::as_str);
         let payload = value.get("payload").unwrap_or(&Value::Null);
-        match kind {
-            Some("turn_context") => {
-                if let Some(model) = payload.get("model").and_then(Value::as_str) {
-                    cache.model_name = Some(model.to_owned());
-                }
-            }
-            Some("event_msg")
-                if payload.get("type").and_then(Value::as_str) == Some("token_count") =>
-            {
-                let info = payload.get("info").unwrap_or(&Value::Null);
-                let used = info
-                    .get("last_token_usage")
-                    .and_then(|v| v.get("total_tokens"))
-                    .and_then(Value::as_u64);
-                let total = info.get("model_context_window").and_then(Value::as_u64);
-                if let Some(used) = used {
-                    cache.context = Some(ContextInfo { used, total });
-                }
-            }
-            Some("event_msg")
-                if payload.get("type").and_then(Value::as_str) == Some("task_complete") =>
-            {
-                record_turn_duration(
-                    cache,
-                    payload.get("turn_id").and_then(Value::as_str),
-                    payload.get("duration_ms").and_then(Value::as_i64),
-                );
-            }
-            Some("event_msg")
-                if payload.get("type").and_then(Value::as_str) == Some("agent_message")
-                    && payload.get("phase").and_then(Value::as_str) == Some("final_answer") =>
-            {
-                if let Some(message) = payload.get("message").and_then(Value::as_str) {
-                    cache.last_model_response = Some(message.to_owned());
-                }
-            }
-            _ => {}
+        if kind == Some("event_msg")
+            && payload.get("type").and_then(Value::as_str) == Some("task_complete")
+        {
+            record_turn_duration(
+                cache,
+                payload.get("turn_id").and_then(Value::as_str),
+                payload.get("duration_ms").and_then(Value::as_i64),
+            );
         }
     }
 }
@@ -995,6 +956,11 @@ mod tests {
     }
 
     #[test]
+    fn new_adapter_state_starts_idle() {
+        assert_eq!(LiveCache::default().status, AgentStatus::Idle);
+    }
+
+    #[test]
     fn observer_failure_is_unknown_not_stopped() {
         let cache = Arc::new(RwLock::new(LiveCache {
             status: AgentStatus::Running,
@@ -1029,7 +995,7 @@ mod tests {
             }]
         });
 
-        update_from_thread(&thread, &session, &cache, true);
+        update_from_thread(&thread, &session, &cache);
 
         assert_eq!(session.lock().unwrap().as_deref(), Some("thread-1"));
         let cache = cache.read().unwrap();
@@ -1037,7 +1003,6 @@ mod tests {
         assert_eq!(cache.first_prompt.as_deref(), Some("Fix the tests"));
         assert_eq!(cache.last_model_response.as_deref(), Some("Done"));
         assert_eq!(cache.total_work_ms, 1200);
-        assert!(cache.history_initialized);
     }
 
     #[test]
@@ -1075,10 +1040,7 @@ mod tests {
     #[test]
     fn turn_completion_updates_cache_without_requiring_history_refresh() {
         let session = Arc::new(Mutex::new(Some("thread-1".to_string())));
-        let cache = Arc::new(RwLock::new(LiveCache {
-            history_initialized: true,
-            ..LiveCache::default()
-        }));
+        let cache = Arc::new(RwLock::new(LiveCache::default()));
         let params = json!({
             "threadId": "thread-1",
             "turn": {"id": "turn-2", "durationMs": 900}
@@ -1089,7 +1051,6 @@ mod tests {
         {
             let cached = cache.read().unwrap();
             assert_eq!(cached.status, AgentStatus::Idle);
-            assert!(cached.history_initialized);
             assert_eq!(cached.total_work_ms, 900);
         }
 
@@ -1101,10 +1062,9 @@ mod tests {
                 "items": [{"type": "agentMessage", "text": "Finished"}]
             }]
         });
-        update_from_thread(&thread, &session, &cache, true);
+        update_from_thread(&thread, &session, &cache);
 
         let cached = cache.read().unwrap();
-        assert!(cached.history_initialized);
         assert_eq!(cached.last_model_response.as_deref(), Some("Finished"));
         assert_eq!(cached.total_work_ms, 900);
     }
@@ -1133,28 +1093,6 @@ mod tests {
                 }
             })
         );
-    }
-
-    #[test]
-    fn rollout_updates_only_final_model_response() {
-        let path = std::env::temp_dir().join(format!(
-            "flowmux-codex-response-{}.jsonl",
-            std::process::id()
-        ));
-        std::fs::write(
-            &path,
-            concat!(
-                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"Still working\",\"phase\":\"commentary\"}}\n",
-                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"Finished\",\"phase\":\"final_answer\"}}\n"
-            ),
-        )
-        .unwrap();
-
-        let mut cache = LiveCache::default();
-        enrich_from_rollout(path.to_str().unwrap(), &mut cache);
-
-        assert_eq!(cache.last_model_response.as_deref(), Some("Finished"));
-        std::fs::remove_file(path).unwrap();
     }
 
     #[tokio::test]

@@ -168,11 +168,13 @@ trait AgentAdapter: Send + Sync {
 
 - Launches a dedicated `codex app-server` on a loopback WebSocket port
 - Launches the interactive Codex TUI with `codex --remote` against that server
-- Uses JSON-RPC thread notifications and `thread/read` polling for status,
-  approval waits, responses, token usage, work duration, and session persistence
+- Subscribes with `thread/resume` and consumes JSON-RPC notifications for status,
+  approval waits, responses, token usage, model changes, and session persistence
+- Performs one `thread/read` reconciliation after each connection; no steady-state
+  app-server polling is used after subscription
 - Restarts with `codex resume --remote <thread-id>`
-- Reads the rollout path returned by the app-server only as a fallback for model
-  and context metadata
+- Reads the rollout path incrementally only for completed-turn duration when
+  app-server `Turn.durationMs` is absent
 
 ### 5. tmux Integration (`tmux.rs`)
 
