@@ -233,8 +233,8 @@ Automatically managed at `~/.config/flowmux/sessions/<session>.toml`. Contains t
 - Launches a dedicated local `codex app-server` for each agent
 - Connects through the app-server WebSocket JSON-RPC protocol for status, approvals,
   responses, token usage, and session IDs
-- Subscribes to thread notifications and performs a one-time history reconciliation
-  after connecting or reconnecting
+- Restores history and token usage through `thread/resume`, then consumes push
+  notifications without polling
 - Resumes prior threads with `codex resume --remote`
 - Reads rollout files incrementally only for completed-turn duration, which is not
   reliably populated in app-server `Turn.durationMs`

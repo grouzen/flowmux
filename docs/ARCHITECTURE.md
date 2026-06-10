@@ -170,7 +170,7 @@ trait AgentAdapter: Send + Sync {
 - Launches the interactive Codex TUI with `codex --remote` against that server
 - Subscribes with `thread/resume` and consumes JSON-RPC notifications for status,
   approval waits, responses, token usage, model changes, and session persistence
-- Performs one `thread/read` reconciliation after each connection; no steady-state
+- Restores history and token usage through `thread/resume`; no steady-state
   app-server polling is used after subscription
 - Restarts with `codex resume --remote <thread-id>`
 - Reads the rollout path incrementally only for completed-turn duration when

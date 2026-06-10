@@ -22,7 +22,6 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 enum RequestKind {
     Discover,
     Resume,
-    Reconcile,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -229,7 +228,6 @@ async fn run_loop(
         let mut request_id = 10u64;
         let mut pending = None;
         let mut subscribed = false;
-        let mut reconciled = false;
 
         if let Some(thread_id) = cached_thread_id(&cached_session_id) {
             if send_request(
@@ -301,11 +299,6 @@ async fn run_loop(
                                     live_cache.write().unwrap().status = AgentStatus::Idle;
                                     continue;
                                 }
-                                RequestKind::Reconcile if is_unmaterialized_thread_error(&value) => {
-                                    live_cache.write().unwrap().status = AgentStatus::Idle;
-                                    reconciled = true;
-                                    continue;
-                                }
                                 _ => break,
                             }
                         } else {
@@ -329,43 +322,14 @@ async fn run_loop(
                                     }
                                     subscribed = true;
                                 }
-                                RequestKind::Reconcile => {
-                                    if !handle_thread_response(
-                                        &value,
-                                        &cached_session_id,
-                                        &live_cache,
-                                    ) {
-                                        break;
-                                    }
-                                    reconciled = true;
-                                }
                             }
                         }
                     }
 
-                    if pending.is_none() {
-                        if subscribed {
-                            if !reconciled {
-                                let thread_id = cached_thread_id(&cached_session_id);
-                                let Some(thread_id) = thread_id else { continue };
-                                if send_request(
-                                    &mut writer,
-                                    &mut request_id,
-                                    &mut pending,
-                                    RequestKind::Reconcile,
-                                    Some(&thread_id),
-                                    &directory,
-                                )
-                                .await
-                                .is_err()
-                                {
-                                    break;
-                                }
-                            }
-                        } else {
-                            let thread_id = cached_thread_id(&cached_session_id);
-                            if let Some(thread_id) = thread_id
-                                && send_request(
+                    if pending.is_none() && !subscribed {
+                        let thread_id = cached_thread_id(&cached_session_id);
+                        if let Some(thread_id) = thread_id
+                            && send_request(
                                 &mut writer,
                                 &mut request_id,
                                 &mut pending,
@@ -375,9 +339,8 @@ async fn run_loop(
                             )
                             .await
                             .is_err()
-                            {
-                                break;
-                            }
+                        {
+                            break;
                         }
                     }
                 }
@@ -426,16 +389,7 @@ fn request_for(id: u64, kind: RequestKind, thread_id: Option<&str>, directory: &
             "id": id,
             "method": "thread/resume",
             "params": {
-                "threadId": thread_id.expect("resume request requires a thread id"),
-                "excludeTurns": true
-            }
-        }),
-        RequestKind::Reconcile => json!({
-            "id": id,
-            "method": "thread/read",
-            "params": {
-                "threadId": thread_id.expect("reconcile request requires a thread id"),
-                "includeTurns": true
+                "threadId": thread_id.expect("resume request requires a thread id")
             }
         }),
     }
@@ -1153,26 +1107,14 @@ mod tests {
     }
 
     #[test]
-    fn builds_subscription_and_reconciliation_requests() {
+    fn builds_full_resume_request() {
         assert_eq!(
             request_for(10, RequestKind::Resume, Some("thread-1"), ""),
             json!({
                 "id": 10,
                 "method": "thread/resume",
                 "params": {
-                    "threadId": "thread-1",
-                    "excludeTurns": true
-                }
-            })
-        );
-        assert_eq!(
-            request_for(11, RequestKind::Reconcile, Some("thread-1"), ""),
-            json!({
-                "id": 11,
-                "method": "thread/read",
-                "params": {
-                    "threadId": "thread-1",
-                    "includeTurns": true
+                    "threadId": "thread-1"
                 }
             })
         );
@@ -1298,33 +1240,27 @@ mod tests {
                             "id": "thread-1",
                             "preview": "Test prompt",
                             "status": {"type": "idle"},
-                            "turns": []
+                            "turns": [{
+                                "id": "turn-1",
+                                "items": [{"type": "agentMessage", "text": "Initial"}]
+                            }]
                         }
                     }
                 }),
             )
             .await;
 
-            let reconcile: Value =
-                serde_json::from_str(&read_test_client_text(&mut stream).await).unwrap();
-            assert_eq!(
-                reconcile.get("method").and_then(Value::as_str),
-                Some("thread/read")
-            );
-            let reconcile_id = reconcile.get("id").and_then(Value::as_u64).unwrap();
             write_test_server_text(
                 &mut stream,
                 json!({
-                    "id": reconcile_id,
-                    "result": {
-                        "thread": {
-                            "id": "thread-1",
-                            "preview": "Test prompt",
-                            "status": {"type": "idle"},
-                            "turns": [{
-                                "id": "turn-1",
-                                "items": [{"type": "agentMessage", "text": "Initial"}]
-                            }]
+                    "method": "thread/tokenUsage/updated",
+                    "params": {
+                        "threadId": "thread-1",
+                        "turnId": "turn-1",
+                        "tokenUsage": {
+                            "total": {"totalTokens": 150},
+                            "last": {"totalTokens": 90},
+                            "modelContextWindow": 200000
                         }
                     }
                 }),
@@ -1362,15 +1298,20 @@ mod tests {
 
         let adapter = CodexAdapter::new(port, "/tmp".to_string(), None);
         let mut response = None;
+        let mut context = None;
         for _ in 0..50 {
             response = adapter.get_last_model_response().await;
-            if response.as_deref() == Some("Live response") {
+            context = adapter.get_context().await;
+            if response.as_deref() == Some("Live response") && context.is_some() {
                 break;
             }
             sleep(Duration::from_millis(20)).await;
         }
 
         assert_eq!(response.as_deref(), Some("Live response"));
+        let context = context.unwrap();
+        assert_eq!(context.used, 90);
+        assert_eq!(context.total, Some(200_000));
         server.await.unwrap();
     }
 
