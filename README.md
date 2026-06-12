@@ -216,32 +216,9 @@ Automatically managed at `~/.config/flowmux/sessions/<session>.toml`. Contains t
 
 ## 🤖 Supported Agents
 
-### OpenCode
-
-- Auto-detected via `$PATH` (`opencode` binary)
-- Connects via HTTP + SSE event stream for real-time updates
-
-### Claude Code
-
-- Auto-detected via `$PATH` (`claude` binary)
-- Integrates via hook server for status callbacks
-- Falls back to transcript parsing for context information
-
-### Codex
-
-- Auto-detected via `$PATH` (`codex` binary)
-- Launches a dedicated local `codex app-server` for each agent
-- Connects through the app-server WebSocket JSON-RPC protocol for status, approvals,
-  responses, token usage, and session IDs
-- Restores history and token usage through `thread/resume`, then consumes push
-  notifications without polling
-- Resumes prior threads with `codex resume --remote`
-- Reads rollout files incrementally only for completed-turn duration, which is not
-  reliably populated in app-server `Turn.durationMs`
-
-Codex's app-server protocol is currently marked experimental by the CLI. Flowmux
-parses its JSON payloads defensively, but Codex releases may still require adapter
-updates.
+- OpenCode
+- Claude Code
+- Codex
 
 ## 🗺️ Plan
 
