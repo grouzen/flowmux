@@ -19,10 +19,36 @@ need_cmd() {
     }
 }
 
-clone_or_update_ghostty() {
-    if [[ -d "$GHOSTTY_SOURCE_DIR/.git" ]] \
+ghostty_source_ready() {
+    [[ -d "$GHOSTTY_SOURCE_DIR/.git" ]] \
         && [[ -f "$STAMP_FILE" ]] \
-        && [[ "$(cat "$STAMP_FILE")" == "$GHOSTTY_COMMIT" ]]; then
+        && [[ "$(cat "$STAMP_FILE")" == "$GHOSTTY_COMMIT" ]] \
+        && [[ -f "$GHOSTTY_SOURCE_DIR/build.zig.zon.nix" ]]
+}
+
+zig_system_ready() {
+    local zon_nix_file="$GHOSTTY_SOURCE_DIR/build.zig.zon.nix"
+    [[ -d "$GHOSTTY_ZIG_SYSTEM_DIR" ]] || return 1
+    [[ -f "$zon_nix_file" ]] || return 1
+
+    while IFS=$'\t' read -r pkg_hash pkg_url; do
+        [[ -n "$pkg_hash" && -n "$pkg_url" ]] || continue
+        [[ -e "$GHOSTTY_ZIG_SYSTEM_DIR/$pkg_hash" ]] || return 1
+    done < <(
+        perl -0ne '
+            while (/\{\s*name = "([^"]+)";\s*path = fetchZigArtifact \{\s*name = "[^"]+";\s*url = "([^"]+)";/sg) {
+                print "$1\t$2\n";
+            }
+        ' "$zon_nix_file"
+    )
+}
+
+prefetched_inputs_ready() {
+    ghostty_source_ready && zig_system_ready
+}
+
+clone_or_update_ghostty() {
+    if ghostty_source_ready; then
         return
     fi
 
@@ -100,4 +126,6 @@ main() {
     print_exports
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

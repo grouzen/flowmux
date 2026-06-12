@@ -103,8 +103,16 @@ cargo build --release --locked
 
 The binary will be at `target/release/flowmux`.
 
-If you need an offline or reproducible local build, prefetch the Ghostty source
-and Zig packages first, then point Cargo's build to those local copies:
+If you need an offline or reproducible local build, use the wrapper that
+reuses prefetched Ghostty inputs when present, otherwise fetches them, points
+Cargo at those local copies, and performs a locked release build:
+
+```bash
+./tools/build-release-prefetched-libghostty-vt.sh
+```
+
+That script defaults `LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast`. If you need the
+underlying manual flow or want to override paths, the equivalent commands are:
 
 ```bash
 ./tools/prefetch-libghostty-vt.sh
@@ -114,10 +122,10 @@ export LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast
 cargo build --release --locked
 ```
 
-`GHOSTTY_SOURCE_DIR` points at a checked-out Ghostty tree. `GHOSTTY_ZIG_SYSTEM_DIR`
-points at a prefetched Zig `--system` package directory. `LIBGHOSTTY_VT_SYS_OPTIMIZE`
-overrides the Ghostty build mode when you need something other than the crate's
-default.
+`GHOSTTY_SOURCE_DIR` points at a checked-out Ghostty tree.
+`GHOSTTY_ZIG_SYSTEM_DIR` points at a prefetched Zig `--system` package
+directory. `LIBGHOSTTY_VT_SYS_OPTIMIZE` overrides the Ghostty build mode when
+you need something other than the crate's default.
 
 Or install directly:
 
