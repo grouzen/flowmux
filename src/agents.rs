@@ -3,6 +3,11 @@ use async_trait::async_trait;
 
 #[async_trait]
 pub trait AgentAdapter: Send + Sync {
+    /// Stop processes owned by this adapter. The caller is responsible for
+    /// closing any tmux pane that hosts the interactive client.
+    async fn stop(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
     async fn get_status(&self) -> AgentStatus;
     async fn get_context(&self) -> Option<ContextInfo>;
     async fn get_first_prompt(&self) -> Option<String>;
@@ -16,4 +21,5 @@ pub trait AgentAdapter: Send + Sync {
 }
 
 pub mod claude;
+pub mod codex;
 pub mod opencode;

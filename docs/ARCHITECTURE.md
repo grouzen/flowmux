@@ -61,6 +61,9 @@ Flowmux is a terminal-native AI agent multiplexer built in Rust that orchestrate
 │   │ OpenCodeAdapter  │◄──┼── SSE/HTTP      │
 │   └──────────────────┘   │                 │
 │   ┌──────────────────┐   │                 │
+│   │ CodexAdapter     │◄──┼── WebSocket RPC │
+│   └──────────────────┘   │                 │
+│   ┌──────────────────┐   │                 │
 │   │ ClaudeAdapter    │◄──┼── Hook Server   │
 │   └──────────────────┘   │   (axum)        │
 └──────────────────────────┘                 │
@@ -79,7 +82,7 @@ Flowmux is a terminal-native AI agent multiplexer built in Rust that orchestrate
 Minimal bootstrap that:
 - Parses CLI arguments (`--tmux-session`, `--git-worktrees-location`, `--enabled-agents`)
 - Acquires an exclusive file lock (`/tmp/flowmux-<session>.lock`) to prevent duplicate instances
-- Probes `$PATH` for agent binaries (`opencode`, `claude`)
+- Probes `$PATH` for agent binaries (`opencode`, `claude`, `codex`)
 - Loads global and per-session configuration
 - Ensures the tmux session exists
 - Auto-resumes dead agent panes (survives tmux restarts)
@@ -160,6 +163,18 @@ trait AgentAdapter: Send + Sync {
 - `ClaudeRuntime` manages a shared `HookStateMap` (Arc<Mutex<HashMap>>) keyed by flowmux agent ID
 - Tracks: first prompt, context usage, last response, model name, work time
 - Falls back to transcript parsing (`claude-code-transcripts`) when hook data is incomplete
+
+#### Codex Adapter (`agents/codex.rs`)
+
+- Launches a dedicated `codex app-server` on a loopback WebSocket port
+- Launches the interactive Codex TUI with `codex --remote` against that server
+- Subscribes with `thread/resume` and consumes JSON-RPC notifications for status,
+  approval waits, responses, token usage, model changes, and session persistence
+- Restores history and token usage through `thread/resume`; no steady-state
+  app-server polling is used after subscription
+- Restarts with `codex resume --remote <thread-id>`
+- Reads the rollout path incrementally only for completed-turn duration when
+  app-server `Turn.durationMs` is absent
 
 ### 5. tmux Integration (`tmux.rs`)
 
@@ -286,7 +301,8 @@ src/
 ├── agents.rs            # AgentAdapter trait definition
 ├── agents/
 │   ├── opencode.rs      # OpenCode adapter (SSE streaming, LiveCache)
-│   ├── claude.rs         # Claude adapter (hook server integration)
+│   ├── claude.rs        # Claude adapter (hook server integration)
+│   ├── codex.rs         # Codex adapter (WebSocket app-server integration)
 │   └── claude/
 │       └── claude_hook_server.rs  # Axum HTTP server for Claude hooks
 ├── agent_discovery.rs   # $PATH probing for agent binaries

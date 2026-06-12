@@ -5,6 +5,7 @@ use crate::config::AgentConfig;
 pub enum AgentType {
     Opencode,
     Claude,
+    Codex,
 }
 
 impl AgentType {
@@ -12,6 +13,7 @@ impl AgentType {
         match self {
             AgentType::Opencode => "opencode",
             AgentType::Claude => "claude",
+            AgentType::Codex => "codex",
         }
     }
 
@@ -19,6 +21,7 @@ impl AgentType {
         match s {
             "opencode" => Some(AgentType::Opencode),
             "claude" => Some(AgentType::Claude),
+            "codex" => Some(AgentType::Codex),
             _ => None,
         }
     }

@@ -21,6 +21,11 @@ pub enum AgentKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         transcript_path: Option<String>,
     },
+    Codex {
+        port: u16,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -43,11 +48,12 @@ pub struct AgentConfig {
 }
 
 impl AgentConfig {
-    /// Return a display string for the agent type (e.g. "opencode", "claude").
+    /// Return a display string for the agent type (e.g. "opencode", "claude", "codex").
     pub fn agent_type_str(&self) -> &'static str {
         match &self.kind {
             AgentKind::Opencode { .. } => "opencode",
             AgentKind::Claude { .. } => "claude",
+            AgentKind::Codex { .. } => "codex",
         }
     }
 
@@ -56,6 +62,7 @@ impl AgentConfig {
         match &self.kind {
             AgentKind::Opencode { session_id, .. } => session_id.as_deref(),
             AgentKind::Claude { session_id, .. } => session_id.as_deref(),
+            AgentKind::Codex { session_id, .. } => session_id.as_deref(),
         }
     }
 
@@ -64,6 +71,7 @@ impl AgentConfig {
         match &mut self.kind {
             AgentKind::Opencode { session_id, .. } => *session_id = id,
             AgentKind::Claude { session_id, .. } => *session_id = id,
+            AgentKind::Codex { session_id, .. } => *session_id = id,
         }
     }
 }
@@ -181,6 +189,16 @@ mod tests {
                 },
                 git_repo_root: Some("/tmp/repo".into()),
             },
+            AgentConfig {
+                name: "cx".into(),
+                pane: "flowmux:3.0".into(),
+                directory: "/tmp/codex".into(),
+                kind: AgentKind::Codex {
+                    port: 9100,
+                    session_id: Some("thread-1".into()),
+                },
+                git_repo_root: None,
+            },
         ];
 
         #[derive(Serialize, Deserialize)]
@@ -204,5 +222,11 @@ mod tests {
         assert_eq!(back.agents[1].name, "cl");
         assert!(matches!(back.agents[1].kind, AgentKind::Claude { .. }));
         assert_eq!(back.agents[1].session_id(), None);
+
+        assert!(matches!(
+            back.agents[2].kind,
+            AgentKind::Codex { port: 9100, .. }
+        ));
+        assert_eq!(back.agents[2].session_id(), Some("thread-1"));
     }
 }

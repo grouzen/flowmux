@@ -712,15 +712,15 @@ impl App {
     }
 
     fn handle_agent_view_mouse(&mut self, mouse: MouseEvent, idx: usize) {
-        let is_claude = self
+        let uses_captured_scrollback = self
             .agents
             .get(idx)
-            .map(|e| matches!(e.config.kind, AgentKind::Claude { .. }))
+            .map(|e| uses_captured_scrollback(&e.config.kind))
             .unwrap_or(false);
 
         match mouse.kind {
             MouseEventKind::ScrollUp => {
-                if is_claude {
+                if uses_captured_scrollback {
                     self.agent_view_state.view_scroll = self
                         .agent_view_state
                         .view_scroll
@@ -733,7 +733,7 @@ impl App {
                 return;
             }
             MouseEventKind::ScrollDown => {
-                if is_claude {
+                if uses_captured_scrollback {
                     self.agent_view_state.view_scroll =
                         self.agent_view_state.view_scroll.saturating_sub(3);
                     self.dirty = true;
@@ -864,7 +864,7 @@ impl App {
             AppState::CreateAgentDialog => self.handle_create_key(key).await,
             AppState::RemoveAgentDialog(state) => {
                 let state = state.clone();
-                self.handle_remove_key(key, state)
+                self.handle_remove_key(key, state).await
             }
             AppState::GitViewer(_) => self.handle_git_viewer_key(key),
             AppState::TerminalView(_) => self.handle_terminal_view_key(key),
@@ -1258,7 +1258,7 @@ impl App {
                 }
                 KeyCode::Char('d') => {
                     let remove_wt = self.agent_view_state.remove_worktree_on_stop;
-                    self.remove_agent(idx, remove_wt, true);
+                    self.remove_agent(idx, remove_wt, true).await;
                     self.state = AppState::Dashboard;
                 }
                 KeyCode::Char(' ') => {
@@ -1308,7 +1308,7 @@ impl App {
             }
             KeyCode::PageUp => {
                 if let Some(entry) = self.agents.get(idx) {
-                    if matches!(entry.config.kind, AgentKind::Claude { .. }) {
+                    if uses_captured_scrollback(&entry.config.kind) {
                         let page = crossterm::terminal::size()
                             .map(|(_, h)| h as usize)
                             .unwrap_or(24)
@@ -1326,7 +1326,7 @@ impl App {
             }
             KeyCode::PageDown => {
                 if let Some(entry) = self.agents.get(idx) {
-                    if matches!(entry.config.kind, AgentKind::Claude { .. }) {
+                    if uses_captured_scrollback(&entry.config.kind) {
                         let page = crossterm::terminal::size()
                             .map(|(_, h)| h as usize)
                             .unwrap_or(24)
@@ -1912,10 +1912,11 @@ impl App {
     // RemoveAgentDialog key handler
     // -----------------------------------------------------------------------
 
-    fn handle_remove_key(&mut self, key: KeyEvent, state: RemoveAgentState) -> bool {
+    async fn handle_remove_key(&mut self, key: KeyEvent, state: RemoveAgentState) -> bool {
         match key.code {
             KeyCode::Char('y') | KeyCode::Enter => {
-                self.remove_agent(state.idx, state.remove_worktree, state.stop_agent);
+                self.remove_agent(state.idx, state.remove_worktree, state.stop_agent)
+                    .await;
                 self.state = AppState::Dashboard;
             }
             KeyCode::Char('n') | KeyCode::Esc => {
@@ -2051,14 +2052,19 @@ impl App {
         }
     }
 
-    fn remove_agent(&mut self, idx: usize, remove_worktree: bool, stop_agent: bool) {
+    async fn remove_agent(&mut self, idx: usize, remove_worktree: bool, stop_agent: bool) {
         if idx < self.agents.len() {
             if let Some(agent_config) = self.config.agents.get(idx) {
-                // Extract window target from pane (e.g., "flowmux:1.0" -> "flowmux:1")
-                if let Some(colon_pos) = agent_config.pane.find(':') {
-                    if let Some(dot_pos) = agent_config.pane[colon_pos..].find('.') {
-                        let window_target = &agent_config.pane[..colon_pos + dot_pos];
-                        let _ = tmux::kill_window(window_target);
+                if stop_agent {
+                    // Extract window target from pane (e.g., "flowmux:1.0" -> "flowmux:1")
+                    if let Some(colon_pos) = agent_config.pane.find(':') {
+                        if let Some(dot_pos) = agent_config.pane[colon_pos..].find('.') {
+                            let window_target = &agent_config.pane[..colon_pos + dot_pos];
+                            let _ = tmux::kill_window(window_target);
+                        }
+                    }
+                    if let Err(error) = self.adapters[idx].stop().await {
+                        eprintln!("warning: failed to stop agent: {error}");
                     }
                 }
 
@@ -2161,6 +2167,32 @@ fn wrapped_line_count(text: &ratatui::text::Text, width: u16) -> u16 {
 fn unicode_display_width(s: &str) -> usize {
     use unicode_width::UnicodeWidthStr;
     UnicodeWidthStr::width(s)
+}
+
+fn uses_captured_scrollback(kind: &AgentKind) -> bool {
+    matches!(kind, AgentKind::Claude { .. } | AgentKind::Codex { .. })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_and_codex_use_captured_scrollback() {
+        assert!(uses_captured_scrollback(&AgentKind::Claude {
+            flowmux_agent_id: "claude-test".to_string(),
+            session_id: None,
+            transcript_path: None,
+        }));
+        assert!(uses_captured_scrollback(&AgentKind::Codex {
+            port: 16100,
+            session_id: None,
+        }));
+        assert!(!uses_captured_scrollback(&AgentKind::Opencode {
+            port: 14100,
+            session_id: None,
+        }));
+    }
 }
 
 fn key_event_to_tmux(key: &KeyEvent) -> String {

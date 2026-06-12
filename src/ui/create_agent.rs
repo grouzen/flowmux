@@ -376,6 +376,7 @@ fn agent_type_label(t: &AgentType) -> &'static str {
     match t {
         AgentType::Opencode => "opencode",
         AgentType::Claude => "claude",
+        AgentType::Codex => "codex",
     }
 }
 
