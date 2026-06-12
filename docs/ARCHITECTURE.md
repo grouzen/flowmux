@@ -311,7 +311,6 @@ src/
 ├── git.rs               # Git worktree and branch management
 ├── ghostty.rs           # Safe Rust wrappers around libghostty-vt FFI
 ├── ghostty/
-│   ├── bindings.rs      # Raw FFI bindings (generated)
 │   └── render.rs        # Ghostty → ratatui rendering bridge
 ├── host_terminal.rs     # OSC 10/11 color probing via tmux passthrough
 ├── model_registry.rs    # Model → context window size lookup

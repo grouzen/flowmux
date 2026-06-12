@@ -1,14 +1,5 @@
 #![allow(dead_code)]
 
-#[allow(
-    dead_code,
-    non_camel_case_types,
-    non_snake_case,
-    non_upper_case_globals,
-    clippy::all,
-    rustdoc::all
-)]
-pub mod bindings;
 pub mod render;
 
 use std::ffi::c_void;
@@ -17,7 +8,7 @@ use std::marker::PhantomData;
 use std::mem;
 use std::ptr;
 
-pub use bindings as ffi;
+pub use libghostty_vt::ffi;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Error(ffi::GhosttyResult);
