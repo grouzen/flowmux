@@ -1,11 +1,11 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::widgets::{Block, BorderType, Borders};
 
 use super::{
     CellIterator, CellWide, RenderState, RgbColor, RowIterator, Terminal, TerminalOptions,
-    Underline, ghostty_color,
+    ghostty_buffer_symbol_into, ghostty_cell_style, ghostty_reset_cell,
 };
 
 use crate::ui::theme::GRAY;
@@ -119,124 +119,6 @@ fn pad_ansi_lines_to_width(input: &[u8], width: u16) -> Vec<u8> {
     output
 }
 
-fn blank_symbol_for_width(wide: CellWide) -> &'static str {
-    match wide {
-        CellWide::Wide => "  ",
-        CellWide::SpacerTail => "",
-        CellWide::Narrow | CellWide::SpacerHead => " ",
-    }
-}
-
-fn buffer_symbol_into<'a>(
-    cell: &super::CellIteration<'_, '_>,
-    wide: CellWide,
-    symbol_scratch: &'a mut String,
-) -> &'a str {
-    use unicode_width::UnicodeWidthStr;
-
-    symbol_scratch.clear();
-    match wide {
-        CellWide::SpacerTail => {}
-        CellWide::SpacerHead => symbol_scratch.push(' '),
-        CellWide::Narrow | CellWide::Wide => {
-            if cell.graphemes_utf8(symbol_scratch).is_err() || symbol_scratch.is_empty() {
-                symbol_scratch.clear();
-                symbol_scratch.push(' ');
-            }
-        }
-    }
-
-    let expected_width = match wide {
-        CellWide::Wide => 2,
-        CellWide::Narrow | CellWide::SpacerHead => 1,
-        CellWide::SpacerTail => 0,
-    };
-    let actual_width = symbol_scratch.width();
-    if actual_width != expected_width && !(wide == CellWide::Narrow && actual_width == 2) {
-        symbol_scratch.clear();
-        symbol_scratch.push_str(blank_symbol_for_width(wide));
-    }
-
-    symbol_scratch.as_str()
-}
-
-fn reset_cell(
-    cell: &mut ratatui::buffer::Cell,
-    default_fg: Option<ratatui::style::Color>,
-    default_bg: Option<ratatui::style::Color>,
-) {
-    cell.reset();
-    cell.set_symbol(" ");
-    if let Some(bg) = default_bg {
-        cell.set_bg(bg);
-    }
-    if let Some(fg) = default_fg {
-        cell.set_fg(fg);
-    }
-}
-
-fn cell_style(
-    cell: &super::CellIteration<'_, '_>,
-    default_fg: Option<ratatui::style::Color>,
-    default_bg: Option<ratatui::style::Color>,
-    resolved_bg: Option<ratatui::style::Color>,
-) -> ratatui::style::Style {
-    let style_data = cell.style().unwrap_or_default();
-    let mut fg = cell
-        .fg_color()
-        .ok()
-        .flatten()
-        .map(ghostty_color)
-        .or(default_fg);
-    let mut bg = cell
-        .bg_color()
-        .ok()
-        .flatten()
-        .map(ghostty_color)
-        .or(default_bg);
-    if style_data.invisible {
-        fg = bg.or(default_bg);
-    }
-    if style_data.inverse {
-        if bg.is_none() {
-            bg = resolved_bg;
-        }
-        if fg.is_none() {
-            fg = default_fg;
-        }
-        std::mem::swap(&mut fg, &mut bg);
-    }
-
-    let mut style = Style::default();
-    if let Some(fg) = fg {
-        style = style.fg(fg);
-    }
-    if let Some(bg) = bg {
-        style = style.bg(bg);
-    }
-
-    let mut modifiers = Modifier::empty();
-    if style_data.bold {
-        modifiers |= Modifier::BOLD;
-    }
-    if style_data.italic {
-        modifiers |= Modifier::ITALIC;
-    }
-    if style_data.faint {
-        modifiers |= Modifier::DIM;
-    }
-    if style_data.blink {
-        modifiers |= Modifier::SLOW_BLINK;
-    }
-    if style_data.underline != Underline::None {
-        modifiers |= Modifier::UNDERLINED;
-    }
-    if style_data.strikethrough {
-        modifiers |= Modifier::CROSSED_OUT;
-    }
-    style.add_modifier(modifiers)
-}
-
 pub fn render_pane_content(
     ansi_bytes: &[u8],
     frame: &mut Frame,
@@ -287,8 +169,12 @@ pub fn render_pane_content(
     };
 
     let colors = snapshot.colors().ok();
-    let default_fg = colors.as_ref().map(|c| ghostty_color(c.foreground));
-    let default_bg = colors.as_ref().map(|c| ghostty_color(c.background));
+    let default_fg = colors
+        .as_ref()
+        .map(|c| ratatui::style::Color::Rgb(c.foreground.r, c.foreground.g, c.foreground.b));
+    let default_bg = colors
+        .as_ref()
+        .map(|c| ratatui::style::Color::Rgb(c.background.r, c.background.g, c.background.b));
     let resolved_bg = default_bg;
 
     let mut row_iterator = match RowIterator::new() {
@@ -319,8 +205,9 @@ pub fn render_pane_content(
                     .raw_cell()
                     .and_then(|raw_cell| raw_cell.wide())
                     .unwrap_or(CellWide::Narrow);
-                let style = cell_style(&cells, default_fg, default_bg, resolved_bg);
-                let symbol = buffer_symbol_into(&cells, wide, &mut symbol_scratch);
+                let style = ghostty_cell_style(&cells, default_fg, default_bg, resolved_bg);
+                let symbol = ghostty_buffer_symbol_into(&cells, wide, &mut symbol_scratch)
+                    .unwrap_or(" ");
                 let cell = &mut buf[(inner.x + x, inner.y + y)];
                 cell.reset();
                 cell.set_symbol(symbol);
@@ -329,7 +216,7 @@ pub fn render_pane_content(
             }
             while x < inner.width {
                 let cell = &mut buf[(inner.x + x, inner.y + y)];
-                reset_cell(cell, default_fg, default_bg);
+                ghostty_reset_cell(cell, default_fg, default_bg);
                 x += 1;
             }
             y += 1;
@@ -337,7 +224,7 @@ pub fn render_pane_content(
         while y < inner.height {
             for x in 0..inner.width {
                 let cell = &mut buf[(inner.x + x, inner.y + y)];
-                reset_cell(cell, default_fg, default_bg);
+                ghostty_reset_cell(cell, default_fg, default_bg);
             }
             y += 1;
         }
@@ -353,6 +240,36 @@ pub fn render_pane_content(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ghostty::{GhosttyStyle, ResolvedCellStyle, Underline, ghostty_style_to_ratatui};
+    use ratatui::{
+        Terminal as RatatuiTerminal,
+        backend::TestBackend,
+        style::{Color, Modifier},
+    };
+
+    fn render_buffer(
+        ansi_bytes: &[u8],
+        width: u16,
+        height: u16,
+        host_fg: Option<(u8, u8, u8)>,
+        host_bg: Option<(u8, u8, u8)>,
+    ) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = RatatuiTerminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_pane_content(
+                    ansi_bytes,
+                    frame,
+                    Rect::new(0, 0, width, height),
+                    None,
+                    host_fg,
+                    host_bg,
+                );
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
 
     #[test]
     fn test_count_visible_columns_ascii() {
@@ -420,5 +337,92 @@ mod tests {
         let input = b"";
         let output = pad_ansi_lines_to_width(input, 5);
         assert_eq!(output, b"     ");
+    }
+
+    #[test]
+    fn test_style_mapping_preserves_defaults_inverse_invisible_and_underline() {
+        let style = ghostty_style_to_ratatui(
+            ResolvedCellStyle {
+                fg: None,
+                bg: None,
+                style: GhosttyStyle {
+                    inverse: true,
+                    invisible: true,
+                    underline: Underline::Double,
+                    bold: true,
+                    italic: true,
+                    faint: true,
+                    blink: true,
+                    strikethrough: true,
+                    ..GhosttyStyle::default()
+                },
+            },
+            Some(Color::Rgb(1, 2, 3)),
+            Some(Color::Rgb(4, 5, 6)),
+            Some(Color::Rgb(4, 5, 6)),
+        );
+
+        assert_eq!(style.fg, Some(Color::Rgb(4, 5, 6)));
+        assert_eq!(style.bg, Some(Color::Rgb(4, 5, 6)));
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+        assert!(style.add_modifier.contains(Modifier::ITALIC));
+        assert!(style.add_modifier.contains(Modifier::DIM));
+        assert!(style.add_modifier.contains(Modifier::SLOW_BLINK));
+        assert!(style.add_modifier.contains(Modifier::UNDERLINED));
+        assert!(style.add_modifier.contains(Modifier::CROSSED_OUT));
+    }
+
+    #[test]
+    fn test_style_mapping_prefers_explicit_cell_colors() {
+        let style = ghostty_style_to_ratatui(
+            ResolvedCellStyle {
+                fg: Some(Color::Rgb(10, 20, 30)),
+                bg: Some(Color::Rgb(40, 50, 60)),
+                style: GhosttyStyle::default(),
+            },
+            Some(Color::Rgb(1, 2, 3)),
+            Some(Color::Rgb(4, 5, 6)),
+            Some(Color::Rgb(4, 5, 6)),
+        );
+
+        assert_eq!(style.fg, Some(Color::Rgb(10, 20, 30)));
+        assert_eq!(style.bg, Some(Color::Rgb(40, 50, 60)));
+    }
+
+    #[test]
+    fn test_render_preserves_inverse_host_default_colors() {
+        let buffer = render_buffer(
+            b"\x1b[7mA\x1b[0m",
+            6,
+            3,
+            Some((1, 2, 3)),
+            Some((4, 5, 6)),
+        );
+        let cell = &buffer[(1, 1)];
+        assert_eq!(cell.symbol(), "A");
+        assert_eq!(cell.fg, Color::Rgb(4, 5, 6));
+        assert_eq!(cell.bg, Color::Rgb(1, 2, 3));
+    }
+
+    #[test]
+    fn test_render_preserves_invisible_text_and_trailing_background() {
+        let buffer = render_buffer(
+            b"\x1b[41m\x1b[8mA",
+            7,
+            3,
+            Some((1, 2, 3)),
+            Some((4, 5, 6)),
+        );
+        let cell = &buffer[(1, 1)];
+        assert_eq!(cell.symbol(), "A");
+        assert_eq!(cell.fg, cell.bg);
+        assert_eq!(buffer[(2, 1)].bg, cell.bg);
+    }
+
+    #[test]
+    fn test_render_preserves_wide_cell_tail_behavior() {
+        let buffer = render_buffer("界".as_bytes(), 6, 3, None, None);
+        assert_eq!(buffer[(1, 1)].symbol(), "界");
+        assert_eq!(buffer[(2, 1)].symbol(), " ");
     }
 }

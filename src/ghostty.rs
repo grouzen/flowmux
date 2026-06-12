@@ -4,10 +4,18 @@ pub use libghostty_vt::{
     Error, RenderState, Terminal, TerminalOptions,
     render::{CellIterator, RowIterator},
     screen::CellWide,
-    style::{RgbColor, Underline},
+    style::{RgbColor, Style as GhosttyStyle, Underline},
 };
 
 use libghostty_vt::render::CellIteration;
+use ratatui::style::{Color, Modifier, Style};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ResolvedCellStyle {
+    pub fg: Option<Color>,
+    pub bg: Option<Color>,
+    pub style: GhosttyStyle,
+}
 
 pub fn ghostty_blank_symbol_for_width(wide: CellWide) -> &'static str {
     match wide {
@@ -71,25 +79,31 @@ pub fn ghostty_cell_style(
     default_bg: Option<ratatui::style::Color>,
     resolved_bg: Option<ratatui::style::Color>,
 ) -> ratatui::style::Style {
-    use ratatui::style::{Modifier, Style};
+    ghostty_style_to_ratatui(
+        ResolvedCellStyle {
+            fg: cell.fg_color().ok().flatten().map(ghostty_color),
+            bg: cell.bg_color().ok().flatten().map(ghostty_color),
+            style: cell.style().unwrap_or_default(),
+        },
+        default_fg,
+        default_bg,
+        resolved_bg,
+    )
+}
 
-    let style_data = cell.style().unwrap_or_default();
-    let mut fg = cell
-        .fg_color()
-        .ok()
-        .flatten()
-        .map(ghostty_color)
-        .or(default_fg);
-    let mut bg = cell
-        .bg_color()
-        .ok()
-        .flatten()
-        .map(ghostty_color)
-        .or(default_bg);
-    if style_data.invisible {
+pub fn ghostty_style_to_ratatui(
+    resolved: ResolvedCellStyle,
+    default_fg: Option<Color>,
+    default_bg: Option<Color>,
+    resolved_bg: Option<Color>,
+) -> Style {
+    let mut fg = resolved.fg.or(default_fg);
+    let mut bg = resolved.bg.or(default_bg);
+
+    if resolved.style.invisible {
         fg = bg.or(default_bg);
     }
-    if style_data.inverse {
+    if resolved.style.inverse {
         if bg.is_none() {
             bg = resolved_bg;
         }
@@ -108,24 +122,25 @@ pub fn ghostty_cell_style(
     }
 
     let mut modifiers = Modifier::empty();
-    if style_data.bold {
+    if resolved.style.bold {
         modifiers |= Modifier::BOLD;
     }
-    if style_data.italic {
+    if resolved.style.italic {
         modifiers |= Modifier::ITALIC;
     }
-    if style_data.faint {
+    if resolved.style.faint {
         modifiers |= Modifier::DIM;
     }
-    if style_data.blink {
+    if resolved.style.blink {
         modifiers |= Modifier::SLOW_BLINK;
     }
-    if style_data.underline != Underline::None {
+    if resolved.style.underline != Underline::None {
         modifiers |= Modifier::UNDERLINED;
     }
-    if style_data.strikethrough {
+    if resolved.style.strikethrough {
         modifiers |= Modifier::CROSSED_OUT;
     }
+
     style.add_modifier(modifiers)
 }
 
