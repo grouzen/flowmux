@@ -1,11 +1,12 @@
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::{Block, BorderType, Borders};
-use ratatui::Frame;
 
 use super::{
+    CellIterator, CellWide, RenderState, RgbColor, RowIterator, Terminal, TerminalOptions,
     ghostty_blank_symbol_for_width, ghostty_buffer_symbol_into, ghostty_cell_style, ghostty_color,
-    ghostty_reset_cell, CellWide, RenderState, RowCells, RowIterator, Terminal,
+    ghostty_reset_cell,
 };
 
 use crate::ui::theme::GRAY;
@@ -139,31 +140,36 @@ pub fn render_pane_content(
         return;
     }
 
-    let mut terminal = match Terminal::new(inner.width, inner.height, 0) {
+    let mut terminal = match Terminal::new(TerminalOptions {
+        cols: inner.width,
+        rows: inner.height,
+        max_scrollback: 0,
+    }) {
         Ok(t) => t,
         Err(_) => return,
     };
 
     // Set default colors from host terminal
     if let Some((r, g, b)) = host_fg {
-        let _ = terminal.set_default_fg(r, g, b);
+        let _ = terminal.set_default_fg_color(Some(RgbColor { r, g, b }));
     }
     if let Some((r, g, b)) = host_bg {
-        let _ = terminal.set_default_bg(r, g, b);
+        let _ = terminal.set_default_bg_color(Some(RgbColor { r, g, b }));
     }
 
     let padded_bytes = pad_ansi_lines_to_width(ansi_bytes, inner.width);
-    terminal.write(&padded_bytes);
+    terminal.vt_write(&padded_bytes);
 
     let mut render_state = match RenderState::new() {
         Ok(rs) => rs,
         Err(_) => return,
     };
-    if render_state.update(&terminal).is_err() {
-        return;
-    }
+    let snapshot = match render_state.update(&terminal) {
+        Ok(snapshot) => snapshot,
+        Err(_) => return,
+    };
 
-    let colors = render_state.colors().ok();
+    let colors = snapshot.colors().ok();
     let default_fg = colors.map(|c| ghostty_color(c.foreground));
     let default_bg = colors.map(|c| ghostty_color(c.background));
     let resolved_bg = default_bg;
@@ -172,35 +178,32 @@ pub fn render_pane_content(
         Ok(it) => it,
         Err(_) => return,
     };
-    let mut row_cells = match RowCells::new() {
+    let mut cell_iterator = match CellIterator::new() {
         Ok(rc) => rc,
         Err(_) => return,
     };
 
     {
         let buf = frame.buffer_mut();
-        let mut rows = match render_state.populate_row_iterator(&mut row_iterator) {
+        let mut rows = match row_iterator.update(&snapshot) {
             Ok(r) => r,
             Err(_) => return,
         };
-        let mut grapheme_scratch = Vec::new();
         let mut symbol_scratch = String::new();
         let mut y = 0u16;
-        while y < inner.height && rows.next() {
-            let mut cells = match rows.populate_cells(&mut row_cells) {
+        while y < inner.height && rows.next().is_some() {
+            let mut cells = match cell_iterator.update(&rows) {
                 Ok(c) => c,
                 Err(_) => break,
             };
             let mut x = 0u16;
-            while x < inner.width && cells.next() {
-                let wide = cells.wide().unwrap_or(CellWide::Narrow);
+            while x < inner.width && cells.next().is_some() {
+                let wide = cells
+                    .raw_cell()
+                    .and_then(|raw_cell| raw_cell.wide())
+                    .unwrap_or(CellWide::Narrow);
                 let style = ghostty_cell_style(&cells, default_fg, default_bg, resolved_bg);
-                let symbol = match ghostty_buffer_symbol_into(
-                    &cells,
-                    wide,
-                    &mut grapheme_scratch,
-                    &mut symbol_scratch,
-                ) {
+                let symbol = match ghostty_buffer_symbol_into(&cells, wide, &mut symbol_scratch) {
                     Ok(s) => s,
                     Err(_) => {
                         symbol_scratch.clear();
