@@ -68,12 +68,11 @@ fn count_visible_columns(line: &[u8]) -> usize {
             } else {
                 1
             };
-            if i + char_len <= len {
-                if let Ok(s) = std::str::from_utf8(&line[i..i + char_len]) {
-                    if let Some(ch) = s.chars().next() {
-                        cols += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-                    }
-                }
+            if i + char_len <= len
+                && let Ok(s) = std::str::from_utf8(&line[i..i + char_len])
+                && let Some(ch) = s.chars().next()
+            {
+                cols += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
             }
             i += char_len;
         }
@@ -112,7 +111,7 @@ fn pad_ansi_lines_to_width(input: &[u8], width: u16) -> Vec<u8> {
         let cols = count_visible_columns(line);
         if cols < width {
             let padding = width - cols;
-            output.extend(std::iter::repeat(b' ').take(padding));
+            output.extend(std::iter::repeat_n(b' ', padding));
         }
     }
 
@@ -230,10 +229,11 @@ pub fn render_pane_content(
         }
     }
 
-    if let Some((cx, cy)) = cursor {
-        if cx < inner.width && cy < inner.height {
-            frame.set_cursor_position((inner.x + cx, inner.y + cy));
-        }
+    if let Some((cx, cy)) = cursor
+        && cx < inner.width
+        && cy < inner.height
+    {
+        frame.set_cursor_position((inner.x + cx, inner.y + cy));
     }
 }
 
