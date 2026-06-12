@@ -1,12 +1,11 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, BorderType, Borders};
 
 use super::{
     CellIterator, CellWide, RenderState, RgbColor, RowIterator, Terminal, TerminalOptions,
-    ghostty_blank_symbol_for_width, ghostty_buffer_symbol_into, ghostty_cell_style, ghostty_color,
-    ghostty_reset_cell,
+    Underline, ghostty_color,
 };
 
 use crate::ui::theme::GRAY;
@@ -120,6 +119,124 @@ fn pad_ansi_lines_to_width(input: &[u8], width: u16) -> Vec<u8> {
     output
 }
 
+fn blank_symbol_for_width(wide: CellWide) -> &'static str {
+    match wide {
+        CellWide::Wide => "  ",
+        CellWide::SpacerTail => "",
+        CellWide::Narrow | CellWide::SpacerHead => " ",
+    }
+}
+
+fn buffer_symbol_into<'a>(
+    cell: &super::CellIteration<'_, '_>,
+    wide: CellWide,
+    symbol_scratch: &'a mut String,
+) -> &'a str {
+    use unicode_width::UnicodeWidthStr;
+
+    symbol_scratch.clear();
+    match wide {
+        CellWide::SpacerTail => {}
+        CellWide::SpacerHead => symbol_scratch.push(' '),
+        CellWide::Narrow | CellWide::Wide => {
+            if cell.graphemes_utf8(symbol_scratch).is_err() || symbol_scratch.is_empty() {
+                symbol_scratch.clear();
+                symbol_scratch.push(' ');
+            }
+        }
+    }
+
+    let expected_width = match wide {
+        CellWide::Wide => 2,
+        CellWide::Narrow | CellWide::SpacerHead => 1,
+        CellWide::SpacerTail => 0,
+    };
+    let actual_width = symbol_scratch.width();
+    if actual_width != expected_width && !(wide == CellWide::Narrow && actual_width == 2) {
+        symbol_scratch.clear();
+        symbol_scratch.push_str(blank_symbol_for_width(wide));
+    }
+
+    symbol_scratch.as_str()
+}
+
+fn reset_cell(
+    cell: &mut ratatui::buffer::Cell,
+    default_fg: Option<ratatui::style::Color>,
+    default_bg: Option<ratatui::style::Color>,
+) {
+    cell.reset();
+    cell.set_symbol(" ");
+    if let Some(bg) = default_bg {
+        cell.set_bg(bg);
+    }
+    if let Some(fg) = default_fg {
+        cell.set_fg(fg);
+    }
+}
+
+fn cell_style(
+    cell: &super::CellIteration<'_, '_>,
+    default_fg: Option<ratatui::style::Color>,
+    default_bg: Option<ratatui::style::Color>,
+    resolved_bg: Option<ratatui::style::Color>,
+) -> ratatui::style::Style {
+    let style_data = cell.style().unwrap_or_default();
+    let mut fg = cell
+        .fg_color()
+        .ok()
+        .flatten()
+        .map(ghostty_color)
+        .or(default_fg);
+    let mut bg = cell
+        .bg_color()
+        .ok()
+        .flatten()
+        .map(ghostty_color)
+        .or(default_bg);
+    if style_data.invisible {
+        fg = bg.or(default_bg);
+    }
+    if style_data.inverse {
+        if bg.is_none() {
+            bg = resolved_bg;
+        }
+        if fg.is_none() {
+            fg = default_fg;
+        }
+        std::mem::swap(&mut fg, &mut bg);
+    }
+
+    let mut style = Style::default();
+    if let Some(fg) = fg {
+        style = style.fg(fg);
+    }
+    if let Some(bg) = bg {
+        style = style.bg(bg);
+    }
+
+    let mut modifiers = Modifier::empty();
+    if style_data.bold {
+        modifiers |= Modifier::BOLD;
+    }
+    if style_data.italic {
+        modifiers |= Modifier::ITALIC;
+    }
+    if style_data.faint {
+        modifiers |= Modifier::DIM;
+    }
+    if style_data.blink {
+        modifiers |= Modifier::SLOW_BLINK;
+    }
+    if style_data.underline != Underline::None {
+        modifiers |= Modifier::UNDERLINED;
+    }
+    if style_data.strikethrough {
+        modifiers |= Modifier::CROSSED_OUT;
+    }
+    style.add_modifier(modifiers)
+}
+
 pub fn render_pane_content(
     ansi_bytes: &[u8],
     frame: &mut Frame,
@@ -202,15 +319,8 @@ pub fn render_pane_content(
                     .raw_cell()
                     .and_then(|raw_cell| raw_cell.wide())
                     .unwrap_or(CellWide::Narrow);
-                let style = ghostty_cell_style(&cells, default_fg, default_bg, resolved_bg);
-                let symbol = match ghostty_buffer_symbol_into(&cells, wide, &mut symbol_scratch) {
-                    Ok(s) => s,
-                    Err(_) => {
-                        symbol_scratch.clear();
-                        symbol_scratch.push_str(ghostty_blank_symbol_for_width(wide));
-                        symbol_scratch.as_str()
-                    }
-                };
+                let style = cell_style(&cells, default_fg, default_bg, resolved_bg);
+                let symbol = buffer_symbol_into(&cells, wide, &mut symbol_scratch);
                 let cell = &mut buf[(inner.x + x, inner.y + y)];
                 cell.reset();
                 cell.set_symbol(symbol);
@@ -219,7 +329,7 @@ pub fn render_pane_content(
             }
             while x < inner.width {
                 let cell = &mut buf[(inner.x + x, inner.y + y)];
-                ghostty_reset_cell(cell, default_fg, default_bg);
+                reset_cell(cell, default_fg, default_bg);
                 x += 1;
             }
             y += 1;
@@ -227,7 +337,7 @@ pub fn render_pane_content(
         while y < inner.height {
             for x in 0..inner.width {
                 let cell = &mut buf[(inner.x + x, inner.y + y)];
-                ghostty_reset_cell(cell, default_fg, default_bg);
+                reset_cell(cell, default_fg, default_bg);
             }
             y += 1;
         }
