@@ -2,7 +2,7 @@
 
 ## Overview
 
-Flowmux is a terminal-native AI agent multiplexer built in Rust that orchestrates CLI agents (OpenCode, Claude Code) inside tmux panes. It provides a grid-based dashboard for monitoring multiple concurrent agent sessions, and an immersive agent view that faithfully renders the agent's terminal output using an embedded terminal emulator (Ghostty VT).
+Flowmux is a terminal-native AI agent multiplexer built in Rust that orchestrates CLI agents (OpenCode, Claude Code) inside tmux panes. It provides a grid-based dashboard for monitoring multiple concurrent agent sessions, and an immersive agent view that faithfully renders the agent's terminal output using an embedded terminal emulator (`libghostty-vt`).
 
 ## Technology Stack
 
@@ -11,7 +11,7 @@ Flowmux is a terminal-native AI agent multiplexer built in Rust that orchestrate
 - **TUI Framework**: [ratatui](https://github.com/ratatui/ratatui) with [crossterm](https://github.com/crossterm-rs/crossterm) backend
 - **Async Runtime**: Tokio (multi-threaded)
 - **Terminal Multiplexer**: tmux (required dependency)
-- **Terminal Emulator**: [libghostty-vt](https://github.com/ghostty-org/ghostty) (vendored, built via Zig)
+- **Terminal Emulator**: [`libghostty-vt`](https://github.com/uzaaft/libghostty-rs) Rust crate (statically built via Zig through `libghostty-vt-sys`)
 - **Git Integration**: [git2](https://github.com/rust-lang/git2-rs) + git CLI for worktree management
 
 ### Key Dependencies
@@ -194,16 +194,24 @@ Thin wrapper around the tmux CLI (`Command`) and `tmux_interface` crate:
 | `is_alive(target)` | Checks pane existence via `list-panes` |
 | `kill_window(target)` | Destroys a tmux window |
 
-### 6. Ghostty VT (`ghostty.rs` + `vendor/`)
+### 6. Ghostty VT (`ghostty.rs` + `ghostty/render.rs`)
 
-Flowmux vendors [libghostty-vt](https://github.com/ghostty-org/ghostty), the terminal emulation library from the Ghostty terminal emulator. It is compiled at build time via `build.rs` using Zig.
+Flowmux uses the [`libghostty-vt`](https://github.com/uzaaft/libghostty-rs)
+Rust crate, which wraps the Ghostty terminal emulator's VT engine. The crate's
+`libghostty-vt-sys` layer statically builds the exact pinned Ghostty revision
+with Zig during Cargo builds. Default first builds therefore need Rust 1.90+,
+Zig 0.15.x, `git`, and network access unless `GHOSTTY_SOURCE_DIR` and
+`GHOSTTY_ZIG_SYSTEM_DIR` are set to prefetched local inputs.
 
-Purpose: **faithful rendering** of agent terminal output inside ratatui. The raw ANSI output captured from tmux panes is fed into a Ghostty `Terminal`, and the `RenderState` row/cell iterator is used to extract styled cells (colors, bold, italic, wide chars, etc.) for pixel-perfect display in the Agent View.
+Purpose: **faithful rendering** of agent terminal output inside ratatui. The raw
+ANSI output captured from tmux panes is fed into a Ghostty `Terminal`, and the
+snapshot-based `RenderState` row/cell iterators are used to extract styled
+cells (colors, bold, italic, wide chars, etc.) for display in the Agent View.
 
 Key types:
 - `Terminal` — VT parser and screen buffer
-- `RenderState` — snapshot for rendering (row iterator, cursor, colors)
-- `RowIter` / `RowCellIter` — cell-level iteration with style/color/grapheme access
+- `RenderState` — renderer state that produces a snapshot for a frame
+- `RowIterator` / `CellIterator` — cell-level iteration with style/color/grapheme access
 
 ### 7. UI Layer (`ui/`)
 
@@ -286,7 +294,7 @@ For each adapter:
 
 ```
 Check pane liveness → capture pane output (visible or scrollback)
-  → feed into Ghostty VT → update cursor position
+  → feed into libghostty-vt → update cursor position
   → track mouse mode → resize tmux window if terminal size changed
   → poll adapter for status → detect Stopped transition
   → set dirty flag if content changed
@@ -309,7 +317,7 @@ src/
 ├── config.rs            # Per-session TOML config (agents list)
 ├── global_config.rs     # Global TOML config (hook port, git viewer, enabled agents)
 ├── git.rs               # Git worktree and branch management
-├── ghostty.rs           # Safe Rust wrappers around libghostty-vt FFI
+├── ghostty.rs           # libghostty-vt reexports and Flowmux-specific helpers
 ├── ghostty/
 │   └── render.rs        # Ghostty → ratatui rendering bridge
 ├── host_terminal.rs     # OSC 10/11 color probing via tmux passthrough

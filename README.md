@@ -89,23 +89,13 @@ Install Flowmux to keep your trusty steed's  harness under the solid roof! :hors
 
 ### 📝 From source
 
-Requires [Rust](https://rustup.rs/) (Edition 2024), [Zig v0.15.2](https://ziglang.org/), `git`, `curl`, and `perl`.
+Requires [Rust 1.90+](https://rustup.rs/), [Zig 0.15.x](https://ziglang.org/), and `git`.
 
-If Ghostty's Zig dependencies cannot be fetched during `cargo build`, prefetch
-them first and point the build at the local copies:
+`libghostty-vt-sys` statically builds the exact Ghostty revision pinned by the
+current `libghostty-vt` Git dependency. A default first build needs network
+access so Zig can fetch Ghostty's build dependencies.
 
-```bash
-./tools/prefetch-libghostty-vt.sh
-export GHOSTTY_SOURCE_DIR="$PWD/vendor/ghostty-prefetch/ghostty-src"
-export GHOSTTY_ZIG_SYSTEM_DIR="$PWD/vendor/ghostty-prefetch/zig-system"
-cargo build --release --locked
-```
-
-The helper script clones the exact Ghostty commit pinned by `libghostty-vt-sys`
-and populates a Zig `--system` package directory so `zig build` does not
-download dependencies during the Cargo build.
-
-If your environment allows direct build-time network access, this also works:
+Build with:
 
 ```bash
 cargo build --release --locked
@@ -113,10 +103,26 @@ cargo build --release --locked
 
 The binary will be at `target/release/flowmux`.
 
+If you need an offline or reproducible local build, prefetch the Ghostty source
+and Zig packages first, then point Cargo's build to those local copies:
+
+```bash
+./tools/prefetch-libghostty-vt.sh
+export GHOSTTY_SOURCE_DIR="$PWD/vendor/ghostty-prefetch/ghostty-src"
+export GHOSTTY_ZIG_SYSTEM_DIR="$PWD/vendor/ghostty-prefetch/zig-system"
+export LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast
+cargo build --release --locked
+```
+
+`GHOSTTY_SOURCE_DIR` points at a checked-out Ghostty tree. `GHOSTTY_ZIG_SYSTEM_DIR`
+points at a prefetched Zig `--system` package directory. `LIBGHOSTTY_VT_SYS_OPTIMIZE`
+overrides the Ghostty build mode when you need something other than the crate's
+default.
+
 Or install directly:
 
 ```bash
-cargo install --path .
+cargo install --path . --locked
 ```
 
 ## 🚀 Usage
@@ -274,7 +280,7 @@ See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed technical documentation
 - **Rust** with Ratatui TUI framework
 - **Tokio** async runtime
 - **tmux** for process isolation and pane management
-- **libghostty-vt** (vendored) for faithful terminal emulation
+- **libghostty-vt** crate for faithful terminal emulation
 - **git2** for repository detection and worktree management
 
 ### Tech Notes
@@ -290,7 +296,7 @@ See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed technical documentation
 Contributions are welcome! Please ensure your changes build successfully:
 
 ```bash
-cargo build
+cargo build --locked
 ```
 
 1. Fork the repository
