@@ -272,7 +272,6 @@ fn render_card(
             title_style,
         ))
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
         .border_style(border_style);
 
     // Apply 1-cell left/right inner padding
