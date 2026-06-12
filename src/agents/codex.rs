@@ -657,11 +657,13 @@ fn handle_notification(
             if let Some(thread) = params.get("thread") {
                 let current = cached_session_id.lock().unwrap().clone();
                 let is_current = current.as_deref() == thread.get("id").and_then(Value::as_str);
-                let is_new_root = current.is_none()
-                    && thread.get("parentThreadId").is_none_or(Value::is_null)
-                    && thread.get("cwd").and_then(Value::as_str) == Some(directory);
+                let is_new_root = is_root_thread_for_directory(thread, directory);
                 if is_current || is_new_root {
-                    update_from_thread(thread, cached_session_id, live_cache);
+                    if is_current || current.is_none() {
+                        update_from_thread(thread, cached_session_id, live_cache);
+                    } else {
+                        switch_to_thread(thread, cached_session_id, live_cache);
+                    }
                 }
             }
         }
@@ -749,6 +751,32 @@ fn handle_notification(
         }
         _ => {}
     }
+}
+
+fn is_root_thread_for_directory(thread: &Value, directory: &str) -> bool {
+    thread.get("parentThreadId").is_none_or(Value::is_null)
+        && thread.get("cwd").and_then(Value::as_str) == Some(directory)
+}
+
+fn switch_to_thread(
+    thread: &Value,
+    cached_session_id: &Arc<Mutex<Option<String>>>,
+    live_cache: &Arc<RwLock<LiveCache>>,
+) {
+    reset_session_cache(live_cache);
+    update_from_thread(thread, cached_session_id, live_cache);
+}
+
+fn reset_session_cache(live_cache: &Arc<RwLock<LiveCache>>) {
+    let mut cache = live_cache.write().unwrap();
+    cache.status = AgentStatus::Idle;
+    cache.first_prompt = None;
+    cache.last_model_response = None;
+    cache.context = None;
+    cache.total_work_ms = 0;
+    cache.completed_turn_ids.clear();
+    cache.rollout_path = None;
+    cache.rollout_offset = 0;
 }
 
 fn update_from_thread(
@@ -1117,6 +1145,170 @@ mod tests {
         assert_eq!(cache.first_prompt.as_deref(), Some("Fix the tests"));
         assert_eq!(cache.last_model_response.as_deref(), Some("Done"));
         assert_eq!(cache.total_work_ms, 1200);
+    }
+
+    #[test]
+    fn new_root_thread_switches_and_resets_session_meta() {
+        let session = Arc::new(Mutex::new(Some("thread-1".to_string())));
+        let cache = Arc::new(RwLock::new(LiveCache {
+            status: AgentStatus::WaitingForInput,
+            first_prompt: Some("Old prompt".to_string()),
+            last_model_response: Some("Old response".to_string()),
+            model_name: Some("gpt-old".to_string()),
+            context: Some(ContextInfo {
+                used: 50,
+                total: Some(100),
+            }),
+            total_work_ms: 1234,
+            completed_turn_ids: HashSet::from([String::from("turn-old")]),
+            rollout_path: Some("/tmp/old-rollout.jsonl".to_string()),
+            rollout_offset: 99,
+        }));
+
+        let params = json!({
+            "thread": {
+                "id": "thread-2",
+                "cwd": "/tmp",
+                "parentThreadId": null,
+                "preview": "New prompt",
+                "status": {"type": "active"},
+                "turns": []
+            }
+        });
+
+        handle_notification("thread/started", &params, "/tmp", &session, &cache);
+
+        assert_eq!(session.lock().unwrap().as_deref(), Some("thread-2"));
+        let cache = cache.read().unwrap();
+        assert_eq!(cache.status, AgentStatus::Running);
+        assert_eq!(cache.first_prompt.as_deref(), Some("New prompt"));
+        assert_eq!(cache.last_model_response, None);
+        assert_eq!(cache.model_name.as_deref(), Some("gpt-old"));
+        assert!(cache.context.is_none());
+        assert_eq!(cache.total_work_ms, 0);
+        assert!(cache.completed_turn_ids.is_empty());
+        assert_eq!(cache.rollout_path, None);
+        assert_eq!(cache.rollout_offset, 0);
+    }
+
+    #[test]
+    fn switched_thread_ignores_old_events_and_accepts_new_ones() {
+        let session = Arc::new(Mutex::new(Some("thread-1".to_string())));
+        let cache = Arc::new(RwLock::new(LiveCache {
+            status: AgentStatus::Idle,
+            first_prompt: Some("Old prompt".to_string()),
+            last_model_response: Some("Old response".to_string()),
+            model_name: Some("gpt-old".to_string()),
+            context: Some(ContextInfo {
+                used: 50,
+                total: Some(100),
+            }),
+            total_work_ms: 1234,
+            completed_turn_ids: HashSet::from([String::from("turn-old")]),
+            rollout_path: None,
+            rollout_offset: 0,
+        }));
+
+        handle_notification(
+            "thread/started",
+            &json!({
+                "thread": {
+                    "id": "thread-2",
+                    "cwd": "/tmp",
+                    "parentThreadId": null,
+                    "preview": "New prompt",
+                    "status": {"type": "idle"},
+                    "turns": []
+                }
+            }),
+            "/tmp",
+            &session,
+            &cache,
+        );
+
+        handle_notification(
+            "thread/tokenUsage/updated",
+            &json!({
+                "threadId": "thread-1",
+                "tokenUsage": {
+                    "last": {"totalTokens": 999},
+                    "modelContextWindow": 1000
+                }
+            }),
+            "/tmp",
+            &session,
+            &cache,
+        );
+        handle_notification(
+            "item/completed",
+            &json!({
+                "threadId": "thread-1",
+                "item": {
+                    "type": "agentMessage",
+                    "text": "Ignored old response"
+                }
+            }),
+            "/tmp",
+            &session,
+            &cache,
+        );
+        handle_notification(
+            "turn/completed",
+            &json!({
+                "threadId": "thread-1",
+                "turn": {"id": "turn-old-2", "durationMs": 777}
+            }),
+            "/tmp",
+            &session,
+            &cache,
+        );
+
+        handle_notification(
+            "thread/tokenUsage/updated",
+            &json!({
+                "threadId": "thread-2",
+                "tokenUsage": {
+                    "last": {"totalTokens": 80},
+                    "modelContextWindow": 200
+                }
+            }),
+            "/tmp",
+            &session,
+            &cache,
+        );
+        handle_notification(
+            "item/completed",
+            &json!({
+                "threadId": "thread-2",
+                "item": {
+                    "type": "agentMessage",
+                    "text": "New response"
+                }
+            }),
+            "/tmp",
+            &session,
+            &cache,
+        );
+        handle_notification(
+            "turn/completed",
+            &json!({
+                "threadId": "thread-2",
+                "turn": {"id": "turn-2", "durationMs": 900}
+            }),
+            "/tmp",
+            &session,
+            &cache,
+        );
+
+        let cache = cache.read().unwrap();
+        let context = cache.context.as_ref().expect("new thread should update context");
+        assert_eq!(context.used, 80);
+        assert_eq!(context.total, Some(200));
+        assert_eq!(cache.last_model_response.as_deref(), Some("New response"));
+        assert_eq!(cache.total_work_ms, 900);
+        assert!(cache.completed_turn_ids.contains("turn-2"));
+        assert!(!cache.completed_turn_ids.contains("turn-old"));
+        assert!(!cache.completed_turn_ids.contains("turn-old-2"));
     }
 
     #[test]
