@@ -170,8 +170,8 @@ pub fn render_pane_content(
     };
 
     let colors = snapshot.colors().ok();
-    let default_fg = colors.map(|c| ghostty_color(c.foreground));
-    let default_bg = colors.map(|c| ghostty_color(c.background));
+    let default_fg = colors.as_ref().map(|c| ghostty_color(c.foreground));
+    let default_bg = colors.as_ref().map(|c| ghostty_color(c.background));
     let resolved_bg = default_bg;
 
     let mut row_iterator = match RowIterator::new() {

@@ -4,7 +4,7 @@ pub use libghostty_vt::{
     Error, RenderState, Terminal, TerminalOptions,
     render::{CellIterator, RowIterator},
     screen::CellWide,
-    style::{RgbColor, Style as CellStyle, Underline},
+    style::{RgbColor, Underline},
 };
 
 use libghostty_vt::render::CellIteration;

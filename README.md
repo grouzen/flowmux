@@ -89,10 +89,26 @@ Install Flowmux to keep your trusty steed's  harness under the solid roof! :hors
 
 ### 📝 From source
 
-Requires [Rust](https://rustup.rs/) (Edition 2024) and [Zig v0.15.2](https://ziglang.org/) (for building vendored libghostty-vt).
+Requires [Rust](https://rustup.rs/) (Edition 2024), [Zig v0.15.2](https://ziglang.org/), `git`, `curl`, and `perl`.
+
+If Ghostty's Zig dependencies cannot be fetched during `cargo build`, prefetch
+them first and point the build at the local copies:
 
 ```bash
-cargo build --release
+./tools/prefetch-libghostty-vt.sh
+export GHOSTTY_SOURCE_DIR="$PWD/vendor/ghostty-prefetch/ghostty-src"
+export GHOSTTY_ZIG_SYSTEM_DIR="$PWD/vendor/ghostty-prefetch/zig-system"
+cargo build --release --locked
+```
+
+The helper script clones the exact Ghostty commit pinned by `libghostty-vt-sys`
+and populates a Zig `--system` package directory so `zig build` does not
+download dependencies during the Cargo build.
+
+If your environment allows direct build-time network access, this also works:
+
+```bash
+cargo build --release --locked
 ```
 
 The binary will be at `target/release/flowmux`.
