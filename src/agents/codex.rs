@@ -297,7 +297,7 @@ async fn run_loop(
         let mut ticker = interval(DISCOVERY_INTERVAL);
         let mut request_id = 10u64;
         let mut pending = None;
-        let mut subscribed = false;
+        let mut subscribed_thread_id: Option<String> = None;
 
         if let Some(thread_id) = cached_thread_id(&cached_session_id) {
             if send_request(
@@ -324,10 +324,15 @@ async fn run_loop(
                     if pending.is_some_and(|request| request.sent_at.elapsed() >= REQUEST_TIMEOUT) {
                         break;
                     }
-                    if pending.is_some() || subscribed {
+                    let thread_id = cached_thread_id(&cached_session_id);
+                    if pending.is_some()
+                        || subscription_matches_thread(
+                            subscribed_thread_id.as_deref(),
+                            thread_id.as_deref(),
+                        )
+                    {
                         continue;
                     }
-                    let thread_id = cached_thread_id(&cached_session_id);
                     let kind = if thread_id.is_some() {
                         RequestKind::Resume
                     } else {
@@ -349,6 +354,7 @@ async fn run_loop(
                 message = read_text(&mut reader) => {
                     let Ok(Some(text)) = message else { break };
                     let Ok(value) = serde_json::from_str::<Value>(&text) else { continue };
+                    let previous_thread_id = cached_thread_id(&cached_session_id);
 
                     if value.get("method").is_some() {
                         handle_message(
@@ -390,15 +396,24 @@ async fn run_loop(
                                     ) {
                                         break;
                                     }
-                                    subscribed = true;
+                                    subscribed_thread_id = cached_thread_id(&cached_session_id);
                                 }
                             }
                         }
                     }
 
-                    if pending.is_none() && !subscribed {
-                        let thread_id = cached_thread_id(&cached_session_id);
-                        if let Some(thread_id) = thread_id
+                    let current_thread_id = cached_thread_id(&cached_session_id);
+                    if current_thread_id != previous_thread_id {
+                        subscribed_thread_id = None;
+                    }
+
+                    if pending.is_none()
+                        && !subscription_matches_thread(
+                            subscribed_thread_id.as_deref(),
+                            current_thread_id.as_deref(),
+                        )
+                    {
+                        if let Some(thread_id) = current_thread_id
                             && send_request(
                                 &mut writer,
                                 &mut request_id,
@@ -923,6 +938,16 @@ fn is_current_thread(params: &Value, cached_session_id: &Arc<Mutex<Option<String
     let event_id = params.get("threadId").and_then(Value::as_str);
     let current = cached_session_id.lock().unwrap();
     current.is_none() || event_id == current.as_deref()
+}
+
+fn subscription_matches_thread(
+    subscribed_thread_id: Option<&str>,
+    current_thread_id: Option<&str>,
+) -> bool {
+    matches!(
+        (subscribed_thread_id, current_thread_id),
+        (Some(subscribed), Some(current)) if subscribed == current
+    )
 }
 
 fn cached_thread_id(cached_session_id: &Arc<Mutex<Option<String>>>) -> Option<String> {
@@ -1581,6 +1606,204 @@ mod tests {
         let context = context.unwrap();
         assert_eq!(context.used, 90);
         assert_eq!(context.total, Some(200_000));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn new_root_thread_triggers_resubscribe_and_refreshes_meta() {
+        let listener = TokioTcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let mut stream = accept_test_websocket(listener).await;
+
+            let initialize: Value =
+                serde_json::from_str(&read_test_client_text(&mut stream).await).unwrap();
+            assert_eq!(
+                initialize.get("method").and_then(Value::as_str),
+                Some("initialize")
+            );
+            write_test_server_text(&mut stream, json!({"id": 1, "result": {}})).await;
+
+            let initialized: Value =
+                serde_json::from_str(&read_test_client_text(&mut stream).await).unwrap();
+            assert_eq!(
+                initialized.get("method").and_then(Value::as_str),
+                Some("initialized")
+            );
+
+            let discover: Value =
+                serde_json::from_str(&read_test_client_text(&mut stream).await).unwrap();
+            assert_eq!(
+                discover.get("method").and_then(Value::as_str),
+                Some("thread/list")
+            );
+            let discover_id = discover.get("id").and_then(Value::as_u64).unwrap();
+            write_test_server_text(
+                &mut stream,
+                json!({
+                    "id": discover_id,
+                    "result": {
+                        "data": [{
+                            "id": "thread-1",
+                            "cwd": "/tmp",
+                            "createdAt": 1,
+                            "parentThreadId": null,
+                            "preview": "Old prompt",
+                            "status": {"type": "idle"},
+                            "turns": [{
+                                "id": "turn-1",
+                                "durationMs": 100,
+                                "items": [{"type": "agentMessage", "text": "Old response"}]
+                            }]
+                        }]
+                    }
+                }),
+            )
+            .await;
+
+            let resume_old: Value =
+                serde_json::from_str(&read_test_client_text(&mut stream).await).unwrap();
+            assert_eq!(
+                resume_old.get("method").and_then(Value::as_str),
+                Some("thread/resume")
+            );
+            assert_eq!(
+                resume_old
+                    .get("params")
+                    .and_then(|p| p.get("threadId"))
+                    .and_then(Value::as_str),
+                Some("thread-1")
+            );
+            let resume_old_id = resume_old.get("id").and_then(Value::as_u64).unwrap();
+            write_test_server_text(
+                &mut stream,
+                json!({
+                    "id": resume_old_id,
+                    "result": {
+                        "model": "gpt-old",
+                        "thread": {
+                            "id": "thread-1",
+                            "preview": "Old prompt",
+                            "status": {"type": "idle"},
+                            "turns": [{
+                                "id": "turn-1",
+                                "durationMs": 100,
+                                "items": [{"type": "agentMessage", "text": "Old response"}]
+                            }]
+                        }
+                    }
+                }),
+            )
+            .await;
+
+            write_test_server_text(
+                &mut stream,
+                json!({
+                    "method": "thread/started",
+                    "params": {
+                        "thread": {
+                            "id": "thread-2",
+                            "cwd": "/tmp",
+                            "parentThreadId": null,
+                            "preview": "New prompt",
+                            "status": {"type": "idle"},
+                            "turns": []
+                        }
+                    }
+                }),
+            )
+            .await;
+
+            let resume_new: Value =
+                serde_json::from_str(&read_test_client_text(&mut stream).await).unwrap();
+            assert_eq!(
+                resume_new.get("method").and_then(Value::as_str),
+                Some("thread/resume")
+            );
+            assert_eq!(
+                resume_new
+                    .get("params")
+                    .and_then(|p| p.get("threadId"))
+                    .and_then(Value::as_str),
+                Some("thread-2")
+            );
+            let resume_new_id = resume_new.get("id").and_then(Value::as_u64).unwrap();
+            write_test_server_text(
+                &mut stream,
+                json!({
+                    "id": resume_new_id,
+                    "result": {
+                        "model": "gpt-new",
+                        "thread": {
+                            "id": "thread-2",
+                            "preview": "New prompt",
+                            "path": "/tmp/thread-2.jsonl",
+                            "status": {"type": "idle"},
+                            "turns": [{
+                                "id": "turn-2",
+                                "durationMs": 900,
+                                "items": [{"type": "agentMessage", "text": "New response"}]
+                            }]
+                        }
+                    }
+                }),
+            )
+            .await;
+
+            write_test_server_text(
+                &mut stream,
+                json!({
+                    "method": "thread/tokenUsage/updated",
+                    "params": {
+                        "threadId": "thread-2",
+                        "tokenUsage": {
+                            "last": {"totalTokens": 80},
+                            "modelContextWindow": 200
+                        }
+                    }
+                }),
+            )
+            .await;
+
+            assert!(
+                tokio::time::timeout(
+                    Duration::from_millis(900),
+                    read_test_client_text(&mut stream)
+                )
+                .await
+                .is_err(),
+                "observer sent an unexpected recurring request after resubscribe"
+            );
+        });
+
+        let adapter = CodexAdapter::new(port, "/tmp".to_string(), None);
+        let mut context_used = None;
+        let mut total_work_ms = 0;
+        let mut prompt = None;
+        let mut response = None;
+        let mut model = None;
+        for _ in 0..50 {
+            context_used = adapter.get_context().await.map(|ctx| ctx.used);
+            total_work_ms = adapter.get_total_work_ms().await;
+            prompt = adapter.get_first_prompt().await;
+            response = adapter.get_last_model_response().await;
+            model = adapter.get_model_name().await;
+            if context_used == Some(80)
+                && total_work_ms == 900
+                && prompt.as_deref() == Some("New prompt")
+                && response.as_deref() == Some("New response")
+                && model.as_deref() == Some("gpt-new")
+            {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+
+        assert_eq!(context_used, Some(80));
+        assert_eq!(total_work_ms, 900);
+        assert_eq!(prompt.as_deref(), Some("New prompt"));
+        assert_eq!(response.as_deref(), Some("New response"));
+        assert_eq!(model.as_deref(), Some("gpt-new"));
         server.await.unwrap();
     }
 
