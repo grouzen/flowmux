@@ -25,6 +25,8 @@ pub struct StatusNotification {
 
 const BLINK_DURATION: std::time::Duration = std::time::Duration::from_secs(3);
 const BLINK_INTERVAL_MS: u128 = 500;
+const PANE_CHROME_HEIGHT: u16 = 4;
+const PANE_BORDER_WIDTH: u16 = 2;
 
 impl StatusNotification {
     pub fn reset(&mut self, counts: AgentStatusCounts) {
@@ -80,6 +82,13 @@ impl StatusNotification {
             .map(|t| t.elapsed() < BLINK_DURATION && Self::blink_phase(t))
             .unwrap_or(false)
     }
+}
+
+fn tmux_pane_viewport_size(term_cols: u16, term_rows: u16) -> (u16, u16) {
+    (
+        term_cols.saturating_sub(PANE_BORDER_WIDTH),
+        term_rows.saturating_sub(PANE_CHROME_HEIGHT),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1369,11 +1378,9 @@ impl App {
             // pane (e.g. vim), causing it to redraw, move the cursor, and
             // potentially reset the editing mode on every poll cycle.
             if let Ok((term_cols, term_rows)) = crossterm::terminal::size() {
-                let content_height = term_rows.saturating_sub(4); // reserve top info bar + bottom status bar + border (2 rows)
-                let content_width = term_cols.saturating_sub(2); // reserve left + right border
-                let desired = (content_width, content_height);
+                let desired = tmux_pane_viewport_size(term_cols, term_rows);
                 if self.agent_view_state.last_pane_size != Some(desired) {
-                    let _ = tmux::resize_window(&pane, content_width, content_height);
+                    let _ = tmux::resize_window(&pane, desired.0, desired.1);
                     self.agent_view_state.last_pane_size = Some(desired);
                 }
             }
@@ -1698,11 +1705,9 @@ impl App {
             gv.pane_mouse_active = tmux::pane_mouse_active(&pane);
 
             if let Ok((term_cols, term_rows)) = crossterm::terminal::size() {
-                let content_height = term_rows.saturating_sub(4); // reserve top info bar + bottom status bar + border (2 rows)
-                let content_width = term_cols.saturating_sub(2); // reserve left + right border
-                let desired = (content_width, content_height);
+                let desired = tmux_pane_viewport_size(term_cols, term_rows);
                 if gv.last_pane_size != Some(desired) {
-                    let _ = tmux::resize_window(&pane, content_width, content_height);
+                    let _ = tmux::resize_window(&pane, desired.0, desired.1);
                     gv.last_pane_size = Some(desired);
                 }
             }
@@ -1824,6 +1829,16 @@ impl App {
             return;
         }
 
+        if let AppState::TerminalView(ref mut tv) = self.state {
+            if let Ok((term_cols, term_rows)) = crossterm::terminal::size() {
+                let desired = tmux_pane_viewport_size(term_cols, term_rows);
+                if tv.last_pane_size != Some(desired) {
+                    let _ = tmux::resize_window(&pane, desired.0, desired.1);
+                    tv.last_pane_size = Some(desired);
+                }
+            }
+        }
+
         if let Ok(raw) = tmux::capture_pane(&pane) {
             let changed = if let AppState::TerminalView(ref mut tv) = self.state {
                 tv.update_lines(&raw)
@@ -1843,15 +1858,6 @@ impl App {
             }
 
             tv.pane_mouse_active = tmux::pane_mouse_active(&pane);
-
-            if let Ok((term_cols, term_rows)) = crossterm::terminal::size() {
-                let content_height = term_rows.saturating_sub(4);
-                let desired = (term_cols, content_height);
-                if tv.last_pane_size != Some(desired) {
-                    let _ = tmux::resize_window(&pane, term_cols, content_height);
-                    tv.last_pane_size = Some(desired);
-                }
-            }
         }
     }
 
@@ -2200,7 +2206,11 @@ impl App {
     // RemoveProjectDialog key handler
     // -----------------------------------------------------------------------
 
-    async fn handle_remove_project_key(&mut self, key: KeyEvent, state: RemoveProjectState) -> bool {
+    async fn handle_remove_project_key(
+        &mut self,
+        key: KeyEvent,
+        state: RemoveProjectState,
+    ) -> bool {
         match key.code {
             KeyCode::Char('y') | KeyCode::Enter => {
                 if state.agent_count == 0 || state.confirm_remove_agents {
@@ -2760,5 +2770,17 @@ mod tests {
 
         assert!(notification.waiting_blink.is_some());
         assert!(notification.running_blink.is_none());
+    }
+
+    #[test]
+    fn tmux_pane_viewport_size_reserves_ui_chrome() {
+        assert_eq!(tmux_pane_viewport_size(120, 40), (118, 36));
+    }
+
+    #[test]
+    fn tmux_pane_viewport_size_saturates_for_tiny_terminals() {
+        assert_eq!(tmux_pane_viewport_size(1, 1), (0, 0));
+        assert_eq!(tmux_pane_viewport_size(2, 4), (0, 0));
+        assert_eq!(tmux_pane_viewport_size(3, 5), (1, 1));
     }
 }
