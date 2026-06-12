@@ -37,6 +37,7 @@ Install Flowmux to keep your trusty steed's  harness under the solid roof! :hors
 
 - Run multiple CLI agents concurrently in isolated tmux panes
 - Grid-based dashboard showing all agents at a glance
+- Separate named project dashboards with tab-based switching and per-project agent grouping
 - Real-time status tracking: running, waiting for input, stopped
 - Context usage monitoring and model name display
 - Last model response preview rendered as markdown
