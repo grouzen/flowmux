@@ -6,35 +6,10 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Padding, Paragraph},
 };
 
-use crate::models::{AgentEntry, AgentStatus};
+use crate::models::{AgentEntry, AgentStatus, AgentStatusCounts};
 use crate::ui::theme::*;
 
 pub const PROJECT_TABS_HEIGHT: u16 = 1;
-
-// ---------------------------------------------------------------------------
-// Status count helpers (used by keybindings bar)
-// ---------------------------------------------------------------------------
-
-fn count_running(agents: &[AgentEntry], visible_indices: &[usize]) -> usize {
-    visible_indices
-        .iter()
-        .filter(|&&idx| matches!(agents[idx].meta.status, AgentStatus::Running))
-        .count()
-}
-
-fn count_waiting(agents: &[AgentEntry], visible_indices: &[usize]) -> usize {
-    visible_indices
-        .iter()
-        .filter(|&&idx| matches!(agents[idx].meta.status, AgentStatus::WaitingForInput))
-        .count()
-}
-
-fn count_idle(agents: &[AgentEntry], visible_indices: &[usize]) -> usize {
-    visible_indices
-        .iter()
-        .filter(|&&idx| matches!(agents[idx].meta.status, AgentStatus::Idle))
-        .count()
-}
 
 // ---------------------------------------------------------------------------
 // Style helper
@@ -65,6 +40,7 @@ pub fn render_dashboard(
     card_response_heights: &mut Vec<u16>,
     card_response_widths: &mut Vec<u16>,
     dimmed: bool,
+    status_counts: AgentStatusCounts,
     blink_running: bool,
     blink_waiting: bool,
 ) {
@@ -86,9 +62,8 @@ pub fn render_dashboard(
     render_keybindings_bar(
         f,
         bar_area,
-        agents,
-        visible_indices,
         dimmed,
+        status_counts,
         blink_running,
         blink_waiting,
     );
@@ -590,16 +565,11 @@ fn push_keybind<'a>(spans: &mut Vec<Span<'a>>, key: &'a str, action: &'a str, di
 fn render_keybindings_bar(
     f: &mut Frame,
     area: Rect,
-    agents: &[AgentEntry],
-    visible_indices: &[usize],
     dimmed: bool,
+    status_counts: AgentStatusCounts,
     blink_running: bool,
     blink_waiting: bool,
 ) {
-    let running = count_running(agents, visible_indices);
-    let waiting = count_waiting(agents, visible_indices);
-    let idle = count_idle(agents, visible_indices);
-
     // Left: hotkeys
     let mut spans: Vec<Span> = Vec::new();
     spans.push(Span::raw(" "));
@@ -622,8 +592,14 @@ fn render_keybindings_bar(
     push_keybind(&mut spans, "q", "quit", dimmed);
 
     // Right: agent status counts (leading space separates from middle chunk; trailing space before brand)
-    let (status_spans, status_width) =
-        status_count_spans(running, waiting, idle, blink_running, blink_waiting, dimmed);
+    let (status_spans, status_width) = status_count_spans(
+        status_counts.running,
+        status_counts.waiting,
+        status_counts.idle,
+        blink_running,
+        blink_waiting,
+        dimmed,
+    );
 
     let (brand, brand_width) = brand_line(dimmed);
 

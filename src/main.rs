@@ -197,35 +197,8 @@ async fn main() -> Result<()> {
 
                 // Detect status count changes on every render frame (catches
                 // changes from both dashboard tick and agent view tick).
-                let current_running = app
-                    .agents
-                    .iter()
-                    .filter(|a| matches!(a.meta.status, models::AgentStatus::Running))
-                    .count();
-                let current_waiting = app
-                    .agents
-                    .iter()
-                    .filter(|a| matches!(a.meta.status, models::AgentStatus::WaitingForInput))
-                    .count();
-
-                if app.notification.initialized {
-                    let running_decrease = app
-                        .notification
-                        .prev_running
-                        .saturating_sub(current_running);
-                    let waiting_increase =
-                        current_waiting.saturating_sub(app.notification.prev_waiting);
-
-                    if running_decrease > waiting_increase {
-                        app.notification.running_blink = Some(std::time::Instant::now());
-                    }
-                    if current_waiting > app.notification.prev_waiting {
-                        app.notification.waiting_blink = Some(std::time::Instant::now());
-                    }
-                }
-                app.notification.prev_running = current_running;
-                app.notification.prev_waiting = current_waiting;
-                app.notification.initialized = true;
+                let status_counts = app.active_project_status_counts();
+                app.notification.observe(status_counts);
 
                 let state = app.state.clone();
                 let blink_running = app.notification.should_render_blink_running();
@@ -247,6 +220,7 @@ async fn main() -> Result<()> {
                                 &mut app.card_response_heights,
                                 &mut app.card_response_widths,
                                 false,
+                                status_counts,
                                 blink_running,
                                 blink_waiting,
                             );
@@ -258,7 +232,7 @@ async fn main() -> Result<()> {
                                     area,
                                     &app.agent_view_state,
                                     entry,
-                                    &app.agents,
+                                    status_counts,
                                     app.host_colors,
                                     blink_running,
                                     blink_waiting,
@@ -279,6 +253,7 @@ async fn main() -> Result<()> {
                                 &mut app.card_response_heights,
                                 &mut app.card_response_widths,
                                 true,
+                                status_counts,
                                 blink_running,
                                 blink_waiting,
                             );
@@ -298,6 +273,7 @@ async fn main() -> Result<()> {
                                 &mut app.card_response_heights,
                                 &mut app.card_response_widths,
                                 true,
+                                status_counts,
                                 blink_running,
                                 blink_waiting,
                             );
@@ -321,6 +297,7 @@ async fn main() -> Result<()> {
                                 &mut app.card_response_heights,
                                 &mut app.card_response_widths,
                                 true,
+                                status_counts,
                                 blink_running,
                                 blink_waiting,
                             );
@@ -358,6 +335,7 @@ async fn main() -> Result<()> {
                                 &mut app.card_response_heights,
                                 &mut app.card_response_widths,
                                 true,
+                                status_counts,
                                 blink_running,
                                 blink_waiting,
                             );
@@ -376,7 +354,7 @@ async fn main() -> Result<()> {
                                     area,
                                     gv,
                                     entry,
-                                    &app.agents,
+                                    status_counts,
                                     app.host_colors,
                                     blink_running,
                                     blink_waiting,
@@ -390,7 +368,7 @@ async fn main() -> Result<()> {
                                     area,
                                     tv,
                                     entry,
-                                    &app.agents,
+                                    status_counts,
                                     app.host_colors,
                                     blink_running,
                                     blink_waiting,

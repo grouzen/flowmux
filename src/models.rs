@@ -72,3 +72,30 @@ pub struct AgentEntry {
     pub config: AgentConfig,
     pub meta: AgentMeta,
 }
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AgentStatusCounts {
+    pub running: usize,
+    pub waiting: usize,
+    pub idle: usize,
+}
+
+impl AgentStatusCounts {
+    pub fn for_project(agents: &[AgentEntry], project: &str) -> Self {
+        let mut counts = Self::default();
+
+        for agent in agents
+            .iter()
+            .filter(|agent| agent.config.project == project)
+        {
+            match agent.meta.status {
+                AgentStatus::Running => counts.running += 1,
+                AgentStatus::WaitingForInput => counts.waiting += 1,
+                AgentStatus::Idle => counts.idle += 1,
+                AgentStatus::Stopped | AgentStatus::Unknown => {}
+            }
+        }
+
+        counts
+    }
+}

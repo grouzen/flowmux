@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::app::GitViewerState;
 use crate::host_terminal::HostColors;
-use crate::models::{AgentEntry, AgentStatus};
+use crate::models::{AgentEntry, AgentStatusCounts};
 use crate::ui::theme::*;
 
 pub fn render_git_viewer(
@@ -16,7 +16,7 @@ pub fn render_git_viewer(
     area: Rect,
     state: &GitViewerState,
     agent_entry: &AgentEntry,
-    agents: &[AgentEntry],
+    status_counts: AgentStatusCounts,
     host_colors: HostColors,
     blink_running: bool,
     blink_waiting: bool,
@@ -53,19 +53,6 @@ pub fn render_git_viewer(
     } else {
         dir_str
     };
-
-    let running = agents
-        .iter()
-        .filter(|a| matches!(a.meta.status, AgentStatus::Running))
-        .count();
-    let waiting = agents
-        .iter()
-        .filter(|a| matches!(a.meta.status, AgentStatus::WaitingForInput))
-        .count();
-    let idle = agents
-        .iter()
-        .filter(|a| matches!(a.meta.status, AgentStatus::Idle))
-        .count();
 
     let top_spans = vec![
         Span::raw(" "),
@@ -114,8 +101,14 @@ pub fn render_git_viewer(
 
     let (brand, brand_width) = brand_line(false);
 
-    let (mut agent_status_spans, status_width) =
-        status_count_spans(running, waiting, idle, blink_running, blink_waiting, false);
+    let (mut agent_status_spans, status_width) = status_count_spans(
+        status_counts.running,
+        status_counts.waiting,
+        status_counts.idle,
+        blink_running,
+        blink_waiting,
+        false,
+    );
     agent_status_spans.push(Span::raw(" "));
 
     if state.prefix_active {
