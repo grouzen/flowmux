@@ -105,7 +105,7 @@ pub fn render_create_project(f: &mut Frame, area: Rect, state: &CreateProjectSta
         rows[6],
     );
 
-    let cursor_x = (rows[3].x + 10 + state.name.len() as u16)
+    let cursor_x = (rows[3].x + 9 + state.name.len() as u16)
         .min(dialog_area.x + dialog_area.width.saturating_sub(1));
     f.set_cursor_position((cursor_x, rows[3].y));
 }

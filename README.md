@@ -144,8 +144,7 @@ flowmux --enabled-agents opencode,claude,codex
 | `p` | Create new project |
 | `d` | Delete selected agent |
 | `Ctrl+d` | Remove active project |
-| `Tab` | Switch to next project |
-| `1-9`, `0` | Jump to project tabs 1-10 |
+| `Tab`, `0-9` | Select project |
 | `Enter` | Open agent view |
 | `h` / `←` | Navigate left |
 | `l` / `→` | Navigate right |
