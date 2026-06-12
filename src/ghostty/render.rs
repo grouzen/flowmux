@@ -271,6 +271,32 @@ mod tests {
         terminal.backend().buffer().clone()
     }
 
+    fn render_buffer_sequence(
+        frames: &[&[u8]],
+        width: u16,
+        height: u16,
+        host_fg: Option<(u8, u8, u8)>,
+        host_bg: Option<(u8, u8, u8)>,
+    ) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = RatatuiTerminal::new(backend).unwrap();
+        for ansi_bytes in frames {
+            terminal
+                .draw(|frame| {
+                    render_pane_content(
+                        ansi_bytes,
+                        frame,
+                        Rect::new(0, 0, width, height),
+                        None,
+                        host_fg,
+                        host_bg,
+                    );
+                })
+                .unwrap();
+        }
+        terminal.backend().buffer().clone()
+    }
+
     #[test]
     fn test_count_visible_columns_ascii() {
         assert_eq!(count_visible_columns(b"hello"), 5);
@@ -424,5 +450,117 @@ mod tests {
         let buffer = render_buffer("界".as_bytes(), 6, 3, None, None);
         assert_eq!(buffer[(1, 1)].symbol(), "界");
         assert_eq!(buffer[(2, 1)].symbol(), " ");
+    }
+
+    #[test]
+    fn test_render_ascii_and_empty_cells() {
+        let buffer = render_buffer(b"A", 6, 3, Some((1, 2, 3)), Some((4, 5, 6)));
+        assert_eq!(buffer[(1, 1)].symbol(), "A");
+        assert_eq!(buffer[(2, 1)].symbol(), " ");
+        assert_eq!(buffer[(3, 1)].symbol(), " ");
+        assert_eq!(buffer[(1, 1)].fg, Color::Rgb(1, 2, 3));
+        assert_eq!(buffer[(1, 1)].bg, Color::Rgb(4, 5, 6));
+        assert_eq!(buffer[(2, 1)].fg, Color::Rgb(1, 2, 3));
+        assert_eq!(buffer[(2, 1)].bg, Color::Rgb(4, 5, 6));
+    }
+
+    #[test]
+    fn test_render_handles_crlf_line_breaks() {
+        let buffer = render_buffer(b"A\r\nB", 6, 4, None, None);
+        assert_eq!(buffer[(1, 1)].symbol(), "A");
+        assert_eq!(buffer[(1, 2)].symbol(), "B");
+        assert_eq!(buffer[(2, 1)].symbol(), " ");
+        assert_eq!(buffer[(2, 2)].symbol(), " ");
+    }
+
+    #[test]
+    fn test_render_falls_back_on_malformed_utf8() {
+        let buffer = render_buffer(b"\xffX", 6, 3, None, None);
+        assert_eq!(buffer[(1, 1)].symbol(), " ");
+        assert_eq!(buffer[(2, 1)].symbol(), " ");
+        assert_eq!(buffer[(3, 1)].symbol(), " ");
+        assert_eq!(buffer[(4, 1)].symbol(), " ");
+    }
+
+    #[test]
+    fn test_render_preserves_combining_graphemes() {
+        let buffer = render_buffer("e\u{301}".as_bytes(), 6, 3, None, None);
+        assert_eq!(buffer[(1, 1)].symbol(), "e\u{301}");
+        assert_eq!(buffer[(2, 1)].symbol(), " ");
+    }
+
+    #[test]
+    fn test_render_preserves_emoji_and_cjk_wide_cells() {
+        let emoji = render_buffer("😀".as_bytes(), 6, 3, None, None);
+        assert_eq!(emoji[(1, 1)].symbol(), "😀");
+        assert_eq!(emoji[(2, 1)].symbol(), " ");
+
+        let cjk = render_buffer("界".as_bytes(), 6, 3, None, None);
+        assert_eq!(cjk[(1, 1)].symbol(), "界");
+        assert_eq!(cjk[(2, 1)].symbol(), " ");
+    }
+
+    #[test]
+    fn test_render_preserves_spacer_head_for_soft_wrapped_wide_cells() {
+        let buffer = render_buffer("abc界".as_bytes(), 6, 4, None, None);
+        assert_eq!(buffer[(1, 1)].symbol(), "a");
+        assert_eq!(buffer[(2, 1)].symbol(), "b");
+        assert_eq!(buffer[(3, 1)].symbol(), "c");
+        assert_eq!(buffer[(4, 1)].symbol(), " ");
+        assert_eq!(buffer[(1, 2)].symbol(), "界");
+        assert_eq!(buffer[(2, 2)].symbol(), " ");
+    }
+
+    #[test]
+    fn test_render_explicit_cell_colors_override_host_defaults() {
+        let buffer = render_buffer(
+            b"\x1b[38;2;10;20;30m\x1b[48;2;40;50;60mA\x1b[0m",
+            6,
+            3,
+            Some((1, 2, 3)),
+            Some((4, 5, 6)),
+        );
+        let cell = &buffer[(1, 1)];
+        assert_eq!(cell.symbol(), "A");
+        assert_eq!(cell.fg, Color::Rgb(10, 20, 30));
+        assert_eq!(cell.bg, Color::Rgb(40, 50, 60));
+
+        let trailing = &buffer[(2, 1)];
+        assert_eq!(trailing.symbol(), " ");
+        assert_eq!(trailing.fg, Color::Rgb(1, 2, 3));
+        assert_eq!(trailing.bg, Color::Rgb(4, 5, 6));
+    }
+
+    #[test]
+    fn test_render_trailing_spaces_keep_active_background_color() {
+        let buffer = render_buffer(b"\x1b[41mA", 6, 3, None, None);
+        assert_eq!(buffer[(1, 1)].symbol(), "A");
+        assert_ne!(buffer[(1, 1)].bg, Color::Reset);
+        assert_eq!(buffer[(2, 1)].symbol(), " ");
+        assert_eq!(buffer[(2, 1)].bg, buffer[(1, 1)].bg);
+        assert_eq!(buffer[(3, 1)].bg, buffer[(1, 1)].bg);
+    }
+
+    #[test]
+    fn test_render_clears_stale_content_when_redrawing_shorter_rows() {
+        let buffer = render_buffer_sequence(
+            &[b"ABCD\r\nWXYZ", b"A"],
+            6,
+            4,
+            Some((1, 2, 3)),
+            Some((4, 5, 6)),
+        );
+
+        assert_eq!(buffer[(1, 1)].symbol(), "A");
+        assert_eq!(buffer[(2, 1)].symbol(), " ");
+        assert_eq!(buffer[(3, 1)].symbol(), " ");
+        assert_eq!(buffer[(4, 1)].symbol(), " ");
+
+        assert_eq!(buffer[(1, 2)].symbol(), " ");
+        assert_eq!(buffer[(2, 2)].symbol(), " ");
+        assert_eq!(buffer[(3, 2)].symbol(), " ");
+        assert_eq!(buffer[(4, 2)].symbol(), " ");
+        assert_eq!(buffer[(1, 2)].fg, Color::Rgb(1, 2, 3));
+        assert_eq!(buffer[(1, 2)].bg, Color::Rgb(4, 5, 6));
     }
 }
