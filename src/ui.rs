@@ -1,7 +1,9 @@
 pub mod agent_view;
 pub mod create_agent;
+pub mod create_project;
 pub mod dashboard;
 pub mod git_viewer;
 pub mod remove_agent;
+pub mod remove_project;
 pub mod terminal_view;
 pub mod theme;

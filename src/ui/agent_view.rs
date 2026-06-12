@@ -113,7 +113,10 @@ pub fn render_agent_view(
     let work_str = format_uptime(agent_entry.meta.total_work_ms);
 
     // --- Top bar: agent meta info (3-zone layout) ---
-    let name_text = format!(" {} ", agent_entry.config.name);
+    let name_text = format!(
+        " {} @ {} ",
+        agent_entry.config.name, agent_entry.config.project
+    );
     let name_width = unicode_width::UnicodeWidthStr::width(name_text.as_str()) as u16;
 
     let dir_prefix = format!(" {} ", ICON_DIR);
@@ -150,10 +153,19 @@ pub fn render_agent_view(
         .split(top_area);
 
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            &name_text,
-            Style::default().fg(FG).add_modifier(Modifier::BOLD),
-        ))),
+        Paragraph::new(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                agent_entry.config.name.as_str(),
+                Style::default().fg(FG).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" @ ", Style::default().fg(FG)),
+            Span::styled(
+                agent_entry.config.project.as_str(),
+                Style::default().fg(FG).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+        ])),
         layout[0],
     );
 
