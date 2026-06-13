@@ -745,9 +745,13 @@ fn handle_notification(
                 return;
             }
             let item = params.get("item").unwrap_or(&Value::Null);
-            if item.get("type").and_then(Value::as_str) == Some("agentMessage") {
-                if let Some(text) = item.get("text").and_then(Value::as_str) {
-                    live_cache.write().unwrap().last_model_response = Some(text.to_owned());
+            let item_type = item.get("type").and_then(Value::as_str);
+            if let Some(text) = item.get("text").and_then(Value::as_str) {
+                let mut cache = live_cache.write().unwrap();
+                if item_type == Some("agentMessage") {
+                    cache.last_model_response = Some(text.to_owned());
+                } else if cache.first_prompt.is_none() && !text.is_empty() {
+                    cache.first_prompt = Some(text.to_owned());
                 }
             }
         }
@@ -811,7 +815,8 @@ fn update_from_thread(
             .get("preview")
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
-            .map(str::to_owned);
+            .map(str::to_owned)
+            .or_else(|| first_prompt_from_turns(thread));
     }
     cache.rollout_path = thread
         .get("path")
@@ -846,6 +851,29 @@ fn update_from_thread(
     if let Some(path) = cache.rollout_path.clone() {
         enrich_from_rollout(&path, &mut cache);
     }
+}
+
+fn first_prompt_from_turns(thread: &Value) -> Option<String> {
+    thread
+        .get("turns")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|turn| {
+            turn.get("items")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .find(|item| {
+            item.get("type").and_then(Value::as_str) != Some("agentMessage")
+                && item
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| !text.is_empty())
+        })
+        .and_then(|item| item.get("text").and_then(Value::as_str))
+        .map(str::to_owned)
 }
 
 fn enrich_from_rollout(path: &str, cache: &mut LiveCache) {
@@ -1173,6 +1201,28 @@ mod tests {
     }
 
     #[test]
+    fn extracts_first_prompt_from_turns_when_preview_is_missing() {
+        let session = Arc::new(Mutex::new(None));
+        let cache = Arc::new(RwLock::new(LiveCache::default()));
+        let thread = json!({
+            "id": "thread-1",
+            "status": {"type": "idle"},
+            "turns": [{
+                "id": "turn-1",
+                "items": [
+                    {"type": "userMessage", "text": "Implement the parser"},
+                    {"type": "agentMessage", "text": "Done"}
+                ]
+            }]
+        });
+
+        update_from_thread(&thread, &session, &cache);
+
+        let cache = cache.read().unwrap();
+        assert_eq!(cache.first_prompt.as_deref(), Some("Implement the parser"));
+    }
+
+    #[test]
     fn new_root_thread_switches_and_resets_session_meta() {
         let session = Arc::new(Mutex::new(Some("thread-1".to_string())));
         let cache = Arc::new(RwLock::new(LiveCache {
@@ -1334,6 +1384,56 @@ mod tests {
         assert!(cache.completed_turn_ids.contains("turn-2"));
         assert!(!cache.completed_turn_ids.contains("turn-old"));
         assert!(!cache.completed_turn_ids.contains("turn-old-2"));
+    }
+
+    #[test]
+    fn new_thread_backfills_first_prompt_from_user_item_event() {
+        let session = Arc::new(Mutex::new(Some("thread-1".to_string())));
+        let cache = Arc::new(RwLock::new(LiveCache {
+            status: AgentStatus::Idle,
+            first_prompt: Some("Old prompt".to_string()),
+            last_model_response: Some("Old response".to_string()),
+            model_name: None,
+            context: None,
+            total_work_ms: 0,
+            completed_turn_ids: HashSet::new(),
+            rollout_path: None,
+            rollout_offset: 0,
+        }));
+
+        handle_notification(
+            "thread/started",
+            &json!({
+                "thread": {
+                    "id": "thread-2",
+                    "cwd": "/tmp",
+                    "parentThreadId": null,
+                    "status": {"type": "active"},
+                    "turns": []
+                }
+            }),
+            "/tmp",
+            &session,
+            &cache,
+        );
+
+        handle_notification(
+            "item/completed",
+            &json!({
+                "threadId": "thread-2",
+                "item": {
+                    "type": "userMessage",
+                    "text": "New prompt"
+                }
+            }),
+            "/tmp",
+            &session,
+            &cache,
+        );
+
+        let cache = cache.read().unwrap();
+        assert_eq!(cache.first_prompt.as_deref(), Some("New prompt"));
+        assert_eq!(cache.last_model_response, None);
     }
 
     #[test]
@@ -1705,9 +1805,14 @@ mod tests {
                             "id": "thread-2",
                             "cwd": "/tmp",
                             "parentThreadId": null,
-                            "preview": "New prompt",
                             "status": {"type": "idle"},
-                            "turns": []
+                            "turns": [{
+                                "id": "turn-2",
+                                "items": [{
+                                    "type": "userMessage",
+                                    "text": "New prompt"
+                                }]
+                            }]
                         }
                     }
                 }),
@@ -1736,13 +1841,15 @@ mod tests {
                         "model": "gpt-new",
                         "thread": {
                             "id": "thread-2",
-                            "preview": "New prompt",
                             "path": "/tmp/thread-2.jsonl",
                             "status": {"type": "idle"},
                             "turns": [{
                                 "id": "turn-2",
                                 "durationMs": 900,
-                                "items": [{"type": "agentMessage", "text": "New response"}]
+                                "items": [
+                                    {"type": "userMessage", "text": "New prompt"},
+                                    {"type": "agentMessage", "text": "New response"}
+                                ]
                             }]
                         }
                     }
