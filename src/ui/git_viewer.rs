@@ -57,7 +57,12 @@ pub fn render_git_viewer(
     let top_spans = vec![
         Span::raw(" "),
         Span::styled(
-            agent_entry.config.name.to_string(),
+            agent_entry.config.name.as_str(),
+            Style::default().fg(FG).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" @ ", Style::default().fg(FG)),
+        Span::styled(
+            agent_entry.config.project.as_str(),
             Style::default().fg(FG).add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
