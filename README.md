@@ -89,18 +89,48 @@ Install Flowmux to keep your trusty steed's  harness under the solid roof! :hors
 
 ### 📝 From source
 
-Requires [Rust](https://rustup.rs/) (Edition 2024) and [Zig v0.15.2](https://ziglang.org/) (for building vendored libghostty-vt).
+Requires [Rust 1.90+](https://rustup.rs/), [Zig 0.15.x](https://ziglang.org/), and `git`.
+
+`libghostty-vt-sys` statically builds the exact Ghostty revision pinned by the
+current `libghostty-vt` Git dependency. A default first build needs network
+access so Zig can fetch Ghostty's build dependencies.
+
+Build with:
 
 ```bash
-cargo build --release
+cargo build --release --locked
 ```
 
 The binary will be at `target/release/flowmux`.
 
+If you need an offline or reproducible local build, use the wrapper that
+reuses prefetched Ghostty inputs when present, otherwise fetches them, points
+Cargo at those local copies, and performs a locked release build:
+
+```bash
+./tools/build-release-prefetched-libghostty-vt.sh
+```
+
+That script defaults `LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast`. If you need the
+underlying manual flow or want to override paths, the equivalent commands are:
+
+```bash
+./tools/prefetch-libghostty-vt.sh
+export GHOSTTY_SOURCE_DIR="$PWD/vendor/ghostty-prefetch/ghostty-src"
+export GHOSTTY_ZIG_SYSTEM_DIR="$PWD/vendor/ghostty-prefetch/zig-system"
+export LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast
+cargo build --release --locked
+```
+
+`GHOSTTY_SOURCE_DIR` points at a checked-out Ghostty tree.
+`GHOSTTY_ZIG_SYSTEM_DIR` points at a prefetched Zig `--system` package
+directory. `LIBGHOSTTY_VT_SYS_OPTIMIZE` overrides the Ghostty build mode when
+you need something other than the crate's default.
+
 Or install directly:
 
 ```bash
-cargo install --path .
+cargo install --path . --locked
 ```
 
 ## 🚀 Usage
@@ -258,7 +288,7 @@ See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed technical documentation
 - **Rust** with Ratatui TUI framework
 - **Tokio** async runtime
 - **tmux** for process isolation and pane management
-- **libghostty-vt** (vendored) for faithful terminal emulation
+- **libghostty-vt** crate for faithful terminal emulation
 - **git2** for repository detection and worktree management
 
 ### Tech Notes
@@ -274,7 +304,7 @@ See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed technical documentation
 Contributions are welcome! Please ensure your changes build successfully:
 
 ```bash
-cargo build
+cargo build --locked
 ```
 
 1. Fork the repository

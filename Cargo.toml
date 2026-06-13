@@ -2,7 +2,6 @@
 name = "flowmux"
 version = "0.1.0"
 edition = "2024"
-build = "build.rs"
 
 [dependencies]
 ratatui          = "0.30"
@@ -29,3 +28,4 @@ claude-code-transcripts = "0.1.8"
 chrono                  = { version = "0.4", default-features = false, features = ["std"] }
 git2                    = { version = "0.20", default-features = false }
 libc                    = "0.2"
+libghostty-vt           = { git = "https://github.com/uzaaft/libghostty-rs", rev = "20edad15d7984c727acc4f4facdadf045609f543", default-features = false }
