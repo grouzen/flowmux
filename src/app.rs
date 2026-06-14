@@ -1525,11 +1525,14 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.switch_to_next_running();
+            KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.switch_to_next_by_status(AgentStatus::Running);
             }
-            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.switch_to_next_by_status(AgentStatus::WaitingForInput);
+            }
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.switch_to_next_by_status(AgentStatus::Idle);
             }
             _ => {
                 if let Some(entry) = self.agents.get(idx) {
@@ -2255,26 +2258,6 @@ impl App {
         }
     }
 
-    fn switch_to_next_running(&mut self) {
-        let current = self.selected;
-        let Some(next) = next_agent_by_status(
-            &self.agents,
-            self.active_project_name(),
-            current,
-            AgentStatus::Running,
-            Some(AgentStatus::Idle),
-        ) else {
-            return;
-        };
-
-        if next != current {
-            self.selected = next;
-            self.state = AppState::AgentView(next);
-            self.agent_view_state = AgentViewState::default();
-            self.dirty = true;
-        }
-    }
-
     async fn remove_agent(&mut self, idx: usize, remove_worktree: bool, stop_agent: bool) {
         if idx < self.agents.len() {
             if let Some(agent_config) = self.config.agents.get(idx) {
@@ -2506,6 +2489,22 @@ mod project_tests {
             session_id: None,
         }));
     }
+
+    #[test]
+    fn ctrl_q_o_p_are_distinct_control_letter_events() {
+        assert_eq!(
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL).code,
+            KeyCode::Char('q')
+        );
+        assert_eq!(
+            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL).code,
+            KeyCode::Char('o')
+        );
+        assert_eq!(
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL).code,
+            KeyCode::Char('p')
+        );
+    }
 }
 
 fn key_event_to_tmux(key: &KeyEvent) -> String {
@@ -2703,20 +2702,55 @@ mod tests {
     }
 
     #[test]
-    fn running_switch_falls_back_to_idle_in_the_same_project() {
+    fn next_running_agent_stays_project_scoped() {
         let agents = vec![
             test_agent("other-running", "other", AgentStatus::Running),
-            test_agent("work-idle", "work", AgentStatus::Idle),
+            test_agent("work-old", "work", AgentStatus::Running),
+            test_agent("work-new", "work", AgentStatus::Running),
         ];
 
         assert_eq!(
-            next_agent_by_status(
-                &agents,
-                "work",
-                0,
-                AgentStatus::Running,
-                Some(AgentStatus::Idle),
-            ),
+            next_agent_by_status(&agents, "work", 1, AgentStatus::Running, None),
+            Some(2)
+        );
+        assert_eq!(
+            next_agent_by_status(&agents, "work", 2, AgentStatus::Running, None),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn next_waiting_agent_stays_project_scoped() {
+        let agents = vec![
+            test_agent("other-waiting", "other", AgentStatus::WaitingForInput),
+            test_agent("work-old", "work", AgentStatus::WaitingForInput),
+            test_agent("work-new", "work", AgentStatus::WaitingForInput),
+        ];
+
+        assert_eq!(
+            next_agent_by_status(&agents, "work", 1, AgentStatus::WaitingForInput, None),
+            Some(2)
+        );
+        assert_eq!(
+            next_agent_by_status(&agents, "work", 2, AgentStatus::WaitingForInput, None),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn next_idle_agent_stays_project_scoped() {
+        let agents = vec![
+            test_agent("other-idle", "other", AgentStatus::Idle),
+            test_agent("work-old", "work", AgentStatus::Idle),
+            test_agent("work-new", "work", AgentStatus::Idle),
+        ];
+
+        assert_eq!(
+            next_agent_by_status(&agents, "work", 1, AgentStatus::Idle, None),
+            Some(2)
+        );
+        assert_eq!(
+            next_agent_by_status(&agents, "work", 2, AgentStatus::Idle, None),
             Some(1)
         );
     }

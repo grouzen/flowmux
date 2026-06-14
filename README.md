@@ -44,7 +44,7 @@ Install Flowmux to keep your trusty steed's  harness under the solid roof! :hors
 
 ### Quick Navigation
 
-- Jump to next running agent (`Ctrl+r`) or next waiting agent (`Ctrl+w`)
+- Jump to next running agent (`Ctrl+q`), waiting agent (`Ctrl+o`), or idle agent (`Ctrl+p`)
 - Vim-style navigation (`h/j/k/l`) with arrow key support
 - Mouse support: click to select, scroll to browse responses
 - Reorder agent cards on the fly (`Ctrl+arrows`)
@@ -198,8 +198,9 @@ flowmux --enabled-agents opencode,claude,codex
 | `Ctrl+b` | Arm prefix mode (next key forwarded to pane) |
 | `Ctrl+v` | Open git viewer (if `git_viewer` configured and in git repo) |
 | `Ctrl+t` | Open persistent terminal in agent's working directory |
-| `Ctrl+r` | Jump to next running/idle agent |
-| `Ctrl+w` | Jump to next waiting agent |
+| `Ctrl+q` | Jump to next running agent |
+| `Ctrl+o` | Jump to next waiting agent |
+| `Ctrl+p` | Jump to next idle agent |
 | `PageUp` / `PageDown` | Scroll pane |
 | Mouse scroll | Scroll pane |
 
