@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use crossterm::terminal;
 use regex::Regex;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use tmux_interface::{NewWindow, Tmux};
@@ -156,6 +157,35 @@ pub fn capture_pane(target: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// Capture the current pane contents with wrapped lines joined, which is a
+/// better bootstrap source for dashboard preview mirrors than a raw viewport
+/// snapshot.
+pub fn capture_pane_joined(target: &str) -> Result<String> {
+    let output = Command::new("tmux")
+        .args(["capture-pane", "-t", target, "-p", "-e", "-J"])
+        .output()
+        .with_context(|| format!("failed to capture joined pane {}", target))?;
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+pub fn start_pane_output_pipe(target: &str, path: &Path) -> Result<()> {
+    let quoted = shell_single_quote(path.to_string_lossy().as_ref());
+    let command = format!("cat >> {quoted}");
+    Command::new("tmux")
+        .args(["pipe-pane", "-t", target, "-O", &command])
+        .status()
+        .with_context(|| format!("failed to start output pipe for {}", target))?;
+    Ok(())
+}
+
+pub fn stop_pane_output_pipe(target: &str) -> Result<()> {
+    Command::new("tmux")
+        .args(["pipe-pane", "-t", target])
+        .status()
+        .with_context(|| format!("failed to stop output pipe for {}", target))?;
+    Ok(())
+}
+
 /// Resize a tmux window to the given dimensions.
 pub fn resize_window(target: &str, width: u16, height: u16) -> Result<()> {
     Command::new("tmux")
@@ -253,4 +283,18 @@ pub fn kill_window(target: &str) -> Result<()> {
         .status()
         .with_context(|| format!("failed to kill window {}", target))?;
     Ok(())
+}
+
+fn shell_single_quote(input: &str) -> String {
+    format!("'{}'", input.replace('\'', "'\"'\"'"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_single_quote_escapes_single_quotes() {
+        assert_eq!(shell_single_quote("/tmp/flow'mux"), "'/tmp/flow'\"'\"'mux'");
+    }
 }

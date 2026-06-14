@@ -12,6 +12,9 @@ use crate::models::{AgentEntry, AgentStatus, AgentStatusCounts};
 use crate::ui::theme::*;
 
 pub const PROJECT_TABS_HEIGHT: u16 = 1;
+const KEYBINDINGS_BAR_HEIGHT: u16 = 1;
+const CARD_HEADER_LINES: u16 = 8;
+const CARD_RESPONSE_TOP_GAP: u16 = 1;
 
 // ---------------------------------------------------------------------------
 // Style helper
@@ -34,7 +37,7 @@ pub fn render_dashboard(
     f: &mut Frame,
     area: Rect,
     agents: &[AgentEntry],
-    previews: &[DashboardPreviewState],
+    previews: &mut [DashboardPreviewState],
     visible_indices: &[usize],
     selected: Option<usize>,
     projects: &[String],
@@ -51,7 +54,7 @@ pub fn render_dashboard(
         .constraints([
             Constraint::Length(PROJECT_TABS_HEIGHT),
             Constraint::Min(0),
-            Constraint::Length(1),
+            Constraint::Length(KEYBINDINGS_BAR_HEIGHT),
         ])
         .split(area);
 
@@ -109,11 +112,102 @@ pub fn grid_layout(n: usize) -> (usize, usize) {
     }
 }
 
+pub fn dashboard_preview_sizes(area: Rect, visible_count: usize) -> Vec<(u16, u16)> {
+    if visible_count == 0 {
+        return Vec::new();
+    }
+
+    let main_area = dashboard_main_area(area);
+    grid_card_areas(main_area, visible_count)
+        .into_iter()
+        .filter_map(card_preview_size)
+        .take(visible_count)
+        .collect()
+}
+
+fn dashboard_main_area(area: Rect) -> Rect {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(PROJECT_TABS_HEIGHT),
+            Constraint::Min(0),
+            Constraint::Length(KEYBINDINGS_BAR_HEIGHT),
+        ])
+        .split(area)[1]
+}
+
+fn grid_card_areas(area: Rect, visible_count: usize) -> Vec<Rect> {
+    if visible_count == 0 {
+        return Vec::new();
+    }
+
+    let (cols, rows) = grid_layout(visible_count);
+
+    let col_constraints: Vec<Constraint> = (0..cols)
+        .map(|_| Constraint::Ratio(1, cols as u32))
+        .collect();
+    let row_constraints: Vec<Constraint> = (0..rows)
+        .map(|_| Constraint::Ratio(1, rows as u32))
+        .collect();
+
+    let row_areas = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(row_constraints)
+        .split(area);
+
+    let mut card_areas = Vec::with_capacity(visible_count);
+    for row in 0..rows {
+        let col_areas = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(col_constraints.clone())
+            .split(row_areas[row]);
+
+        for col in 0..cols {
+            if card_areas.len() == visible_count {
+                return card_areas;
+            }
+            card_areas.push(col_areas[col]);
+        }
+    }
+
+    card_areas
+}
+
+fn card_preview_size(area: Rect) -> Option<(u16, u16)> {
+    let raw_inner = Rect {
+        x: area.x.saturating_add(1),
+        y: area.y.saturating_add(1),
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+    if raw_inner.height == 0 || raw_inner.width < 2 {
+        return None;
+    }
+
+    let inner = Rect {
+        x: raw_inner.x.saturating_add(1),
+        y: raw_inner.y,
+        width: raw_inner.width.saturating_sub(2),
+        height: raw_inner.height,
+    };
+
+    if inner.height <= CARD_HEADER_LINES + CARD_RESPONSE_TOP_GAP || inner.width == 0 {
+        return None;
+    }
+
+    Some((
+        inner.width,
+        inner
+            .height
+            .saturating_sub(CARD_HEADER_LINES + CARD_RESPONSE_TOP_GAP),
+    ))
+}
+
 fn render_grid(
     f: &mut Frame,
     area: Rect,
     agents: &[AgentEntry],
-    previews: &[DashboardPreviewState],
+    previews: &mut [DashboardPreviewState],
     visible_indices: &[usize],
     selected: Option<usize>,
     host_colors: HostColors,
@@ -135,43 +229,19 @@ fn render_grid(
         return;
     }
 
-    let (cols, rows) = grid_layout(visible_indices.len());
-
-    let col_constraints: Vec<Constraint> = (0..cols)
-        .map(|_| Constraint::Ratio(1, cols as u32))
-        .collect();
-    let row_constraints: Vec<Constraint> = (0..rows)
-        .map(|_| Constraint::Ratio(1, rows as u32))
-        .collect();
-
-    let row_areas = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(row_constraints)
-        .split(area);
-
-    for row in 0..rows {
-        let col_areas = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(col_constraints.clone())
-            .split(row_areas[row]);
-
-        for col in 0..cols {
-            let slot = row * cols + col;
-            let cell_area = col_areas[col];
-
-            if let Some(&agent_idx) = visible_indices.get(slot) {
-                let preview = previews.get(agent_idx);
-                render_card(
-                    f,
-                    cell_area,
-                    &agents[agent_idx],
-                    preview,
-                    selected == Some(agent_idx),
-                    host_colors,
-                    dimmed,
-                );
-            }
-            // Empty slots render as blank (no border)
+    let card_areas = grid_card_areas(area, visible_indices.len());
+    for (slot, cell_area) in card_areas.into_iter().enumerate() {
+        if let Some(&agent_idx) = visible_indices.get(slot) {
+            let preview = previews.get_mut(agent_idx);
+            render_card(
+                f,
+                cell_area,
+                &agents[agent_idx],
+                preview,
+                selected == Some(agent_idx),
+                host_colors,
+                dimmed,
+            );
         }
     }
 }
@@ -242,7 +312,7 @@ fn render_card(
     f: &mut Frame,
     area: Rect,
     entry: &AgentEntry,
-    preview: Option<&DashboardPreviewState>,
+    preview: Option<&mut DashboardPreviewState>,
     is_selected: bool,
     host_colors: HostColors,
     dimmed: bool,
@@ -360,7 +430,7 @@ fn render_card(
 
     let info_row_h: u16 = 1;
     let info_row_b_h: u16 = 2; // 1 text + 1 empty margin line
-    let header_lines = row0_h + info_row_h + info_row_b_h + row1_h;
+    let header_lines = CARD_HEADER_LINES;
 
     // -----------------------------------------------------------------------
     // Layout: header + response block
@@ -498,14 +568,19 @@ fn render_card(
         return;
     };
 
-    if let Some(ansi) = preview.and_then(DashboardPreviewState::ansi) {
-        crate::ghostty::render::render_embedded_content(
-            ansi.as_bytes(),
-            f,
-            content_area,
-            host_colors.fg,
-            host_colors.bg,
-        );
+    if let Some(preview) = preview {
+        if let Some((terminal, render_state)) = preview.terminal_and_render_state_mut() {
+            crate::ghostty::render::render_embedded_terminal(
+                terminal,
+                render_state,
+                f,
+                content_area,
+                host_colors.fg,
+                host_colors.bg,
+            );
+        } else {
+            render_preview_placeholder(f, content_area, dimmed);
+        }
         if dimmed {
             let buf = f.buffer_mut();
             for y in content_area.y..content_area.bottom() {
@@ -516,18 +591,44 @@ fn render_card(
             }
         }
     } else {
-        let hint_top = content_area.height.saturating_sub(1) / 2;
-        let hint_area = Rect {
-            y: content_area.y + hint_top,
-            height: 1,
-            ..content_area
-        };
-        let hint = Paragraph::new(Span::styled(
-            "No preview yet",
-            ds(dimmed).fg(GRAY).add_modifier(Modifier::ITALIC),
-        ))
-        .alignment(Alignment::Center);
-        f.render_widget(hint, hint_area);
+        render_preview_placeholder(f, content_area, dimmed);
+    }
+}
+
+fn render_preview_placeholder(f: &mut Frame, content_area: Rect, dimmed: bool) {
+    let hint_top = content_area.height.saturating_sub(1) / 2;
+    let hint_area = Rect {
+        y: content_area.y + hint_top,
+        height: 1,
+        ..content_area
+    };
+    let hint = Paragraph::new(Span::styled(
+        "No preview yet",
+        ds(dimmed).fg(GRAY).add_modifier(Modifier::ITALIC),
+    ))
+    .alignment(Alignment::Center);
+    f.render_widget(hint, hint_area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dashboard_preview_sizes_change_with_grid_layout() {
+        let one = dashboard_preview_sizes(Rect::new(0, 0, 120, 40), 1);
+        let four = dashboard_preview_sizes(Rect::new(0, 0, 120, 40), 4);
+
+        assert_eq!(one.len(), 1);
+        assert_eq!(four.len(), 4);
+        assert!(four[0].0 < one[0].0);
+        assert!(four[0].1 < one[0].1);
+    }
+
+    #[test]
+    fn dashboard_preview_sizes_skip_cards_without_response_room() {
+        let sizes = dashboard_preview_sizes(Rect::new(0, 0, 20, 10), 1);
+        assert!(sizes.is_empty());
     }
 }
 

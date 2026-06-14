@@ -1,14 +1,19 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
+use std::fs::{self, File};
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::time::{Duration, interval};
 
 use crate::agents::AgentAdapter;
 use crate::config::{AgentKind, Config, DEFAULT_PROJECT_NAME, MAX_PROJECTS};
+use crate::ghostty::{RenderState, RgbColor, Terminal, TerminalOptions};
 use crate::host_terminal::HostColors;
 use crate::models::{AgentEntry, AgentMeta, AgentStatus, AgentStatusCounts, AgentType};
 use crate::runner::AgentRunner;
 use crate::tmux;
-use crate::ui::dashboard::{PROJECT_TABS_HEIGHT, grid_layout};
+use crate::ui::dashboard::{PROJECT_TABS_HEIGHT, dashboard_preview_sizes, grid_layout};
 
 // ---------------------------------------------------------------------------
 // StatusNotification — blink tracking for status bar
@@ -303,30 +308,141 @@ pub struct AgentViewState {
     pub remove_worktree_on_stop: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug)]
 pub struct DashboardPreviewState {
-    raw: String,
-    prev_raw_len: usize,
-    prev_raw: String,
+    spool_path: PathBuf,
+    spool_offset: u64,
+    terminal: Option<Terminal<'static, 'static>>,
+    render_state: Option<RenderState<'static>>,
+    last_size: Option<(u16, u16)>,
+    bootstrapped: bool,
 }
 
 impl DashboardPreviewState {
-    pub fn ansi(&self) -> Option<&str> {
-        if self.raw.is_empty() {
-            None
-        } else {
-            Some(self.raw.as_str())
+    pub fn terminal_and_render_state_mut(
+        &mut self,
+    ) -> Option<(&Terminal<'static, 'static>, &mut RenderState<'static>)> {
+        match (self.terminal.as_ref(), self.render_state.as_mut()) {
+            (Some(terminal), Some(render_state)) => Some((terminal, render_state)),
+            _ => None,
         }
     }
 
-    pub fn update_raw(&mut self, raw: &str) -> bool {
-        if raw.len() == self.prev_raw_len && raw == self.prev_raw {
+    fn rebind(&mut self, spool_path: PathBuf) {
+        if self.spool_path != spool_path {
+            self.spool_path = spool_path;
+            self.reset_stream_state();
+        }
+    }
+
+    fn reset_stream_state(&mut self) {
+        self.spool_offset = 0;
+        self.terminal = None;
+        self.render_state = None;
+        self.last_size = None;
+        self.bootstrapped = false;
+    }
+
+    fn spool_path(&self) -> &Path {
+        &self.spool_path
+    }
+
+    fn ensure_terminal(
+        &mut self,
+        cols: u16,
+        rows: u16,
+        host_colors: HostColors,
+    ) -> anyhow::Result<bool> {
+        if cols == 0 || rows == 0 {
+            return Ok(false);
+        }
+
+        let created = if self.terminal.is_none() || self.render_state.is_none() {
+            let mut terminal = Terminal::new(TerminalOptions {
+                cols,
+                rows,
+                max_scrollback: 0,
+            })?;
+            if let Some((r, g, b)) = host_colors.fg {
+                let _ = terminal.set_default_fg_color(Some(RgbColor { r, g, b }));
+            }
+            if let Some((r, g, b)) = host_colors.bg {
+                let _ = terminal.set_default_bg_color(Some(RgbColor { r, g, b }));
+            }
+            self.terminal = Some(terminal);
+            self.render_state = Some(RenderState::new()?);
+            true
+        } else {
+            false
+        };
+
+        let resized = self.last_size != Some((cols, rows));
+        if resized && let Some(terminal) = self.terminal.as_mut() {
+            terminal.resize(cols, rows, 1, 1)?;
+        }
+        self.last_size = Some((cols, rows));
+        Ok(created || resized)
+    }
+
+    fn bootstrap_from_snapshot(&mut self, pane: &str) -> anyhow::Result<bool> {
+        if self.bootstrapped {
+            return Ok(false);
+        }
+        let Some((cols, _rows)) = self.last_size else {
+            return Ok(false);
+        };
+        let snapshot = tmux::capture_pane_joined(pane)?;
+        let snapshot =
+            crate::ghostty::render::pad_capture_snapshot_for_terminal(snapshot.as_bytes(), cols);
+        if let Some(terminal) = self.terminal.as_mut() {
+            terminal.vt_write(&snapshot);
+        }
+        self.bootstrapped = true;
+        Ok(true)
+    }
+
+    fn read_spool_delta(&mut self) -> std::io::Result<Option<Vec<u8>>> {
+        let meta = fs::metadata(&self.spool_path)?;
+        if meta.len() < self.spool_offset {
+            self.reset_stream_state();
+            return Ok(None);
+        }
+
+        let mut file = File::open(&self.spool_path)?;
+        file.seek(SeekFrom::Start(self.spool_offset))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        self.spool_offset += bytes.len() as u64;
+
+        if bytes.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(bytes))
+        }
+    }
+
+    fn ingest_stream_bytes(&mut self, bytes: &[u8]) -> bool {
+        if bytes.is_empty() {
             return false;
         }
-        self.prev_raw_len = raw.len();
-        self.prev_raw = raw.to_owned();
-        self.raw = raw.to_owned();
-        true
+        if let Some(terminal) = self.terminal.as_mut() {
+            terminal.vt_write(bytes);
+            return true;
+        }
+        false
+    }
+}
+
+impl Default for DashboardPreviewState {
+    fn default() -> Self {
+        Self {
+            spool_path: PathBuf::new(),
+            spool_offset: 0,
+            terminal: None,
+            render_state: None,
+            last_size: None,
+            bootstrapped: false,
+        }
     }
 }
 
@@ -559,10 +675,15 @@ impl App {
             tx,
             rx,
             dirty: true, // force initial draw
-            dashboard_previews: vec![DashboardPreviewState::default(); card_count],
+            dashboard_previews: std::iter::repeat_with(DashboardPreviewState::default)
+                .take(card_count)
+                .collect(),
             host_colors,
             notification: StatusNotification::default(),
         };
+        for idx in 0..app.agents.len() {
+            app.install_dashboard_preview_pipe(idx);
+        }
         app.ensure_project_selection();
         app.reset_project_notification();
         app
@@ -616,6 +737,49 @@ impl App {
             self.reset_project_notification();
         }
         self.dirty = true;
+    }
+
+    fn dashboard_preview_spool_path(session_name: &str, pane: &str) -> PathBuf {
+        let pane_id: String = pane
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                    ch
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+        std::env::temp_dir().join(format!("flowmux-preview-{session_name}-{pane_id}.ans"))
+    }
+
+    fn install_dashboard_preview_pipe(&mut self, idx: usize) {
+        let Some(entry) = self.agents.get(idx) else {
+            return;
+        };
+        let spool_path =
+            Self::dashboard_preview_spool_path(&self.config.session_name, &entry.config.pane);
+        if let Some(preview) = self.dashboard_previews.get_mut(idx) {
+            preview.rebind(spool_path.clone());
+            preview.reset_stream_state();
+        }
+
+        let _ = fs::write(&spool_path, []);
+        let _ = tmux::stop_pane_output_pipe(&entry.config.pane);
+        if tmux::is_alive(&entry.config.pane) {
+            let _ = tmux::start_pane_output_pipe(&entry.config.pane, &spool_path);
+        }
+    }
+
+    fn cleanup_dashboard_preview_pipe(&mut self, idx: usize, pane: &str) {
+        let _ = tmux::stop_pane_output_pipe(pane);
+        if let Some(preview) = self.dashboard_previews.get_mut(idx) {
+            let spool_path = preview.spool_path().to_path_buf();
+            preview.reset_stream_state();
+            if !spool_path.as_os_str().is_empty() {
+                let _ = fs::remove_file(spool_path);
+            }
+        }
     }
 
     fn cycle_projects(&mut self) {
@@ -1234,22 +1398,83 @@ impl App {
 
         if self.dashboard_previews.len() < self.agents.len() {
             self.dashboard_previews
-                .resize(self.agents.len(), DashboardPreviewState::default());
+                .resize_with(self.agents.len(), DashboardPreviewState::default);
         }
 
         let mut previews_changed = false;
-        for idx in self.visible_agent_indices() {
+        let visible_indices = self.visible_agent_indices();
+        let (term_cols, term_rows) = crossterm::terminal::size().unwrap_or((0, 0));
+        let preview_sizes =
+            dashboard_preview_sizes(Rect::new(0, 0, term_cols, term_rows), visible_indices.len());
+
+        for (slot, idx) in visible_indices.into_iter().enumerate() {
             let Some(pane) = self.agents.get(idx).map(|entry| entry.config.pane.clone()) else {
                 continue;
             };
-            if !tmux::is_alive(&pane) {
+            let Some(&(cols, rows)) = preview_sizes.get(slot) else {
                 continue;
+            };
+            let pane_alive = tmux::is_alive(&pane);
+            let spool_missing = self
+                .dashboard_previews
+                .get(idx)
+                .map(|preview| {
+                    preview.spool_path().as_os_str().is_empty() || !preview.spool_path().exists()
+                })
+                .unwrap_or(true);
+            if pane_alive && spool_missing {
+                self.install_dashboard_preview_pipe(idx);
             }
-            if let Ok(raw) = tmux::capture_pane(&pane)
-                && let Some(preview) = self.dashboard_previews.get_mut(idx)
-                && preview.update_raw(&raw)
+
+            let Some(preview) = self.dashboard_previews.get_mut(idx) else {
+                continue;
+            };
+            if preview
+                .ensure_terminal(cols, rows, self.host_colors)
+                .unwrap_or(false)
             {
                 previews_changed = true;
+            }
+            if !pane_alive {
+                continue;
+            }
+
+            let metadata_len = fs::metadata(preview.spool_path())
+                .ok()
+                .map(|meta| meta.len());
+            if matches!(metadata_len, Some(len) if len < preview.spool_offset) {
+                preview.reset_stream_state();
+                if preview
+                    .ensure_terminal(cols, rows, self.host_colors)
+                    .unwrap_or(false)
+                {
+                    previews_changed = true;
+                }
+            }
+
+            if !preview.bootstrapped && preview.bootstrap_from_snapshot(&pane).unwrap_or(false) {
+                previews_changed = true;
+            }
+
+            match preview.read_spool_delta() {
+                Ok(Some(bytes)) => {
+                    if preview.ingest_stream_bytes(&bytes) {
+                        previews_changed = true;
+                    }
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    preview.reset_stream_state();
+                    if preview
+                        .ensure_terminal(cols, rows, self.host_colors)
+                        .unwrap_or(false)
+                    {
+                        previews_changed = true;
+                    }
+                    if preview.bootstrap_from_snapshot(&pane).unwrap_or(false) {
+                        previews_changed = true;
+                    }
+                }
             }
         }
         if config_dirty {
@@ -1952,6 +2177,7 @@ impl App {
                             self.dashboard_previews
                                 .push(DashboardPreviewState::default());
                             let new_idx = self.agents.len() - 1;
+                            self.install_dashboard_preview_pipe(new_idx);
                             self.selected = new_idx;
                             self.agent_view_state = AgentViewState::default();
                             self.state = AppState::AgentView(new_idx);
@@ -2238,6 +2464,8 @@ impl App {
 
     async fn remove_agent(&mut self, idx: usize, remove_worktree: bool, stop_agent: bool) {
         if idx < self.agents.len() {
+            let pane_to_cleanup = self.agents[idx].config.pane.clone();
+            self.cleanup_dashboard_preview_pipe(idx, &pane_to_cleanup);
             if let Some(agent_config) = self.config.agents.get(idx) {
                 if stop_agent {
                     // Extract window target from pane (e.g., "flowmux:1.0" -> "flowmux:1")
@@ -2335,6 +2563,7 @@ impl App {
             Some(c) => c.clone(),
             None => return,
         };
+        self.cleanup_dashboard_preview_pipe(idx, &config.pane);
 
         match self.runner.restart(&config).await {
             Ok((new_config, new_adapter)) => {
@@ -2354,9 +2583,17 @@ impl App {
                 if idx < self.adapters.len() {
                     self.adapters[idx] = new_adapter;
                 }
+                if idx < self.dashboard_previews.len() {
+                    self.dashboard_previews[idx] = DashboardPreviewState::default();
+                    self.install_dashboard_preview_pipe(idx);
+                }
             }
             Err(_) => {
                 // Restart failed — leave state as-is (agent stays Stopped).
+                if idx < self.dashboard_previews.len() {
+                    self.dashboard_previews[idx] = DashboardPreviewState::default();
+                    self.install_dashboard_preview_pipe(idx);
+                }
             }
         }
     }
@@ -2716,5 +2953,64 @@ mod tests {
         assert_eq!(tmux_pane_viewport_size(1, 1), (0, 0));
         assert_eq!(tmux_pane_viewport_size(2, 4), (0, 0));
         assert_eq!(tmux_pane_viewport_size(3, 5), (1, 1));
+    }
+
+    #[test]
+    fn dashboard_preview_spool_paths_are_session_scoped() {
+        let a = App::dashboard_preview_spool_path("session-a", "flowmux:1.0");
+        let b = App::dashboard_preview_spool_path("session-b", "flowmux:1.0");
+
+        assert_ne!(a, b);
+        assert!(a.to_string_lossy().contains("session-a"));
+    }
+
+    #[test]
+    fn dashboard_preview_terminal_reflows_on_resize() {
+        let mut preview = DashboardPreviewState::default();
+        preview
+            .ensure_terminal(12, 2, HostColors::default())
+            .unwrap();
+        preview.ingest_stream_bytes(b"hello world");
+
+        let terminal = preview.terminal.as_ref().unwrap();
+        let mut render_state = RenderState::new().unwrap();
+        let before = render_state.update(terminal).unwrap();
+        let mut row_iterator = crate::ghostty::RowIterator::new().unwrap();
+        let mut cell_iterator = crate::ghostty::CellIterator::new().unwrap();
+        let mut rows = row_iterator.update(&before).unwrap();
+        rows.next().unwrap();
+        let mut cells = cell_iterator.update(&rows).unwrap();
+        let mut line = String::new();
+        let mut scratch = String::new();
+        while cells.next().is_some() {
+            let wide = cells
+                .raw_cell()
+                .and_then(|raw_cell| raw_cell.wide())
+                .unwrap_or(crate::ghostty::CellWide::Narrow);
+            line.push_str(
+                crate::ghostty::ghostty_buffer_symbol_into(&cells, wide, &mut scratch).unwrap(),
+            );
+        }
+        assert!(line.contains("hello world"));
+
+        preview
+            .ensure_terminal(5, 3, HostColors::default())
+            .unwrap();
+        let terminal = preview.terminal.as_ref().unwrap();
+        let after = render_state.update(terminal).unwrap();
+        let mut rows = row_iterator.update(&after).unwrap();
+        rows.next().unwrap();
+        let mut cells = cell_iterator.update(&rows).unwrap();
+        let mut resized_line = String::new();
+        while cells.next().is_some() {
+            let wide = cells
+                .raw_cell()
+                .and_then(|raw_cell| raw_cell.wide())
+                .unwrap_or(crate::ghostty::CellWide::Narrow);
+            resized_line.push_str(
+                crate::ghostty::ghostty_buffer_symbol_into(&cells, wide, &mut scratch).unwrap(),
+            );
+        }
+        assert!(resized_line.contains("hello"));
     }
 }
