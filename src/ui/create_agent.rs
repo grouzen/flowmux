@@ -1,12 +1,12 @@
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Clear, Paragraph},
-    Frame,
 };
 
-use crate::app::{CreateAgentState, CreateField, MAX_DIR_VISIBLE};
+use crate::app::{CreateAgentState, CreateField, MAX_DIR_VISIBLE, RelativeDirSelector};
 use crate::models::AgentType;
 use crate::ui::theme::*;
 
@@ -38,6 +38,18 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
 
     // Worktree checkbox: shown when the directory is inside a git repo.
     let worktree_rows: u16 = if state.git_repo_root.is_some() { 2 } else { 0 }; // blank + checkbox
+    let copy_rows = selector_section_rows(
+        &state.copy_directories,
+        state.copy_directories_enabled,
+        state.focus == CreateField::CopyDirectories,
+        state.worktree_selectors_visible(),
+    );
+    let symlink_rows = selector_section_rows(
+        &state.symlink_directories,
+        state.symlink_directories_enabled,
+        state.focus == CreateField::SymlinkDirectories,
+        state.worktree_selectors_visible(),
+    );
 
     let agent_rows = state.available_types.len().max(1) as u16;
     let agent_label_row: u16 = if state.available_types.len() > 1 {
@@ -55,6 +67,8 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
         + 1
         + dir_section_rows
         + worktree_rows
+        + copy_rows
+        + symlink_rows
         + 1
         + agent_label_row
         + agent_rows
@@ -89,6 +103,20 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
         constraints.push(Constraint::Length(1)); // blank gap
         constraints.push(Constraint::Length(1)); // checkbox
     }
+    push_selector_constraints(
+        &mut constraints,
+        &state.copy_directories,
+        state.copy_directories_enabled,
+        state.focus == CreateField::CopyDirectories,
+        state.worktree_selectors_visible(),
+    );
+    push_selector_constraints(
+        &mut constraints,
+        &state.symlink_directories,
+        state.symlink_directories_enabled,
+        state.focus == CreateField::SymlinkDirectories,
+        state.worktree_selectors_visible(),
+    );
     constraints.push(Constraint::Length(1)); // blank
     if state.available_types.len() > 1 {
         constraints.push(Constraint::Length(1)); // "Agent" label
@@ -304,6 +332,27 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
         row += 1;
     }
 
+    row = render_selector_section(
+        f,
+        &rows,
+        row,
+        "Copy directories",
+        state.copy_directories_enabled,
+        &state.copy_directories,
+        state.focus == CreateField::CopyDirectories,
+        state.worktree_selectors_visible(),
+    );
+    row = render_selector_section(
+        f,
+        &rows,
+        row,
+        "Symlink directories",
+        state.symlink_directories_enabled,
+        &state.symlink_directories,
+        state.focus == CreateField::SymlinkDirectories,
+        state.worktree_selectors_visible(),
+    );
+
     // blank (before agent section)
     row += 1;
     let agent_focused = state.focus == CreateField::AgentType;
@@ -468,6 +517,212 @@ fn render_field_row(
 
     f.render_widget(
         Paragraph::new(Line::from(spans)).style(Style::default().bg(BG1)),
+        area,
+    );
+}
+
+fn selector_section_rows(
+    selector: &RelativeDirSelector,
+    enabled: bool,
+    focused: bool,
+    visible: bool,
+) -> u16 {
+    if !visible {
+        return 0;
+    }
+
+    if !enabled {
+        return 2;
+    }
+
+    let selected_rows = selector.selected_dirs.len() as u16;
+    let suggestion_rows = if focused && !selector.matches.is_empty() {
+        1 + selector.matches.len().min(MAX_DIR_VISIBLE) as u16
+    } else {
+        0
+    };
+
+    1 + 1 + 1 + selected_rows + if focused { 1 } else { 0 } + suggestion_rows
+}
+
+fn push_selector_constraints(
+    constraints: &mut Vec<Constraint>,
+    selector: &RelativeDirSelector,
+    enabled: bool,
+    focused: bool,
+    visible: bool,
+) {
+    if !visible {
+        return;
+    }
+
+    constraints.push(Constraint::Length(1)); // blank gap
+    constraints.push(Constraint::Length(1)); // checkbox row
+    if enabled {
+        constraints.push(Constraint::Length(1)); // blank gap after checkbox
+        for _ in &selector.selected_dirs {
+            constraints.push(Constraint::Length(1));
+        }
+        if focused {
+            constraints.push(Constraint::Length(1)); // current candidate
+        }
+        if focused && !selector.matches.is_empty() {
+            constraints.push(Constraint::Length(1)); // blank gap before suggestions
+            for _ in 0..selector.matches.len().min(MAX_DIR_VISIBLE) {
+                constraints.push(Constraint::Length(1));
+            }
+        }
+    }
+}
+
+fn render_selector_section(
+    f: &mut Frame,
+    rows: &[Rect],
+    mut row: usize,
+    label: &str,
+    enabled: bool,
+    selector: &RelativeDirSelector,
+    focused: bool,
+    visible: bool,
+) -> usize {
+    if !visible {
+        return row;
+    }
+
+    row += 1;
+
+    let checkbox = if enabled { "[x]" } else { "[ ]" };
+    let checkbox_style = if enabled {
+        if focused {
+            Style::default().fg(CYAN).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(CYAN)
+        }
+    } else {
+        Style::default().fg(GRAY)
+    };
+    let label_style = if focused {
+        Style::default().fg(FG).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(GRAY)
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw(label_pad()),
+            Span::styled(checkbox, checkbox_style),
+            Span::styled(format!(" {label}"), label_style),
+            Span::styled(
+                "  space",
+                Style::default().fg(if focused { GRAY } else { BG2 }),
+            ),
+        ]))
+        .style(Style::default().bg(BG1)),
+        rows[row],
+    );
+    row += 1;
+
+    if !enabled {
+        return row;
+    }
+
+    row += 1;
+
+    for selected in &selector.selected_dirs {
+        render_selector_value_row(f, rows[row], &format!("./{selected}"), false, focused);
+        row += 1;
+    }
+
+    if focused {
+        let candidate_display = if !selector.filter.is_empty() {
+            format!("{}{}", selector.current_display(), selector.filter)
+        } else {
+            selector.current_display()
+        };
+        let candidate_row = rows[row];
+        render_selector_value_row(f, candidate_row, &candidate_display, true, focused);
+        let val_width = candidate_row.width.saturating_sub(LABEL_WIDTH + 3);
+        let displayed_len = candidate_display.len().min(val_width as usize) as u16;
+        let cx = (candidate_row.x + LABEL_WIDTH + displayed_len)
+            .min(candidate_row.x + candidate_row.width.saturating_sub(1));
+        f.set_cursor_position((cx, candidate_row.y));
+        row += 1;
+    }
+
+    if focused && !selector.matches.is_empty() {
+        row += 1;
+
+        let total = selector.matches.len();
+        let offset = selector.scroll_offset;
+        let visible_count = total.min(MAX_DIR_VISIBLE);
+        let needs_scrollbar = total > MAX_DIR_VISIBLE;
+
+        for vi in 0..visible_count {
+            let abs_idx = offset + vi;
+            let Some(suggestion) = selector.matches.get(abs_idx) else {
+                break;
+            };
+            let selected = abs_idx == selector.selected_idx;
+            let scrollbar_char = if needs_scrollbar {
+                scrollbar_char(vi, visible_count, offset, total)
+            } else {
+                ' '
+            };
+            let content_width = rows[row].width.saturating_sub(11) as usize;
+            let name_width = content_width.saturating_sub(3);
+
+            let line = if selected {
+                Line::from(vec![
+                    Span::raw("          "),
+                    Span::styled(
+                        format!(" ● {:<width$}", suggestion, width = name_width),
+                        Style::default().fg(BG).bg(FG).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(scrollbar_char.to_string(), Style::default().fg(BG2).bg(BG1)),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::raw("          "),
+                    Span::styled(
+                        format!("   {:<width$}", suggestion, width = name_width),
+                        Style::default().fg(GRAY),
+                    ),
+                    Span::styled(scrollbar_char.to_string(), Style::default().fg(BG2).bg(BG1)),
+                ])
+            };
+            f.render_widget(
+                Paragraph::new(line).style(Style::default().bg(BG1)),
+                rows[row],
+            );
+            row += 1;
+        }
+    }
+
+    row
+}
+
+fn render_selector_value_row(
+    f: &mut Frame,
+    area: Rect,
+    value: &str,
+    is_current: bool,
+    focused: bool,
+) {
+    let style = if is_current {
+        if focused {
+            Style::default().fg(FG).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(FG)
+        }
+    } else {
+        Style::default().fg(GRAY)
+    };
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw(label_pad()),
+            Span::styled(value.to_string(), style),
+        ]))
+        .style(Style::default().bg(BG1)),
         area,
     );
 }

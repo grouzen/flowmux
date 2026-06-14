@@ -1,5 +1,5 @@
-use anyhow::Result;
-use std::path::PathBuf;
+use anyhow::{Context, Result, bail};
+use std::path::{Path, PathBuf};
 
 use crate::agent_discovery::DiscoveredAgents;
 use crate::agents::AgentAdapter;
@@ -32,6 +32,18 @@ pub struct AgentRunner {
     /// Optional list of enabled agent type names (e.g. ["opencode", "claude", "codex"]).
     /// When `None`, all discovered agents are available.
     enabled_agents: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct WorktreeMaterialization {
+    pub copy_directories: Vec<String>,
+    pub symlink_directories: Vec<String>,
+}
+
+impl WorktreeMaterialization {
+    pub fn is_empty(&self) -> bool {
+        self.copy_directories.is_empty() && self.symlink_directories.is_empty()
+    }
 }
 
 impl AgentRunner {
@@ -137,6 +149,8 @@ impl AgentRunner {
         agent_type: AgentType,
         create_worktree: bool,
         git_repo_root: Option<&str>,
+        copy_directories: Vec<String>,
+        symlink_directories: Vec<String>,
     ) -> Result<(AgentConfig, Box<dyn AgentAdapter>)> {
         // --------------- Git worktree setup --------------------------------
         // If worktree creation is requested and we have a git repo root, set
@@ -152,6 +166,16 @@ impl AgentRunner {
 
                 let use_existing = git::branch_exists(repo_root_path, &branch);
                 git::create_worktree(repo_root_path, &wt_path, &branch, use_existing)?;
+                let materialization = WorktreeMaterialization {
+                    copy_directories,
+                    symlink_directories,
+                };
+                materialize_worktree_directories(
+                    repo_root_path,
+                    Path::new(dir),
+                    &wt_path,
+                    &materialization,
+                )?;
 
                 let wt_str = wt_path.to_string_lossy().to_string();
                 (wt_str, Some(repo_root.to_owned()))
@@ -313,5 +337,238 @@ impl AgentRunner {
                 Ok((new_config, Box::new(adapter)))
             }
         }
+    }
+}
+
+fn materialize_worktree_directories(
+    repo_root: &Path,
+    selected_dir: &Path,
+    worktree_path: &Path,
+    materialization: &WorktreeMaterialization,
+) -> Result<()> {
+    if materialization.is_empty() {
+        return Ok(());
+    }
+
+    let relative_base = selected_dir.strip_prefix(repo_root).with_context(|| {
+        format!(
+            "selected directory {:?} is not inside git repo {:?}",
+            selected_dir, repo_root
+        )
+    })?;
+    let destination_base = worktree_path.join(relative_base);
+
+    for relative in &materialization.copy_directories {
+        let source = selected_dir.join(relative);
+        let destination = destination_base.join(relative);
+        ensure_materialization_ready(&source, &destination, "copy")?;
+    }
+    for relative in &materialization.symlink_directories {
+        let source = selected_dir.join(relative);
+        let destination = destination_base.join(relative);
+        ensure_materialization_ready(&source, &destination, "symlink")?;
+    }
+
+    for relative in &materialization.copy_directories {
+        let source = selected_dir.join(relative);
+        let destination = destination_base.join(relative);
+        copy_directory_recursive(&source, &destination)?;
+    }
+    for relative in &materialization.symlink_directories {
+        let source = selected_dir.join(relative);
+        let destination = destination_base.join(relative);
+        create_directory_symlink(&source, &destination)?;
+    }
+
+    Ok(())
+}
+
+fn ensure_materialization_ready(source: &Path, destination: &Path, action: &str) -> Result<()> {
+    if !source.is_dir() {
+        bail!("{action} source directory {:?} does not exist", source);
+    }
+    if destination.exists() {
+        bail!(
+            "{action} destination {:?} already exists in the new worktree",
+            destination
+        );
+    }
+    Ok(())
+}
+
+fn copy_directory_recursive(source: &Path, destination: &Path) -> Result<()> {
+    std::fs::create_dir_all(destination)
+        .with_context(|| format!("create destination directory {:?}", destination))?;
+
+    for entry in
+        std::fs::read_dir(source).with_context(|| format!("read directory {:?}", source))?
+    {
+        let entry = entry.with_context(|| format!("read entry in {:?}", source))?;
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("read file type for {:?}", entry.path()))?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+
+        if file_type.is_dir() {
+            copy_directory_recursive(&source_path, &destination_path)?;
+        } else if file_type.is_file() {
+            std::fs::copy(&source_path, &destination_path).with_context(|| {
+                format!("copy file {:?} -> {:?}", source_path, destination_path)
+            })?;
+        } else if file_type.is_symlink() {
+            let target = std::fs::read_link(&source_path)
+                .with_context(|| format!("read symlink {:?}", source_path))?;
+            create_symlink(&target, &destination_path)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn create_directory_symlink(source: &Path, destination: &Path) -> Result<()> {
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create symlink parent directory {:?}", parent))?;
+    }
+    create_symlink(source, destination)
+}
+
+fn create_symlink(source: &Path, destination: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(source, destination)
+            .with_context(|| format!("create symlink {:?} -> {:?}", destination, source))?;
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_dir(source, destination)
+            .with_context(|| format!("create symlink {:?} -> {:?}", destination, source))?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    impl TestDir {
+        fn new(prefix: &str) -> Self {
+            let path =
+                std::env::temp_dir().join(format!("flowmux-{prefix}-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[test]
+    fn materialize_worktree_directories_maps_into_selected_subdir() {
+        let temp = TestDir::new("materialize");
+        let repo_root = temp.path.join("repo");
+        let selected_dir = repo_root.join("subproj");
+        let source_cache = selected_dir.join("cache/nested");
+        let worktree = temp.path.join("worktree");
+
+        std::fs::create_dir_all(&source_cache).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(source_cache.join("artifact.txt"), "hello").unwrap();
+
+        let materialization = WorktreeMaterialization {
+            copy_directories: vec!["cache".into()],
+            symlink_directories: vec![],
+        };
+
+        materialize_worktree_directories(&repo_root, &selected_dir, &worktree, &materialization)
+            .unwrap();
+
+        let copied_file = worktree.join("subproj/cache/nested/artifact.txt");
+        assert_eq!(std::fs::read_to_string(copied_file).unwrap(), "hello");
+    }
+
+    #[test]
+    fn materialize_worktree_directories_creates_symlink() {
+        let temp = TestDir::new("symlink");
+        let repo_root = temp.path.join("repo");
+        let selected_dir = repo_root.join("subproj");
+        let source_dir = selected_dir.join("deps");
+        let worktree = temp.path.join("worktree");
+
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+
+        let materialization = WorktreeMaterialization {
+            copy_directories: vec![],
+            symlink_directories: vec!["deps".into()],
+        };
+
+        materialize_worktree_directories(&repo_root, &selected_dir, &worktree, &materialization)
+            .unwrap();
+
+        let link_path = worktree.join("subproj/deps");
+        let target = std::fs::read_link(&link_path).unwrap();
+        assert_eq!(target, source_dir);
+    }
+
+    #[test]
+    fn materialize_worktree_directories_rejects_existing_destination() {
+        let temp = TestDir::new("dest-conflict");
+        let repo_root = temp.path.join("repo");
+        let selected_dir = repo_root.join("subproj");
+        let source_dir = selected_dir.join("cache");
+        let worktree = temp.path.join("worktree");
+        let destination = worktree.join("subproj/cache");
+
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+
+        let materialization = WorktreeMaterialization {
+            copy_directories: vec!["cache".into()],
+            symlink_directories: vec![],
+        };
+
+        let err = materialize_worktree_directories(
+            &repo_root,
+            &selected_dir,
+            &worktree,
+            &materialization,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn materialize_worktree_directories_rejects_missing_source() {
+        let temp = TestDir::new("missing-source");
+        let repo_root = temp.path.join("repo");
+        let selected_dir = repo_root.join("subproj");
+        let worktree = temp.path.join("worktree");
+
+        std::fs::create_dir_all(&selected_dir).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+
+        let materialization = WorktreeMaterialization {
+            copy_directories: vec!["cache".into()],
+            symlink_directories: vec![],
+        };
+
+        let err = materialize_worktree_directories(
+            &repo_root,
+            &selected_dir,
+            &worktree,
+            &materialization,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("does not exist"));
     }
 }
