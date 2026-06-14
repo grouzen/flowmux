@@ -4,6 +4,7 @@ use tokio::time::{Duration, interval};
 
 use crate::agents::AgentAdapter;
 use crate::config::{AgentKind, Config, DEFAULT_PROJECT_NAME, MAX_PROJECTS};
+use crate::global_config::WorktreeDirectoryPreset;
 use crate::host_terminal::HostColors;
 use crate::models::{AgentEntry, AgentMeta, AgentStatus, AgentStatusCounts, AgentType};
 use crate::runner::AgentRunner;
@@ -334,12 +335,98 @@ impl AgentViewState {
 pub enum CreateField {
     Name,
     Directory,
-    AgentType,
     CreateWorktree,
+    CopyDirectories,
+    SymlinkDirectories,
+    AgentType,
 }
 
 /// Maximum number of directory suggestions visible at once in the list.
 pub const MAX_DIR_VISIBLE: usize = 6;
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RelativeDirSelector {
+    /// Confirmed relative subdirectories selected by the user, stored without
+    /// the leading "./". The empty list means nothing will be copied/symlinked.
+    pub selected_dirs: Vec<String>,
+    /// Current candidate path relative to the selected base directory.
+    /// Empty means "./".
+    pub current_dir: String,
+    /// Filter prefix for the next path component under `current_dir`.
+    pub filter: String,
+    /// Alphabetically sorted subdirectory suggestions under `current_dir`.
+    pub matches: Vec<String>,
+    pub selected_idx: usize,
+    pub scroll_offset: usize,
+}
+
+impl RelativeDirSelector {
+    pub fn current_display(&self) -> String {
+        if self.current_dir.is_empty() {
+            "./".to_string()
+        } else {
+            format!("./{}/", self.current_dir)
+        }
+    }
+
+    pub fn current_candidate(&self) -> Option<String> {
+        if self.current_dir.is_empty() {
+            None
+        } else {
+            Some(self.current_dir.clone())
+        }
+    }
+
+    pub fn is_at_root(&self) -> bool {
+        self.current_dir.is_empty() && self.filter.is_empty()
+    }
+
+    pub fn clear_all(&mut self) {
+        self.selected_dirs.clear();
+        self.reset_candidate();
+    }
+
+    pub fn reset_candidate(&mut self) {
+        self.current_dir.clear();
+        self.filter.clear();
+        self.matches.clear();
+        self.selected_idx = 0;
+        self.scroll_offset = 0;
+    }
+
+    pub fn refresh_matches(&mut self, base_dir: &str) {
+        let search_dir = selector_search_dir(base_dir, &self.current_dir);
+        self.matches = list_subdirectories(&search_dir, &self.filter);
+        self.selected_idx = 0;
+        self.scroll_offset = 0;
+    }
+
+    pub fn descend(&mut self) -> bool {
+        let Some(name) = self.matches.get(self.selected_idx).cloned() else {
+            return false;
+        };
+        if self.current_dir.is_empty() {
+            self.current_dir = name;
+        } else {
+            self.current_dir.push('/');
+            self.current_dir.push_str(&name);
+        }
+        self.filter.clear();
+        true
+    }
+
+    pub fn navigate_up(&mut self) -> bool {
+        if self.current_dir.is_empty() {
+            return false;
+        }
+        if let Some((parent, _)) = self.current_dir.rsplit_once('/') {
+            self.current_dir = parent.to_string();
+        } else {
+            self.current_dir.clear();
+        }
+        true
+    }
+}
 
 #[derive(Debug)]
 pub struct CreateAgentState {
@@ -367,6 +454,10 @@ pub struct CreateAgentState {
     /// Whether to create a git worktree for this agent.
     /// Only meaningful (and shown in the UI) when `git_repo_root.is_some()`.
     pub create_worktree: bool,
+    pub copy_directories_enabled: bool,
+    pub symlink_directories_enabled: bool,
+    pub copy_directories: RelativeDirSelector,
+    pub symlink_directories: RelativeDirSelector,
 }
 
 impl Default for CreateAgentState {
@@ -384,6 +475,10 @@ impl Default for CreateAgentState {
             selected_type_idx: 0,
             git_repo_root: None,
             create_worktree: false,
+            copy_directories_enabled: false,
+            symlink_directories_enabled: false,
+            copy_directories: RelativeDirSelector::default(),
+            symlink_directories: RelativeDirSelector::default(),
         }
     }
 }
@@ -400,6 +495,18 @@ impl CreateAgentState {
         !self.name.trim().is_empty()
             && !self.directory.trim().is_empty()
             && !self.available_types.is_empty()
+    }
+
+    pub fn worktree_selectors_visible(&self) -> bool {
+        self.git_repo_root.is_some() && self.create_worktree
+    }
+
+    pub fn selector_enabled(&self, field: &CreateField) -> bool {
+        match field {
+            CreateField::CopyDirectories => self.copy_directories_enabled,
+            CreateField::SymlinkDirectories => self.symlink_directories_enabled,
+            _ => false,
+        }
     }
 
     /// Rebuild the directory suggestion list and re-detect the git repository
@@ -429,29 +536,100 @@ impl CreateAgentState {
             return;
         }
 
-        let prefix = &self.dir_filter;
-        let mut matches: Vec<String> = std::fs::read_dir(base_path)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|e| {
-                let name = e.file_name().into_string().ok()?;
-
-                if e.file_type().ok()?.is_dir() && name.starts_with(prefix.as_str()) {
-                    Some(name)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        matches.sort();
-        self.dir_matches = matches;
+        self.dir_matches = list_subdirectories(base_path, &self.dir_filter);
         self.dir_selected_idx = 0;
         self.dir_scroll_offset = 0;
 
         // Re-detect git root for the current (confirmed) directory.
         self.detect_git_repo();
+        self.clear_worktree_selections();
+    }
+
+    pub fn refresh_worktree_selector_matches(&mut self) {
+        let base_dir = self.directory.clone();
+        self.copy_directories.refresh_matches(&base_dir);
+        self.symlink_directories.refresh_matches(&base_dir);
+    }
+
+    fn clear_worktree_selections(&mut self) {
+        self.copy_directories_enabled = false;
+        self.symlink_directories_enabled = false;
+        self.copy_directories.clear_all();
+        self.symlink_directories.clear_all();
+    }
+
+    fn selector_mut(&mut self, field: &CreateField) -> Option<&mut RelativeDirSelector> {
+        match field {
+            CreateField::CopyDirectories => Some(&mut self.copy_directories),
+            CreateField::SymlinkDirectories => Some(&mut self.symlink_directories),
+            _ => None,
+        }
+    }
+
+    fn selector_ref(&self, field: &CreateField) -> Option<&RelativeDirSelector> {
+        match field {
+            CreateField::CopyDirectories => Some(&self.copy_directories),
+            CreateField::SymlinkDirectories => Some(&self.symlink_directories),
+            _ => None,
+        }
+    }
+
+    fn selector_label(field: &CreateField) -> Option<&'static str> {
+        match field {
+            CreateField::CopyDirectories => Some("Copy directories"),
+            CreateField::SymlinkDirectories => Some("Symlink directories"),
+            _ => None,
+        }
+    }
+
+    fn selector_conflicts_with_other(&self, field: &CreateField, candidate: &str) -> bool {
+        match field {
+            CreateField::CopyDirectories => self
+                .symlink_directories
+                .selected_dirs
+                .iter()
+                .any(|p| p == candidate),
+            CreateField::SymlinkDirectories => self
+                .copy_directories
+                .selected_dirs
+                .iter()
+                .any(|p| p == candidate),
+            _ => false,
+        }
+    }
+
+    fn commit_selector_candidate(
+        &mut self,
+        field: &CreateField,
+    ) -> std::result::Result<bool, String> {
+        let Some(candidate) = self
+            .selector_ref(field)
+            .and_then(RelativeDirSelector::current_candidate)
+        else {
+            return Ok(false);
+        };
+
+        if self
+            .selector_ref(field)
+            .is_some_and(|selector| selector.selected_dirs.iter().any(|p| p == &candidate))
+        {
+            let label = Self::selector_label(field).unwrap_or("directories");
+            return Err(format!("{} already contains ./{}", label, candidate));
+        }
+        if self.selector_conflicts_with_other(field, &candidate) {
+            return Err(format!(
+                "Directory ./{} cannot be both copied and symlinked",
+                candidate
+            ));
+        }
+
+        let base_dir = self.directory.clone();
+        if let Some(selector) = self.selector_mut(field) {
+            selector.selected_dirs.push(candidate);
+            selector.reset_candidate();
+            selector.refresh_matches(&base_dir);
+        }
+        Ok(true)
     }
 
     /// Update `git_repo_root` and `create_worktree` based on the currently
@@ -472,6 +650,33 @@ impl CreateAgentState {
         }
         self.git_repo_root = new_root;
     }
+}
+
+fn list_subdirectories(base_path: &std::path::Path, prefix: &str) -> Vec<String> {
+    let mut matches: Vec<String> = std::fs::read_dir(base_path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+
+            if e.file_type().ok()?.is_dir() && name.starts_with(prefix) {
+                Some(name)
+            } else {
+                None
+            }
+        })
+        .collect();
+    matches.sort();
+    matches
+}
+
+fn selector_search_dir(base_dir: &str, current_dir: &str) -> std::path::PathBuf {
+    let mut path = std::path::PathBuf::from(base_dir);
+    if !current_dir.is_empty() {
+        path.push(current_dir);
+    }
+    path
 }
 
 // ---------------------------------------------------------------------------
@@ -556,6 +761,57 @@ impl App {
             .get(self.active_project_idx)
             .map(String::as_str)
             .unwrap_or(DEFAULT_PROJECT_NAME)
+    }
+
+    fn load_create_state_worktree_presets(&mut self) {
+        let Some(repo_root) = self.create_state.git_repo_root.as_ref() else {
+            self.create_state.clear_worktree_selections();
+            return;
+        };
+
+        let key = repo_root.to_string_lossy().to_string();
+        let preset = self
+            .runner
+            .global_config()
+            .worktree_directory_presets
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
+
+        self.create_state.copy_directories_enabled = !preset.copy_directories.is_empty();
+        self.create_state.symlink_directories_enabled = !preset.symlink_directories.is_empty();
+        self.create_state.copy_directories.selected_dirs = preset.copy_directories;
+        self.create_state.symlink_directories.selected_dirs = preset.symlink_directories;
+        self.create_state.copy_directories.reset_candidate();
+        self.create_state.symlink_directories.reset_candidate();
+    }
+
+    fn persist_create_state_worktree_presets(&mut self) {
+        let Some(repo_root) = self.create_state.git_repo_root.as_ref() else {
+            return;
+        };
+
+        let key = repo_root.to_string_lossy().to_string();
+        let preset = WorktreeDirectoryPreset {
+            copy_directories: if self.create_state.copy_directories_enabled {
+                self.create_state.copy_directories.selected_dirs.clone()
+            } else {
+                Vec::new()
+            },
+            symlink_directories: if self.create_state.symlink_directories_enabled {
+                self.create_state.symlink_directories.selected_dirs.clone()
+            } else {
+                Vec::new()
+            },
+        };
+
+        let global_config = self.runner.global_config_mut();
+        if preset.copy_directories.is_empty() && preset.symlink_directories.is_empty() {
+            global_config.worktree_directory_presets.remove(&key);
+        } else {
+            global_config.worktree_directory_presets.insert(key, preset);
+        }
+        let _ = global_config.save();
     }
 
     pub fn visible_agent_indices(&self) -> Vec<usize> {
@@ -1079,6 +1335,7 @@ impl App {
                 };
                 cs.refresh_dir_matches();
                 self.create_state = cs;
+                self.load_create_state_worktree_presets();
                 self.state = AppState::CreateAgentDialog;
             }
             KeyCode::Char('p') => {
@@ -1874,28 +2131,57 @@ impl App {
                 self.state = AppState::Dashboard;
             }
 
-            // Tab cycles focus: Name → Directory → [Worktree] → AgentType → Name
+            // Tab cycles focus: Name → Directory → [Worktree] → [Copy] → [Symlink] → AgentType → Name
             KeyCode::Tab => {
-                self.create_state.focus = match self.create_state.focus {
-                    CreateField::Name => CreateField::Directory,
-                    CreateField::Directory => {
-                        if self.create_state.git_repo_root.is_some() {
-                            CreateField::CreateWorktree
-                        } else if self.create_state.available_types.len() > 1 {
-                            CreateField::AgentType
+                let current_focus = self.create_state.focus.clone();
+                let current_dir = self.create_state.directory.clone();
+                if matches!(
+                    current_focus,
+                    CreateField::CopyDirectories | CreateField::SymlinkDirectories
+                ) && self.create_state.selector_enabled(&current_focus)
+                {
+                    let action = {
+                        let selector = self.create_state.selector_ref(&current_focus).unwrap();
+                        if selector.current_candidate().is_some() {
+                            Some(true)
                         } else {
-                            CreateField::Name
+                            Some(false)
+                        }
+                    };
+
+                    if let Some(should_commit) = action {
+                        if should_commit {
+                            match self.create_state.commit_selector_candidate(&current_focus) {
+                                Ok(true) => {
+                                    self.create_state.error = None;
+                                }
+                                Ok(false) => {}
+                                Err(err) => {
+                                    self.create_state.error = Some(err);
+                                }
+                            }
+                            return true;
                         }
                     }
-                    CreateField::CreateWorktree => {
-                        if self.create_state.available_types.len() > 1 {
-                            CreateField::AgentType
-                        } else {
-                            CreateField::Name
-                        }
-                    }
-                    CreateField::AgentType => CreateField::Name,
-                };
+                }
+
+                self.create_state.focus = next_create_field(
+                    &current_focus,
+                    self.create_state.git_repo_root.is_some(),
+                    self.create_state.create_worktree,
+                    self.create_state.available_types.len() > 1,
+                );
+                self.create_state.error = None;
+                if matches!(
+                    self.create_state.focus,
+                    CreateField::CopyDirectories | CreateField::SymlinkDirectories
+                ) {
+                    self.create_state.refresh_worktree_selector_matches();
+                } else if current_focus == CreateField::Directory
+                    && current_dir != self.create_state.directory
+                {
+                    self.create_state.error = None;
+                }
             }
 
             // Up / Down navigate within-field (directory suggestions or agent list)
@@ -1908,6 +2194,21 @@ impl App {
                         // Scroll up if needed
                         if new_idx < self.create_state.dir_scroll_offset {
                             self.create_state.dir_scroll_offset = new_idx;
+                        }
+                    }
+                }
+                CreateField::CopyDirectories | CreateField::SymlinkDirectories => {
+                    let focus = self.create_state.focus.clone();
+                    if self.create_state.selector_enabled(&focus) {
+                        if let Some(selector) = self.create_state.selector_mut(&focus) {
+                            let n = selector.matches.len();
+                            if n > 0 {
+                                let new_idx = selector.selected_idx.saturating_sub(1);
+                                selector.selected_idx = new_idx;
+                                if new_idx < selector.scroll_offset {
+                                    selector.scroll_offset = new_idx;
+                                }
+                            }
                         }
                     }
                 }
@@ -1929,6 +2230,21 @@ impl App {
                         // Scroll down if needed
                         if new_idx >= self.create_state.dir_scroll_offset + MAX_DIR_VISIBLE {
                             self.create_state.dir_scroll_offset = new_idx + 1 - MAX_DIR_VISIBLE;
+                        }
+                    }
+                }
+                CreateField::CopyDirectories | CreateField::SymlinkDirectories => {
+                    let focus = self.create_state.focus.clone();
+                    if self.create_state.selector_enabled(&focus) {
+                        if let Some(selector) = self.create_state.selector_mut(&focus) {
+                            let n = selector.matches.len();
+                            if n > 0 {
+                                let new_idx = (selector.selected_idx + 1).min(n - 1);
+                                selector.selected_idx = new_idx;
+                                if new_idx >= selector.scroll_offset + MAX_DIR_VISIBLE {
+                                    selector.scroll_offset = new_idx + 1 - MAX_DIR_VISIBLE;
+                                }
+                            }
                         }
                     }
                 }
@@ -1959,6 +2275,20 @@ impl App {
                         self.create_state.directory = format!("{}/{}", base, name);
                         self.create_state.dir_filter.clear();
                         self.create_state.refresh_dir_matches();
+                        self.load_create_state_worktree_presets();
+                    }
+                } else if matches!(
+                    self.create_state.focus,
+                    CreateField::CopyDirectories | CreateField::SymlinkDirectories
+                ) && self.create_state.selector_enabled(&self.create_state.focus)
+                {
+                    let focus = self.create_state.focus.clone();
+                    let directory = self.create_state.directory.clone();
+                    if let Some(selector) = self.create_state.selector_mut(&focus) {
+                        if selector.descend() {
+                            selector.refresh_matches(&directory);
+                            self.create_state.error = None;
+                        }
                     }
                 } else if self.create_state.is_valid() {
                     let name = tmux::sanitize_name(&self.create_state.name.clone());
@@ -1972,6 +2302,16 @@ impl App {
                         .git_repo_root
                         .as_ref()
                         .map(|p| p.to_string_lossy().to_string());
+                    let copy_directories = if self.create_state.copy_directories_enabled {
+                        self.create_state.copy_directories.selected_dirs.clone()
+                    } else {
+                        Vec::new()
+                    };
+                    let symlink_directories = if self.create_state.symlink_directories_enabled {
+                        self.create_state.symlink_directories.selected_dirs.clone()
+                    } else {
+                        Vec::new()
+                    };
                     match self
                         .runner
                         .create(
@@ -1981,10 +2321,13 @@ impl App {
                             agent_type,
                             create_worktree,
                             git_repo_root.as_deref(),
+                            copy_directories,
+                            symlink_directories,
                         )
                         .await
                     {
                         Ok((config, adapter)) => {
+                            self.persist_create_state_worktree_presets();
                             self.config.agents.push(config.clone());
                             let _ = self.config.save();
                             let entry = AgentEntry {
@@ -2018,6 +2361,22 @@ impl App {
                             ctrl_w_delete_path(&mut self.create_state.directory);
                         }
                         self.create_state.refresh_dir_matches();
+                        self.load_create_state_worktree_presets();
+                    }
+                    CreateField::CopyDirectories | CreateField::SymlinkDirectories => {
+                        let focus = self.create_state.focus.clone();
+                        if self.create_state.selector_enabled(&focus) {
+                            let directory = self.create_state.directory.clone();
+                            if let Some(selector) = self.create_state.selector_mut(&focus) {
+                                if !selector.filter.is_empty() {
+                                    selector.filter.clear();
+                                } else {
+                                    ctrl_w_delete_relative_path(&mut selector.current_dir);
+                                }
+                                selector.refresh_matches(&directory);
+                                self.create_state.error = None;
+                            }
+                        }
                     }
                     CreateField::AgentType | CreateField::CreateWorktree => {}
                 }
@@ -2036,6 +2395,22 @@ impl App {
                             ctrl_w_delete_path(&mut self.create_state.directory);
                         }
                         self.create_state.refresh_dir_matches();
+                        self.load_create_state_worktree_presets();
+                    }
+                    CreateField::CopyDirectories | CreateField::SymlinkDirectories => {
+                        let focus = self.create_state.focus.clone();
+                        if self.create_state.selector_enabled(&focus) {
+                            let directory = self.create_state.directory.clone();
+                            if let Some(selector) = self.create_state.selector_mut(&focus) {
+                                if !selector.filter.is_empty() {
+                                    selector.filter.clear();
+                                } else {
+                                    ctrl_w_delete_relative_path(&mut selector.current_dir);
+                                }
+                                selector.refresh_matches(&directory);
+                                self.create_state.error = None;
+                            }
+                        }
                     }
                     CreateField::AgentType | CreateField::CreateWorktree => {}
                 }
@@ -2066,6 +2441,24 @@ impl App {
                             }
                         }
                         self.create_state.refresh_dir_matches();
+                        self.load_create_state_worktree_presets();
+                    }
+                    CreateField::CopyDirectories | CreateField::SymlinkDirectories => {
+                        let focus = self.create_state.focus.clone();
+                        if self.create_state.selector_enabled(&focus) {
+                            let directory = self.create_state.directory.clone();
+                            if let Some(selector) = self.create_state.selector_mut(&focus) {
+                                if !selector.filter.is_empty() {
+                                    selector.filter.pop();
+                                } else if selector.navigate_up() {
+                                    // already updated
+                                } else {
+                                    selector.selected_dirs.pop();
+                                }
+                                selector.refresh_matches(&directory);
+                                self.create_state.error = None;
+                            }
+                        }
                     }
                     CreateField::AgentType | CreateField::CreateWorktree => {}
                 }
@@ -2079,6 +2472,41 @@ impl App {
                     CreateField::Directory => {
                         self.create_state.dir_filter.push(c);
                         self.create_state.refresh_dir_matches();
+                        self.load_create_state_worktree_presets();
+                    }
+                    CreateField::CopyDirectories | CreateField::SymlinkDirectories => {
+                        let focus = self.create_state.focus.clone();
+                        if c == ' ' {
+                            match focus {
+                                CreateField::CopyDirectories => {
+                                    self.create_state.copy_directories_enabled =
+                                        !self.create_state.copy_directories_enabled;
+                                    if self.create_state.copy_directories_enabled {
+                                        self.create_state
+                                            .copy_directories
+                                            .refresh_matches(&self.create_state.directory);
+                                    }
+                                }
+                                CreateField::SymlinkDirectories => {
+                                    self.create_state.symlink_directories_enabled =
+                                        !self.create_state.symlink_directories_enabled;
+                                    if self.create_state.symlink_directories_enabled {
+                                        self.create_state
+                                            .symlink_directories
+                                            .refresh_matches(&self.create_state.directory);
+                                    }
+                                }
+                                _ => {}
+                            }
+                            self.create_state.error = None;
+                        } else if self.create_state.selector_enabled(&focus) {
+                            let directory = self.create_state.directory.clone();
+                            if let Some(selector) = self.create_state.selector_mut(&focus) {
+                                selector.filter.push(c);
+                                selector.refresh_matches(&directory);
+                                self.create_state.error = None;
+                            }
+                        }
                     }
                     CreateField::AgentType => {}
                     CreateField::CreateWorktree => {
@@ -2087,6 +2515,19 @@ impl App {
                             if self.create_state.git_repo_root.is_some() {
                                 self.create_state.create_worktree =
                                     !self.create_state.create_worktree;
+                                if self.create_state.create_worktree {
+                                    self.create_state.refresh_worktree_selector_matches();
+                                } else if matches!(
+                                    self.create_state.focus,
+                                    CreateField::CopyDirectories | CreateField::SymlinkDirectories
+                                ) {
+                                    self.create_state.focus = next_create_field(
+                                        &CreateField::CreateWorktree,
+                                        self.create_state.git_repo_root.is_some(),
+                                        self.create_state.create_worktree,
+                                        self.create_state.available_types.len() > 1,
+                                    );
+                                }
                             }
                         }
                     }
@@ -2577,10 +3018,79 @@ fn ctrl_w_delete_path(s: &mut String) {
     }
 }
 
+fn ctrl_w_delete_relative_path(s: &mut String) {
+    if let Some((parent, _)) = s.rsplit_once('/') {
+        *s = parent.to_string();
+    } else {
+        s.clear();
+    }
+}
+
+fn next_create_field(
+    current: &CreateField,
+    has_git_repo: bool,
+    create_worktree: bool,
+    has_multiple_agent_types: bool,
+) -> CreateField {
+    match current {
+        CreateField::Name => CreateField::Directory,
+        CreateField::Directory => {
+            if has_git_repo {
+                CreateField::CreateWorktree
+            } else if has_multiple_agent_types {
+                CreateField::AgentType
+            } else {
+                CreateField::Name
+            }
+        }
+        CreateField::CreateWorktree => {
+            if create_worktree {
+                CreateField::CopyDirectories
+            } else if has_multiple_agent_types {
+                CreateField::AgentType
+            } else {
+                CreateField::Name
+            }
+        }
+        CreateField::CopyDirectories => CreateField::SymlinkDirectories,
+        CreateField::SymlinkDirectories => {
+            if has_multiple_agent_types {
+                CreateField::AgentType
+            } else {
+                CreateField::Name
+            }
+        }
+        CreateField::AgentType => CreateField::Name,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_discovery::DiscoveredAgents;
     use crate::config::{AgentConfig, AgentKind};
+    use crate::global_config::GlobalConfig;
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    impl TestDir {
+        fn new(prefix: &str) -> Self {
+            let path =
+                std::env::temp_dir().join(format!("flowmux-app-{prefix}-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
 
     fn test_agent(name: &str, project: &str, status: AgentStatus) -> AgentEntry {
         AgentEntry {
@@ -2600,6 +3110,27 @@ mod tests {
                 ..AgentMeta::default()
             },
         }
+    }
+
+    fn test_app_with_global_config(global_config: GlobalConfig) -> App {
+        let runner = AgentRunner::new(
+            DiscoveredAgents {
+                claude: None,
+                codex: None,
+                opencode: None,
+            },
+            global_config,
+            "test-session".into(),
+            std::env::temp_dir().join("flowmux-worktrees-test"),
+            None,
+        );
+        App::new(
+            Config::default(),
+            Vec::new(),
+            Vec::new(),
+            runner,
+            HostColors::default(),
+        )
     }
 
     #[test]
@@ -2816,5 +3347,161 @@ mod tests {
         assert_eq!(tmux_pane_viewport_size(1, 1), (0, 0));
         assert_eq!(tmux_pane_viewport_size(2, 4), (0, 0));
         assert_eq!(tmux_pane_viewport_size(3, 5), (1, 1));
+    }
+
+    #[test]
+    fn commit_selector_candidate_resets_to_root_and_keeps_selection() {
+        let temp = TestDir::new("commit-selector");
+        let selected = temp.path.join("selected");
+        let cache_dir = selected.join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        let mut state = CreateAgentState {
+            directory: selected.to_string_lossy().to_string(),
+            create_worktree: true,
+            git_repo_root: Some(temp.path.clone()),
+            ..CreateAgentState::default()
+        };
+        state.copy_directories.current_dir = "cache".into();
+
+        assert_eq!(
+            state
+                .commit_selector_candidate(&CreateField::CopyDirectories)
+                .unwrap(),
+            true
+        );
+        assert_eq!(state.copy_directories.selected_dirs, vec!["cache"]);
+        assert_eq!(state.copy_directories.current_display(), "./");
+        assert_eq!(state.copy_directories.matches, vec!["cache"]);
+    }
+
+    #[test]
+    fn commit_selector_candidate_rejects_cross_section_duplicates() {
+        let mut state = CreateAgentState::default();
+        state
+            .symlink_directories
+            .selected_dirs
+            .push("vendor".into());
+        state.copy_directories.current_dir = "vendor".into();
+
+        let err = state
+            .commit_selector_candidate(&CreateField::CopyDirectories)
+            .unwrap_err();
+
+        assert!(err.contains("cannot be both copied and symlinked"));
+    }
+
+    #[test]
+    fn refresh_dir_matches_clears_worktree_selections_when_directory_changes() {
+        let temp = TestDir::new("clear-selections");
+        let base = temp.path.join("base");
+        let nested = base.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let mut state = CreateAgentState {
+            directory: base.to_string_lossy().to_string(),
+            copy_directories: RelativeDirSelector {
+                selected_dirs: vec!["cache".into()],
+                current_dir: "cache".into(),
+                ..RelativeDirSelector::default()
+            },
+            symlink_directories: RelativeDirSelector {
+                selected_dirs: vec!["deps".into()],
+                ..RelativeDirSelector::default()
+            },
+            ..CreateAgentState::default()
+        };
+
+        state.directory = nested.to_string_lossy().to_string();
+        state.refresh_dir_matches();
+
+        assert!(state.copy_directories.selected_dirs.is_empty());
+        assert!(state.symlink_directories.selected_dirs.is_empty());
+        assert_eq!(state.copy_directories.current_display(), "./");
+    }
+
+    #[test]
+    fn next_create_field_skips_worktree_selectors_when_disabled() {
+        assert_eq!(
+            next_create_field(&CreateField::CreateWorktree, true, false, true),
+            CreateField::AgentType
+        );
+        assert_eq!(
+            next_create_field(&CreateField::CreateWorktree, true, true, true),
+            CreateField::CopyDirectories
+        );
+        assert_eq!(
+            next_create_field(&CreateField::SymlinkDirectories, true, true, false),
+            CreateField::Name
+        );
+    }
+
+    #[test]
+    fn ctrl_w_delete_relative_path_removes_last_component() {
+        let mut path = "cache/nested".to_string();
+        ctrl_w_delete_relative_path(&mut path);
+        assert_eq!(path, "cache");
+
+        ctrl_w_delete_relative_path(&mut path);
+        assert!(path.is_empty());
+    }
+
+    #[test]
+    fn load_create_state_worktree_presets_populates_enabled_sections_for_repo_root() {
+        let temp = TestDir::new("preset-load");
+        let repo_root = temp.path.join("repo");
+        let mut presets = BTreeMap::new();
+        presets.insert(
+            repo_root.to_string_lossy().to_string(),
+            WorktreeDirectoryPreset {
+                copy_directories: vec!["node_modules".into(), "target".into()],
+                symlink_directories: vec!["vendor".into()],
+            },
+        );
+
+        let mut app = test_app_with_global_config(GlobalConfig {
+            worktree_directory_presets: presets,
+            ..GlobalConfig::default()
+        });
+        app.create_state.git_repo_root = Some(repo_root);
+        app.create_state.copy_directories.selected_dirs = vec!["stale".into()];
+        app.create_state.symlink_directories.selected_dirs = vec!["stale".into()];
+
+        app.load_create_state_worktree_presets();
+
+        assert!(app.create_state.copy_directories_enabled);
+        assert!(app.create_state.symlink_directories_enabled);
+        assert_eq!(
+            app.create_state.copy_directories.selected_dirs,
+            vec!["node_modules", "target"]
+        );
+        assert_eq!(
+            app.create_state.symlink_directories.selected_dirs,
+            vec!["vendor"]
+        );
+        assert_eq!(app.create_state.copy_directories.current_display(), "./");
+    }
+
+    #[test]
+    fn load_create_state_worktree_presets_clears_when_repo_has_no_preset() {
+        let temp = TestDir::new("preset-clear");
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.create_state.git_repo_root = Some(temp.path.join("repo"));
+        app.create_state.copy_directories_enabled = true;
+        app.create_state.copy_directories.selected_dirs = vec!["target".into()];
+        app.create_state.symlink_directories_enabled = true;
+        app.create_state.symlink_directories.selected_dirs = vec!["vendor".into()];
+
+        app.load_create_state_worktree_presets();
+
+        assert!(!app.create_state.copy_directories_enabled);
+        assert!(!app.create_state.symlink_directories_enabled);
+        assert!(app.create_state.copy_directories.selected_dirs.is_empty());
+        assert!(
+            app.create_state
+                .symlink_directories
+                .selected_dirs
+                .is_empty()
+        );
     }
 }
