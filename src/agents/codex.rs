@@ -297,7 +297,7 @@ async fn run_loop(
         let mut ticker = interval(DISCOVERY_INTERVAL);
         let mut request_id = 10u64;
         let mut pending = None;
-        let mut subscribed = false;
+        let mut subscribed_thread_id: Option<String> = None;
 
         if let Some(thread_id) = cached_thread_id(&cached_session_id) {
             if send_request(
@@ -324,10 +324,15 @@ async fn run_loop(
                     if pending.is_some_and(|request| request.sent_at.elapsed() >= REQUEST_TIMEOUT) {
                         break;
                     }
-                    if pending.is_some() || subscribed {
+                    let thread_id = cached_thread_id(&cached_session_id);
+                    if pending.is_some()
+                        || subscription_matches_thread(
+                            subscribed_thread_id.as_deref(),
+                            thread_id.as_deref(),
+                        )
+                    {
                         continue;
                     }
-                    let thread_id = cached_thread_id(&cached_session_id);
                     let kind = if thread_id.is_some() {
                         RequestKind::Resume
                     } else {
@@ -349,6 +354,7 @@ async fn run_loop(
                 message = read_text(&mut reader) => {
                     let Ok(Some(text)) = message else { break };
                     let Ok(value) = serde_json::from_str::<Value>(&text) else { continue };
+                    let previous_thread_id = cached_thread_id(&cached_session_id);
 
                     if value.get("method").is_some() {
                         handle_message(
@@ -390,15 +396,24 @@ async fn run_loop(
                                     ) {
                                         break;
                                     }
-                                    subscribed = true;
+                                    subscribed_thread_id = cached_thread_id(&cached_session_id);
                                 }
                             }
                         }
                     }
 
-                    if pending.is_none() && !subscribed {
-                        let thread_id = cached_thread_id(&cached_session_id);
-                        if let Some(thread_id) = thread_id
+                    let current_thread_id = cached_thread_id(&cached_session_id);
+                    if current_thread_id != previous_thread_id {
+                        subscribed_thread_id = None;
+                    }
+
+                    if pending.is_none()
+                        && !subscription_matches_thread(
+                            subscribed_thread_id.as_deref(),
+                            current_thread_id.as_deref(),
+                        )
+                    {
+                        if let Some(thread_id) = current_thread_id
                             && send_request(
                                 &mut writer,
                                 &mut request_id,
@@ -657,11 +672,13 @@ fn handle_notification(
             if let Some(thread) = params.get("thread") {
                 let current = cached_session_id.lock().unwrap().clone();
                 let is_current = current.as_deref() == thread.get("id").and_then(Value::as_str);
-                let is_new_root = current.is_none()
-                    && thread.get("parentThreadId").is_none_or(Value::is_null)
-                    && thread.get("cwd").and_then(Value::as_str) == Some(directory);
+                let is_new_root = is_root_thread_for_directory(thread, directory);
                 if is_current || is_new_root {
-                    update_from_thread(thread, cached_session_id, live_cache);
+                    if is_current || current.is_none() {
+                        update_from_thread(thread, cached_session_id, live_cache);
+                    } else {
+                        switch_to_thread(thread, cached_session_id, live_cache);
+                    }
                 }
             }
         }
@@ -728,9 +745,13 @@ fn handle_notification(
                 return;
             }
             let item = params.get("item").unwrap_or(&Value::Null);
-            if item.get("type").and_then(Value::as_str) == Some("agentMessage") {
-                if let Some(text) = item.get("text").and_then(Value::as_str) {
-                    live_cache.write().unwrap().last_model_response = Some(text.to_owned());
+            let item_type = item.get("type").and_then(Value::as_str);
+            if let Some(text) = item.get("text").and_then(Value::as_str) {
+                let mut cache = live_cache.write().unwrap();
+                if item_type == Some("agentMessage") {
+                    cache.last_model_response = Some(text.to_owned());
+                } else if cache.first_prompt.is_none() && !text.is_empty() {
+                    cache.first_prompt = Some(text.to_owned());
                 }
             }
         }
@@ -751,6 +772,32 @@ fn handle_notification(
     }
 }
 
+fn is_root_thread_for_directory(thread: &Value, directory: &str) -> bool {
+    thread.get("parentThreadId").is_none_or(Value::is_null)
+        && thread.get("cwd").and_then(Value::as_str) == Some(directory)
+}
+
+fn switch_to_thread(
+    thread: &Value,
+    cached_session_id: &Arc<Mutex<Option<String>>>,
+    live_cache: &Arc<RwLock<LiveCache>>,
+) {
+    reset_session_cache(live_cache);
+    update_from_thread(thread, cached_session_id, live_cache);
+}
+
+fn reset_session_cache(live_cache: &Arc<RwLock<LiveCache>>) {
+    let mut cache = live_cache.write().unwrap();
+    cache.status = AgentStatus::Idle;
+    cache.first_prompt = None;
+    cache.last_model_response = None;
+    cache.context = None;
+    cache.total_work_ms = 0;
+    cache.completed_turn_ids.clear();
+    cache.rollout_path = None;
+    cache.rollout_offset = 0;
+}
+
 fn update_from_thread(
     thread: &Value,
     cached_session_id: &Arc<Mutex<Option<String>>>,
@@ -768,7 +815,8 @@ fn update_from_thread(
             .get("preview")
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
-            .map(str::to_owned);
+            .map(str::to_owned)
+            .or_else(|| first_prompt_from_turns(thread));
     }
     cache.rollout_path = thread
         .get("path")
@@ -803,6 +851,29 @@ fn update_from_thread(
     if let Some(path) = cache.rollout_path.clone() {
         enrich_from_rollout(&path, &mut cache);
     }
+}
+
+fn first_prompt_from_turns(thread: &Value) -> Option<String> {
+    thread
+        .get("turns")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|turn| {
+            turn.get("items")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .find(|item| {
+            item.get("type").and_then(Value::as_str) != Some("agentMessage")
+                && item
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| !text.is_empty())
+        })
+        .and_then(|item| item.get("text").and_then(Value::as_str))
+        .map(str::to_owned)
 }
 
 fn enrich_from_rollout(path: &str, cache: &mut LiveCache) {
@@ -895,6 +966,16 @@ fn is_current_thread(params: &Value, cached_session_id: &Arc<Mutex<Option<String
     let event_id = params.get("threadId").and_then(Value::as_str);
     let current = cached_session_id.lock().unwrap();
     current.is_none() || event_id == current.as_deref()
+}
+
+fn subscription_matches_thread(
+    subscribed_thread_id: Option<&str>,
+    current_thread_id: Option<&str>,
+) -> bool {
+    matches!(
+        (subscribed_thread_id, current_thread_id),
+        (Some(subscribed), Some(current)) if subscribed == current
+    )
 }
 
 fn cached_thread_id(cached_session_id: &Arc<Mutex<Option<String>>>) -> Option<String> {
@@ -1117,6 +1198,242 @@ mod tests {
         assert_eq!(cache.first_prompt.as_deref(), Some("Fix the tests"));
         assert_eq!(cache.last_model_response.as_deref(), Some("Done"));
         assert_eq!(cache.total_work_ms, 1200);
+    }
+
+    #[test]
+    fn extracts_first_prompt_from_turns_when_preview_is_missing() {
+        let session = Arc::new(Mutex::new(None));
+        let cache = Arc::new(RwLock::new(LiveCache::default()));
+        let thread = json!({
+            "id": "thread-1",
+            "status": {"type": "idle"},
+            "turns": [{
+                "id": "turn-1",
+                "items": [
+                    {"type": "userMessage", "text": "Implement the parser"},
+                    {"type": "agentMessage", "text": "Done"}
+                ]
+            }]
+        });
+
+        update_from_thread(&thread, &session, &cache);
+
+        let cache = cache.read().unwrap();
+        assert_eq!(cache.first_prompt.as_deref(), Some("Implement the parser"));
+    }
+
+    #[test]
+    fn new_root_thread_switches_and_resets_session_meta() {
+        let session = Arc::new(Mutex::new(Some("thread-1".to_string())));
+        let cache = Arc::new(RwLock::new(LiveCache {
+            status: AgentStatus::WaitingForInput,
+            first_prompt: Some("Old prompt".to_string()),
+            last_model_response: Some("Old response".to_string()),
+            model_name: Some("gpt-old".to_string()),
+            context: Some(ContextInfo {
+                used: 50,
+                total: Some(100),
+            }),
+            total_work_ms: 1234,
+            completed_turn_ids: HashSet::from([String::from("turn-old")]),
+            rollout_path: Some("/tmp/old-rollout.jsonl".to_string()),
+            rollout_offset: 99,
+        }));
+
+        let params = json!({
+            "thread": {
+                "id": "thread-2",
+                "cwd": "/tmp",
+                "parentThreadId": null,
+                "preview": "New prompt",
+                "status": {"type": "active"},
+                "turns": []
+            }
+        });
+
+        handle_notification("thread/started", &params, "/tmp", &session, &cache);
+
+        assert_eq!(session.lock().unwrap().as_deref(), Some("thread-2"));
+        let cache = cache.read().unwrap();
+        assert_eq!(cache.status, AgentStatus::Running);
+        assert_eq!(cache.first_prompt.as_deref(), Some("New prompt"));
+        assert_eq!(cache.last_model_response, None);
+        assert_eq!(cache.model_name.as_deref(), Some("gpt-old"));
+        assert!(cache.context.is_none());
+        assert_eq!(cache.total_work_ms, 0);
+        assert!(cache.completed_turn_ids.is_empty());
+        assert_eq!(cache.rollout_path, None);
+        assert_eq!(cache.rollout_offset, 0);
+    }
+
+    #[test]
+    fn switched_thread_ignores_old_events_and_accepts_new_ones() {
+        let session = Arc::new(Mutex::new(Some("thread-1".to_string())));
+        let cache = Arc::new(RwLock::new(LiveCache {
+            status: AgentStatus::Idle,
+            first_prompt: Some("Old prompt".to_string()),
+            last_model_response: Some("Old response".to_string()),
+            model_name: Some("gpt-old".to_string()),
+            context: Some(ContextInfo {
+                used: 50,
+                total: Some(100),
+            }),
+            total_work_ms: 1234,
+            completed_turn_ids: HashSet::from([String::from("turn-old")]),
+            rollout_path: None,
+            rollout_offset: 0,
+        }));
+
+        handle_notification(
+            "thread/started",
+            &json!({
+                "thread": {
+                    "id": "thread-2",
+                    "cwd": "/tmp",
+                    "parentThreadId": null,
+                    "preview": "New prompt",
+                    "status": {"type": "idle"},
+                    "turns": []
+                }
+            }),
+            "/tmp",
+            &session,
+            &cache,
+        );
+
+        handle_notification(
+            "thread/tokenUsage/updated",
+            &json!({
+                "threadId": "thread-1",
+                "tokenUsage": {
+                    "last": {"totalTokens": 999},
+                    "modelContextWindow": 1000
+                }
+            }),
+            "/tmp",
+            &session,
+            &cache,
+        );
+        handle_notification(
+            "item/completed",
+            &json!({
+                "threadId": "thread-1",
+                "item": {
+                    "type": "agentMessage",
+                    "text": "Ignored old response"
+                }
+            }),
+            "/tmp",
+            &session,
+            &cache,
+        );
+        handle_notification(
+            "turn/completed",
+            &json!({
+                "threadId": "thread-1",
+                "turn": {"id": "turn-old-2", "durationMs": 777}
+            }),
+            "/tmp",
+            &session,
+            &cache,
+        );
+
+        handle_notification(
+            "thread/tokenUsage/updated",
+            &json!({
+                "threadId": "thread-2",
+                "tokenUsage": {
+                    "last": {"totalTokens": 80},
+                    "modelContextWindow": 200
+                }
+            }),
+            "/tmp",
+            &session,
+            &cache,
+        );
+        handle_notification(
+            "item/completed",
+            &json!({
+                "threadId": "thread-2",
+                "item": {
+                    "type": "agentMessage",
+                    "text": "New response"
+                }
+            }),
+            "/tmp",
+            &session,
+            &cache,
+        );
+        handle_notification(
+            "turn/completed",
+            &json!({
+                "threadId": "thread-2",
+                "turn": {"id": "turn-2", "durationMs": 900}
+            }),
+            "/tmp",
+            &session,
+            &cache,
+        );
+
+        let cache = cache.read().unwrap();
+        let context = cache.context.as_ref().expect("new thread should update context");
+        assert_eq!(context.used, 80);
+        assert_eq!(context.total, Some(200));
+        assert_eq!(cache.last_model_response.as_deref(), Some("New response"));
+        assert_eq!(cache.total_work_ms, 900);
+        assert!(cache.completed_turn_ids.contains("turn-2"));
+        assert!(!cache.completed_turn_ids.contains("turn-old"));
+        assert!(!cache.completed_turn_ids.contains("turn-old-2"));
+    }
+
+    #[test]
+    fn new_thread_backfills_first_prompt_from_user_item_event() {
+        let session = Arc::new(Mutex::new(Some("thread-1".to_string())));
+        let cache = Arc::new(RwLock::new(LiveCache {
+            status: AgentStatus::Idle,
+            first_prompt: Some("Old prompt".to_string()),
+            last_model_response: Some("Old response".to_string()),
+            model_name: None,
+            context: None,
+            total_work_ms: 0,
+            completed_turn_ids: HashSet::new(),
+            rollout_path: None,
+            rollout_offset: 0,
+        }));
+
+        handle_notification(
+            "thread/started",
+            &json!({
+                "thread": {
+                    "id": "thread-2",
+                    "cwd": "/tmp",
+                    "parentThreadId": null,
+                    "status": {"type": "active"},
+                    "turns": []
+                }
+            }),
+            "/tmp",
+            &session,
+            &cache,
+        );
+
+        handle_notification(
+            "item/completed",
+            &json!({
+                "threadId": "thread-2",
+                "item": {
+                    "type": "userMessage",
+                    "text": "New prompt"
+                }
+            }),
+            "/tmp",
+            &session,
+            &cache,
+        );
+
+        let cache = cache.read().unwrap();
+        assert_eq!(cache.first_prompt.as_deref(), Some("New prompt"));
+        assert_eq!(cache.last_model_response, None);
     }
 
     #[test]
@@ -1389,6 +1706,211 @@ mod tests {
         let context = context.unwrap();
         assert_eq!(context.used, 90);
         assert_eq!(context.total, Some(200_000));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn new_root_thread_triggers_resubscribe_and_refreshes_meta() {
+        let listener = TokioTcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let mut stream = accept_test_websocket(listener).await;
+
+            let initialize: Value =
+                serde_json::from_str(&read_test_client_text(&mut stream).await).unwrap();
+            assert_eq!(
+                initialize.get("method").and_then(Value::as_str),
+                Some("initialize")
+            );
+            write_test_server_text(&mut stream, json!({"id": 1, "result": {}})).await;
+
+            let initialized: Value =
+                serde_json::from_str(&read_test_client_text(&mut stream).await).unwrap();
+            assert_eq!(
+                initialized.get("method").and_then(Value::as_str),
+                Some("initialized")
+            );
+
+            let discover: Value =
+                serde_json::from_str(&read_test_client_text(&mut stream).await).unwrap();
+            assert_eq!(
+                discover.get("method").and_then(Value::as_str),
+                Some("thread/list")
+            );
+            let discover_id = discover.get("id").and_then(Value::as_u64).unwrap();
+            write_test_server_text(
+                &mut stream,
+                json!({
+                    "id": discover_id,
+                    "result": {
+                        "data": [{
+                            "id": "thread-1",
+                            "cwd": "/tmp",
+                            "createdAt": 1,
+                            "parentThreadId": null,
+                            "preview": "Old prompt",
+                            "status": {"type": "idle"},
+                            "turns": [{
+                                "id": "turn-1",
+                                "durationMs": 100,
+                                "items": [{"type": "agentMessage", "text": "Old response"}]
+                            }]
+                        }]
+                    }
+                }),
+            )
+            .await;
+
+            let resume_old: Value =
+                serde_json::from_str(&read_test_client_text(&mut stream).await).unwrap();
+            assert_eq!(
+                resume_old.get("method").and_then(Value::as_str),
+                Some("thread/resume")
+            );
+            assert_eq!(
+                resume_old
+                    .get("params")
+                    .and_then(|p| p.get("threadId"))
+                    .and_then(Value::as_str),
+                Some("thread-1")
+            );
+            let resume_old_id = resume_old.get("id").and_then(Value::as_u64).unwrap();
+            write_test_server_text(
+                &mut stream,
+                json!({
+                    "id": resume_old_id,
+                    "result": {
+                        "model": "gpt-old",
+                        "thread": {
+                            "id": "thread-1",
+                            "preview": "Old prompt",
+                            "status": {"type": "idle"},
+                            "turns": [{
+                                "id": "turn-1",
+                                "durationMs": 100,
+                                "items": [{"type": "agentMessage", "text": "Old response"}]
+                            }]
+                        }
+                    }
+                }),
+            )
+            .await;
+
+            write_test_server_text(
+                &mut stream,
+                json!({
+                    "method": "thread/started",
+                    "params": {
+                        "thread": {
+                            "id": "thread-2",
+                            "cwd": "/tmp",
+                            "parentThreadId": null,
+                            "status": {"type": "idle"},
+                            "turns": [{
+                                "id": "turn-2",
+                                "items": [{
+                                    "type": "userMessage",
+                                    "text": "New prompt"
+                                }]
+                            }]
+                        }
+                    }
+                }),
+            )
+            .await;
+
+            let resume_new: Value =
+                serde_json::from_str(&read_test_client_text(&mut stream).await).unwrap();
+            assert_eq!(
+                resume_new.get("method").and_then(Value::as_str),
+                Some("thread/resume")
+            );
+            assert_eq!(
+                resume_new
+                    .get("params")
+                    .and_then(|p| p.get("threadId"))
+                    .and_then(Value::as_str),
+                Some("thread-2")
+            );
+            let resume_new_id = resume_new.get("id").and_then(Value::as_u64).unwrap();
+            write_test_server_text(
+                &mut stream,
+                json!({
+                    "id": resume_new_id,
+                    "result": {
+                        "model": "gpt-new",
+                        "thread": {
+                            "id": "thread-2",
+                            "path": "/tmp/thread-2.jsonl",
+                            "status": {"type": "idle"},
+                            "turns": [{
+                                "id": "turn-2",
+                                "durationMs": 900,
+                                "items": [
+                                    {"type": "userMessage", "text": "New prompt"},
+                                    {"type": "agentMessage", "text": "New response"}
+                                ]
+                            }]
+                        }
+                    }
+                }),
+            )
+            .await;
+
+            write_test_server_text(
+                &mut stream,
+                json!({
+                    "method": "thread/tokenUsage/updated",
+                    "params": {
+                        "threadId": "thread-2",
+                        "tokenUsage": {
+                            "last": {"totalTokens": 80},
+                            "modelContextWindow": 200
+                        }
+                    }
+                }),
+            )
+            .await;
+
+            assert!(
+                tokio::time::timeout(
+                    Duration::from_millis(900),
+                    read_test_client_text(&mut stream)
+                )
+                .await
+                .is_err(),
+                "observer sent an unexpected recurring request after resubscribe"
+            );
+        });
+
+        let adapter = CodexAdapter::new(port, "/tmp".to_string(), None);
+        let mut context_used = None;
+        let mut total_work_ms = 0;
+        let mut prompt = None;
+        let mut response = None;
+        let mut model = None;
+        for _ in 0..50 {
+            context_used = adapter.get_context().await.map(|ctx| ctx.used);
+            total_work_ms = adapter.get_total_work_ms().await;
+            prompt = adapter.get_first_prompt().await;
+            response = adapter.get_last_model_response().await;
+            model = adapter.get_model_name().await;
+            if context_used == Some(80)
+                && total_work_ms == 900
+                && prompt.as_deref() == Some("New prompt")
+                && response.as_deref() == Some("New response")
+                && model.as_deref() == Some("gpt-new")
+            {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+
+        assert_eq!(context_used, Some(80));
+        assert_eq!(total_work_ms, 900);
+        assert_eq!(prompt.as_deref(), Some("New prompt"));
+        assert_eq!(response.as_deref(), Some("New response"));
+        assert_eq!(model.as_deref(), Some("gpt-new"));
         server.await.unwrap();
     }
 
