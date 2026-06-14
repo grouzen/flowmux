@@ -141,18 +141,9 @@ pub fn status_count_spans(
     };
 
     let spans = vec![
-        Span::styled(
-            format!(" {} {} running", ICON_RUN, running),
-            running_style,
-        ),
-        Span::styled(
-            format!(" {} {} waiting", ICON_WAIT, waiting),
-            waiting_style,
-        ),
-        Span::styled(
-            format!(" {} {} idle ", ICON_IDLE, idle),
-            base.fg(CYAN),
-        ),
+        Span::styled(format!(" {} {} running", ICON_RUN, running), running_style),
+        Span::styled(format!(" {} {} waiting", ICON_WAIT, waiting), waiting_style),
+        Span::styled(format!(" {} {} idle ", ICON_IDLE, idle), base.fg(CYAN)),
     ];
 
     let width = unicode_width::UnicodeWidthStr::width(

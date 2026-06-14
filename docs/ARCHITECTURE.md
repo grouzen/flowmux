@@ -227,7 +227,7 @@ All rendering functions live here, organized by view:
 | `remove_agent.rs` | Removal confirmation dialog |
 | `theme.rs` | Shared color/style constants |
 
-The dashboard uses a **pure grid layout** — no side panels. Project tabs are rendered above the grid, and the active project filters which cards are visible. Cards are arranged in a `cols × rows` grid computed from the visible agent count. Each card shows: agent name, type, directory, status, context usage, model name, and the last model response (rendered as markdown).
+The dashboard uses a **pure grid layout** — no side panels. Project tabs are rendered above the grid, and the active project filters which cards are visible. Cards are arranged in a `cols × rows` grid computed from the visible agent count. Each card shows: agent name, type, directory, status, context usage, model name, and a live tmux viewport preview rendered with `libghostty-vt`.
 
 ### 8. Configuration
 
@@ -286,7 +286,10 @@ For each adapter:
   get_status() → get_context() → get_first_prompt()
   → get_last_model_response() → get_model_name()
   → get_total_work_ms()
-→ update AgentEntry.meta → detect status count changes
+→ update AgentEntry.meta
+For each visible dashboard card:
+  capture tmux pane viewport → cache ANSI snapshot
+→ detect status count / preview changes
 → set dirty flag → redraw if needed
 ```
 

@@ -52,10 +52,16 @@ mod tests {
     fn test_claude_models() {
         assert_eq!(model_context_window("claude-2.0"), Some(100_000));
         assert_eq!(model_context_window("claude-3-5-sonnet"), Some(200_000));
-        assert_eq!(model_context_window("claude-3-5-sonnet-20240620"), Some(200_000));
+        assert_eq!(
+            model_context_window("claude-3-5-sonnet-20240620"),
+            Some(200_000)
+        );
         assert_eq!(model_context_window("claude-opus-4"), Some(200_000));
         assert_eq!(model_context_window("claude-sonnet-4"), Some(200_000));
-        assert_eq!(model_context_window("claude-sonnet-4-20250514"), Some(1_000_000));
+        assert_eq!(
+            model_context_window("claude-sonnet-4-20250514"),
+            Some(1_000_000)
+        );
     }
 
     #[test]
@@ -124,8 +130,14 @@ mod tests {
 
     #[test]
     fn test_provider_prefix_stripping() {
-        assert_eq!(model_context_window("bailian-payg/qwen3.7-max"), Some(1_000_000));
-        assert_eq!(model_context_window("openrouter/anthropic/claude-sonnet-4"), Some(200_000));
+        assert_eq!(
+            model_context_window("bailian-payg/qwen3.7-max"),
+            Some(1_000_000)
+        );
+        assert_eq!(
+            model_context_window("openrouter/anthropic/claude-sonnet-4"),
+            Some(200_000)
+        );
         assert_eq!(model_context_window("dashscope/qwen-max"), Some(131_072));
         assert_eq!(model_context_window("openai/gpt-4o"), Some(128_000));
     }

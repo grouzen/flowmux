@@ -118,51 +118,35 @@ fn pad_ansi_lines_to_width(input: &[u8], width: u16) -> Vec<u8> {
     output
 }
 
-pub fn render_pane_content(
-    ansi_bytes: &[u8],
+pub fn pad_capture_snapshot_for_terminal(input: &[u8], width: u16) -> Vec<u8> {
+    pad_ansi_lines_to_width(input, width)
+}
+
+fn render_terminal_state<'a>(
+    terminal: &Terminal<'a, 'a>,
+    render_state: &mut RenderState<'a>,
     frame: &mut Frame,
     area: Rect,
     cursor: Option<(u16, u16)>,
-    host_fg: Option<(u8, u8, u8)>,
-    host_bg: Option<(u8, u8, u8)>,
+    draw_border: bool,
 ) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Plain)
-        .border_style(Style::default().fg(GRAY));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = if draw_border {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Plain)
+            .border_style(Style::default().fg(GRAY));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        inner
+    } else {
+        area
+    };
 
     if inner.width == 0 || inner.height == 0 {
         return;
     }
 
-    let mut terminal = match Terminal::new(TerminalOptions {
-        cols: inner.width,
-        rows: inner.height,
-        max_scrollback: 0,
-    }) {
-        Ok(t) => t,
-        Err(_) => return,
-    };
-
-    // Set default colors from host terminal
-    if let Some((r, g, b)) = host_fg {
-        let _ = terminal.set_default_fg_color(Some(RgbColor { r, g, b }));
-    }
-    if let Some((r, g, b)) = host_bg {
-        let _ = terminal.set_default_bg_color(Some(RgbColor { r, g, b }));
-    }
-
-    let padded_bytes = pad_ansi_lines_to_width(ansi_bytes, inner.width);
-    terminal.vt_write(&padded_bytes);
-
-    let mut render_state = match RenderState::new() {
-        Ok(rs) => rs,
-        Err(_) => return,
-    };
-    let snapshot = match render_state.update(&terminal) {
+    let snapshot = match render_state.update(terminal) {
         Ok(snapshot) => snapshot,
         Err(_) => return,
     };
@@ -205,8 +189,8 @@ pub fn render_pane_content(
                     .and_then(|raw_cell| raw_cell.wide())
                     .unwrap_or(CellWide::Narrow);
                 let style = ghostty_cell_style(&cells, default_fg, default_bg, resolved_bg);
-                let symbol = ghostty_buffer_symbol_into(&cells, wide, &mut symbol_scratch)
-                    .unwrap_or(" ");
+                let symbol =
+                    ghostty_buffer_symbol_into(&cells, wide, &mut symbol_scratch).unwrap_or(" ");
                 let cell = &mut buf[(inner.x + x, inner.y + y)];
                 cell.reset();
                 cell.set_symbol(symbol);
@@ -237,6 +221,99 @@ pub fn render_pane_content(
     }
 }
 
+fn terminal_render_area(area: Rect, draw_border: bool) -> Rect {
+    if draw_border {
+        Rect {
+            x: area.x.saturating_add(1),
+            y: area.y.saturating_add(1),
+            width: area.width.saturating_sub(2),
+            height: area.height.saturating_sub(2),
+        }
+    } else {
+        area
+    }
+}
+
+fn render_terminal_content(
+    ansi_bytes: &[u8],
+    frame: &mut Frame,
+    area: Rect,
+    cursor: Option<(u16, u16)>,
+    host_fg: Option<(u8, u8, u8)>,
+    host_bg: Option<(u8, u8, u8)>,
+    draw_border: bool,
+) {
+    let inner = terminal_render_area(area, draw_border);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let mut terminal = match Terminal::new(TerminalOptions {
+        cols: inner.width,
+        rows: inner.height,
+        max_scrollback: 0,
+    }) {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+
+    if let Some((r, g, b)) = host_fg {
+        let _ = terminal.set_default_fg_color(Some(RgbColor { r, g, b }));
+    }
+    if let Some((r, g, b)) = host_bg {
+        let _ = terminal.set_default_bg_color(Some(RgbColor { r, g, b }));
+    }
+
+    let padded_bytes = pad_ansi_lines_to_width(ansi_bytes, inner.width);
+    terminal.vt_write(&padded_bytes);
+
+    let mut render_state = match RenderState::new() {
+        Ok(rs) => rs,
+        Err(_) => return,
+    };
+    render_terminal_state(
+        &terminal,
+        &mut render_state,
+        frame,
+        area,
+        cursor,
+        draw_border,
+    );
+}
+
+pub fn render_pane_content(
+    ansi_bytes: &[u8],
+    frame: &mut Frame,
+    area: Rect,
+    cursor: Option<(u16, u16)>,
+    host_fg: Option<(u8, u8, u8)>,
+    host_bg: Option<(u8, u8, u8)>,
+) {
+    render_terminal_content(ansi_bytes, frame, area, cursor, host_fg, host_bg, true);
+}
+
+#[cfg(test)]
+pub fn render_embedded_content(
+    ansi_bytes: &[u8],
+    frame: &mut Frame,
+    area: Rect,
+    host_fg: Option<(u8, u8, u8)>,
+    host_bg: Option<(u8, u8, u8)>,
+) {
+    render_terminal_content(ansi_bytes, frame, area, None, host_fg, host_bg, false);
+}
+
+pub fn render_embedded_terminal<'a>(
+    terminal: &Terminal<'a, 'a>,
+    render_state: &mut RenderState<'a>,
+    frame: &mut Frame,
+    area: Rect,
+    _host_fg: Option<(u8, u8, u8)>,
+    _host_bg: Option<(u8, u8, u8)>,
+) {
+    render_terminal_state(terminal, render_state, frame, area, None, false);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,6 +342,50 @@ mod tests {
                     None,
                     host_fg,
                     host_bg,
+                );
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn render_embedded_buffer(
+        ansi_bytes: &[u8],
+        width: u16,
+        height: u16,
+        host_fg: Option<(u8, u8, u8)>,
+        host_bg: Option<(u8, u8, u8)>,
+    ) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = RatatuiTerminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_embedded_content(
+                    ansi_bytes,
+                    frame,
+                    Rect::new(0, 0, width, height),
+                    host_fg,
+                    host_bg,
+                );
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn render_embedded_terminal_buffer<'a>(
+        terminal_state: &Terminal<'a, 'a>,
+    ) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(5, 1);
+        let mut terminal = RatatuiTerminal::new(backend).unwrap();
+        let mut render_state = RenderState::new().unwrap();
+        terminal
+            .draw(|frame| {
+                render_embedded_terminal(
+                    terminal_state,
+                    &mut render_state,
+                    frame,
+                    Rect::new(0, 0, 5, 1),
+                    None,
+                    None,
                 );
             })
             .unwrap();
@@ -320,6 +441,28 @@ mod tests {
         // OSC sequences should be skipped
         assert_eq!(count_visible_columns(b"\x1b]0;title\x07hello"), 5);
         assert_eq!(count_visible_columns(b"\x1b]11;rgb:ff/00/00\x1b\\hello"), 5);
+    }
+
+    #[test]
+    fn test_render_embedded_content_has_no_border() {
+        let buffer = render_embedded_buffer(b"hello", 5, 1, None, None);
+        let rendered: String = (0..5).map(|x| buffer[(x, 0)].symbol()).collect();
+        assert_eq!(rendered, "hello");
+    }
+
+    #[test]
+    fn test_render_embedded_terminal_uses_existing_terminal_state() {
+        let mut terminal = Terminal::new(TerminalOptions {
+            cols: 5,
+            rows: 1,
+            max_scrollback: 0,
+        })
+        .unwrap();
+        terminal.vt_write(b"hello");
+
+        let buffer = render_embedded_terminal_buffer(&terminal);
+        let rendered: String = (0..5).map(|x| buffer[(x, 0)].symbol()).collect();
+        assert_eq!(rendered, "hello");
     }
 
     #[test]
@@ -417,13 +560,7 @@ mod tests {
 
     #[test]
     fn test_render_preserves_inverse_host_default_colors() {
-        let buffer = render_buffer(
-            b"\x1b[7mA\x1b[0m",
-            6,
-            3,
-            Some((1, 2, 3)),
-            Some((4, 5, 6)),
-        );
+        let buffer = render_buffer(b"\x1b[7mA\x1b[0m", 6, 3, Some((1, 2, 3)), Some((4, 5, 6)));
         let cell = &buffer[(1, 1)];
         assert_eq!(cell.symbol(), "A");
         assert_eq!(cell.fg, Color::Rgb(4, 5, 6));
@@ -432,13 +569,7 @@ mod tests {
 
     #[test]
     fn test_render_preserves_invisible_text_and_trailing_background() {
-        let buffer = render_buffer(
-            b"\x1b[41m\x1b[8mA",
-            7,
-            3,
-            Some((1, 2, 3)),
-            Some((4, 5, 6)),
-        );
+        let buffer = render_buffer(b"\x1b[41m\x1b[8mA", 7, 3, Some((1, 2, 3)), Some((4, 5, 6)));
         let cell = &buffer[(1, 1)];
         assert_eq!(cell.symbol(), "A");
         assert_eq!(cell.fg, cell.bg);

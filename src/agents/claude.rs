@@ -149,7 +149,8 @@ impl ClaudeRuntime {
             tokio::sync::mpsc::unbounded_channel::<claude_hook_server::HookPersistEvent>();
 
         let persist_tx_clone = persist_tx.clone();
-        let port = claude_hook_server::spawn_hook_server(hook_state.clone(), persist_tx_clone, base_port);
+        let port =
+            claude_hook_server::spawn_hook_server(hook_state.clone(), persist_tx_clone, base_port);
 
         // Background task: receive persist events and patch the session config file.
         tokio::spawn(async move {
@@ -427,7 +428,9 @@ fn has_all_flowmux_hook_events_for_port(hooks_root: &Value, port: u16) -> bool {
             let Some(inner) = hook_group.get("hooks").and_then(Value::as_array) else {
                 return false;
             };
-            inner.iter().any(|h| h.get("url").and_then(Value::as_str) == Some(&url))
+            inner
+                .iter()
+                .any(|h| h.get("url").and_then(Value::as_str) == Some(&url))
         })
     })
 }
@@ -447,7 +450,9 @@ fn remove_flowmux_hooks_for_port(hooks_root: &mut Value, port: u16) {
             let Some(inner) = hook_group.get("hooks").and_then(Value::as_array) else {
                 return true;
             };
-            !inner.iter().any(|h| h.get("url").and_then(Value::as_str) == Some(&url))
+            !inner
+                .iter()
+                .any(|h| h.get("url").and_then(Value::as_str) == Some(&url))
         });
     }
 }
@@ -492,10 +497,7 @@ fn extract_flowmux_ports(hooks_root: &Value) -> Vec<u16> {
 fn is_port_alive(port: u16) -> bool {
     use std::time::Duration;
     let addr = format!("127.0.0.1:{}", port);
-    match std::net::TcpStream::connect_timeout(
-        &addr.parse().unwrap(),
-        Duration::from_millis(100),
-    ) {
+    match std::net::TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_millis(100)) {
         Ok(_) => true,
         Err(_) => false,
     }
@@ -580,7 +582,8 @@ fn uninstall_hooks_at(path: &std::path::Path, port: u16) -> Result<()> {
     }
 
     let raw = std::fs::read_to_string(path).with_context(|| format!("read {:?}", path))?;
-    let mut root: Value = serde_json::from_str(&raw).with_context(|| format!("parse {:?}", path))?;
+    let mut root: Value =
+        serde_json::from_str(&raw).with_context(|| format!("parse {:?}", path))?;
 
     if let Some(hooks) = root.get_mut("hooks") {
         remove_flowmux_hooks_for_port(hooks, port);
@@ -707,7 +710,10 @@ mod tests {
         });
 
         let hooks = root.get("hooks").unwrap();
-        assert!(has_flowmux_hooks_for_port(hooks, 15100), "should detect existing hooks");
+        assert!(
+            has_flowmux_hooks_for_port(hooks, 15100),
+            "should detect existing hooks"
+        );
         assert!(
             !has_all_flowmux_hook_events_for_port(hooks, 15100),
             "should detect stale install"
@@ -737,7 +743,11 @@ mod tests {
                 .get(*event)
                 .and_then(Value::as_array)
                 .unwrap_or_else(|| panic!("missing event: {event}"));
-            assert_eq!(arr.len(), 2, "expected two hook groups for {event} (one per port)");
+            assert_eq!(
+                arr.len(),
+                2,
+                "expected two hook groups for {event} (one per port)"
+            );
         }
 
         let hooks = root.get("hooks").unwrap();
@@ -781,10 +791,8 @@ mod tests {
 
     #[test]
     fn uninstall_hooks_removes_entries_from_file() {
-        let dir = std::env::temp_dir().join(format!(
-            "flowmux-test-uninstall-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("flowmux-test-uninstall-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
 

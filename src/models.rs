@@ -36,7 +36,7 @@ pub enum AgentStatus {
     Unknown,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextInfo {
     pub used: u64,
     pub total: Option<u64>,

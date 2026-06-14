@@ -40,13 +40,13 @@ Install Flowmux to keep your trusty steed's  harness under the solid roof! :hors
 - Separate named project dashboards with tab-based switching and per-project agent grouping
 - Real-time status tracking: running, waiting for input, stopped
 - Context usage monitoring and model name display
-- Last model response preview rendered as markdown
+- Live terminal preview in dashboard cards rendered with libghostty-vt
 
 ### Quick Navigation
 
 - Jump to next running agent (`Ctrl+q`), waiting agent (`Ctrl+o`), or idle agent (`Ctrl+p`)
 - Vim-style navigation (`h/j/k/l`) with arrow key support
-- Mouse support: click to select, scroll to browse responses
+- Mouse support: click to select cards
 - Reorder agent cards on the fly (`Ctrl+arrows`)
 
 ### Survives Restarts
@@ -185,10 +185,7 @@ flowmux --enabled-agents opencode,claude,codex
 | `Ctrl+l` / `Ctrl+→` | Move card right |
 | `Ctrl+k` / `Ctrl+↑` | Move card up |
 | `Ctrl+j` / `Ctrl+↓` | Move card down |
-| `PageUp` | Scroll response up |
-| `PageDown` | Scroll response down |
 | Mouse click | Select agent |
-| Mouse scroll | Scroll response |
 
 #### Agent View
 
