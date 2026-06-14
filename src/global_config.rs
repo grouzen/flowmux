@@ -1,5 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// Application-wide (not per-session) configuration stored at
@@ -21,6 +22,19 @@ pub struct GlobalConfig {
     /// When `None`, all discovered agents are available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled_agents: Option<Vec<String>>,
+
+    /// Per-repository remembered copy/symlink directory selections used when
+    /// creating git worktrees from the launch-agent dialog.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub worktree_directory_presets: BTreeMap<String, WorktreeDirectoryPreset>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorktreeDirectoryPreset {
+    #[serde(default)]
+    pub copy_directories: Vec<String>,
+    #[serde(default)]
+    pub symlink_directories: Vec<String>,
 }
 
 fn default_hook_port() -> u16 {
@@ -33,6 +47,7 @@ impl Default for GlobalConfig {
             claude_hook_server_port: default_hook_port(),
             git_viewer: None,
             enabled_agents: None,
+            worktree_directory_presets: BTreeMap::new(),
         }
     }
 }
@@ -55,6 +70,22 @@ impl GlobalConfig {
         let contents = std::fs::read_to_string(&path)?;
         let config: GlobalConfig = toml::from_str(&contents)?;
         Ok(config)
+    }
+
+    pub fn save(&self) -> Result<()> {
+        let Some(path) = config_path() else {
+            return Ok(());
+        };
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let content = toml::to_string_pretty(self)?;
+        let tmp_path = path.with_extension("toml.tmp");
+        std::fs::write(&tmp_path, content)?;
+        std::fs::rename(&tmp_path, &path)?;
+        Ok(())
     }
 
     /// Split the `git_viewer` string into (program, args).

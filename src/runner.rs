@@ -68,6 +68,10 @@ impl AgentRunner {
         &self.global_config
     }
 
+    pub fn global_config_mut(&mut self) -> &mut GlobalConfig {
+        &mut self.global_config
+    }
+
     // -----------------------------------------------------------------------
     /// Returns all agent types whose binaries were found on `$PATH` and that
     /// are enabled (if an explicit enabled list is configured).

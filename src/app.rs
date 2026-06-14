@@ -4,6 +4,7 @@ use tokio::time::{Duration, interval};
 
 use crate::agents::AgentAdapter;
 use crate::config::{AgentKind, Config, DEFAULT_PROJECT_NAME, MAX_PROJECTS};
+use crate::global_config::WorktreeDirectoryPreset;
 use crate::host_terminal::HostColors;
 use crate::models::{AgentEntry, AgentMeta, AgentStatus, AgentStatusCounts, AgentType};
 use crate::runner::AgentRunner;
@@ -762,6 +763,57 @@ impl App {
             .unwrap_or(DEFAULT_PROJECT_NAME)
     }
 
+    fn load_create_state_worktree_presets(&mut self) {
+        let Some(repo_root) = self.create_state.git_repo_root.as_ref() else {
+            self.create_state.clear_worktree_selections();
+            return;
+        };
+
+        let key = repo_root.to_string_lossy().to_string();
+        let preset = self
+            .runner
+            .global_config()
+            .worktree_directory_presets
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
+
+        self.create_state.copy_directories_enabled = !preset.copy_directories.is_empty();
+        self.create_state.symlink_directories_enabled = !preset.symlink_directories.is_empty();
+        self.create_state.copy_directories.selected_dirs = preset.copy_directories;
+        self.create_state.symlink_directories.selected_dirs = preset.symlink_directories;
+        self.create_state.copy_directories.reset_candidate();
+        self.create_state.symlink_directories.reset_candidate();
+    }
+
+    fn persist_create_state_worktree_presets(&mut self) {
+        let Some(repo_root) = self.create_state.git_repo_root.as_ref() else {
+            return;
+        };
+
+        let key = repo_root.to_string_lossy().to_string();
+        let preset = WorktreeDirectoryPreset {
+            copy_directories: if self.create_state.copy_directories_enabled {
+                self.create_state.copy_directories.selected_dirs.clone()
+            } else {
+                Vec::new()
+            },
+            symlink_directories: if self.create_state.symlink_directories_enabled {
+                self.create_state.symlink_directories.selected_dirs.clone()
+            } else {
+                Vec::new()
+            },
+        };
+
+        let global_config = self.runner.global_config_mut();
+        if preset.copy_directories.is_empty() && preset.symlink_directories.is_empty() {
+            global_config.worktree_directory_presets.remove(&key);
+        } else {
+            global_config.worktree_directory_presets.insert(key, preset);
+        }
+        let _ = global_config.save();
+    }
+
     pub fn visible_agent_indices(&self) -> Vec<usize> {
         visible_agent_indices_for_project(&self.agents, self.active_project_name())
     }
@@ -1283,6 +1335,7 @@ impl App {
                 };
                 cs.refresh_dir_matches();
                 self.create_state = cs;
+                self.load_create_state_worktree_presets();
                 self.state = AppState::CreateAgentDialog;
             }
             KeyCode::Char('p') => {
@@ -2222,6 +2275,7 @@ impl App {
                         self.create_state.directory = format!("{}/{}", base, name);
                         self.create_state.dir_filter.clear();
                         self.create_state.refresh_dir_matches();
+                        self.load_create_state_worktree_presets();
                     }
                 } else if matches!(
                     self.create_state.focus,
@@ -2273,6 +2327,7 @@ impl App {
                         .await
                     {
                         Ok((config, adapter)) => {
+                            self.persist_create_state_worktree_presets();
                             self.config.agents.push(config.clone());
                             let _ = self.config.save();
                             let entry = AgentEntry {
@@ -2306,6 +2361,7 @@ impl App {
                             ctrl_w_delete_path(&mut self.create_state.directory);
                         }
                         self.create_state.refresh_dir_matches();
+                        self.load_create_state_worktree_presets();
                     }
                     CreateField::CopyDirectories | CreateField::SymlinkDirectories => {
                         let focus = self.create_state.focus.clone();
@@ -2339,6 +2395,7 @@ impl App {
                             ctrl_w_delete_path(&mut self.create_state.directory);
                         }
                         self.create_state.refresh_dir_matches();
+                        self.load_create_state_worktree_presets();
                     }
                     CreateField::CopyDirectories | CreateField::SymlinkDirectories => {
                         let focus = self.create_state.focus.clone();
@@ -2384,6 +2441,7 @@ impl App {
                             }
                         }
                         self.create_state.refresh_dir_matches();
+                        self.load_create_state_worktree_presets();
                     }
                     CreateField::CopyDirectories | CreateField::SymlinkDirectories => {
                         let focus = self.create_state.focus.clone();
@@ -2414,6 +2472,7 @@ impl App {
                     CreateField::Directory => {
                         self.create_state.dir_filter.push(c);
                         self.create_state.refresh_dir_matches();
+                        self.load_create_state_worktree_presets();
                     }
                     CreateField::CopyDirectories | CreateField::SymlinkDirectories => {
                         let focus = self.create_state.focus.clone();
@@ -3008,7 +3067,10 @@ fn next_create_field(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_discovery::DiscoveredAgents;
     use crate::config::{AgentConfig, AgentKind};
+    use crate::global_config::GlobalConfig;
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
 
     struct TestDir {
@@ -3048,6 +3110,27 @@ mod tests {
                 ..AgentMeta::default()
             },
         }
+    }
+
+    fn test_app_with_global_config(global_config: GlobalConfig) -> App {
+        let runner = AgentRunner::new(
+            DiscoveredAgents {
+                claude: None,
+                codex: None,
+                opencode: None,
+            },
+            global_config,
+            "test-session".into(),
+            std::env::temp_dir().join("flowmux-worktrees-test"),
+            None,
+        );
+        App::new(
+            Config::default(),
+            Vec::new(),
+            Vec::new(),
+            runner,
+            HostColors::default(),
+        )
     }
 
     #[test]
@@ -3361,5 +3444,64 @@ mod tests {
 
         ctrl_w_delete_relative_path(&mut path);
         assert!(path.is_empty());
+    }
+
+    #[test]
+    fn load_create_state_worktree_presets_populates_enabled_sections_for_repo_root() {
+        let temp = TestDir::new("preset-load");
+        let repo_root = temp.path.join("repo");
+        let mut presets = BTreeMap::new();
+        presets.insert(
+            repo_root.to_string_lossy().to_string(),
+            WorktreeDirectoryPreset {
+                copy_directories: vec!["node_modules".into(), "target".into()],
+                symlink_directories: vec!["vendor".into()],
+            },
+        );
+
+        let mut app = test_app_with_global_config(GlobalConfig {
+            worktree_directory_presets: presets,
+            ..GlobalConfig::default()
+        });
+        app.create_state.git_repo_root = Some(repo_root);
+        app.create_state.copy_directories.selected_dirs = vec!["stale".into()];
+        app.create_state.symlink_directories.selected_dirs = vec!["stale".into()];
+
+        app.load_create_state_worktree_presets();
+
+        assert!(app.create_state.copy_directories_enabled);
+        assert!(app.create_state.symlink_directories_enabled);
+        assert_eq!(
+            app.create_state.copy_directories.selected_dirs,
+            vec!["node_modules", "target"]
+        );
+        assert_eq!(
+            app.create_state.symlink_directories.selected_dirs,
+            vec!["vendor"]
+        );
+        assert_eq!(app.create_state.copy_directories.current_display(), "./");
+    }
+
+    #[test]
+    fn load_create_state_worktree_presets_clears_when_repo_has_no_preset() {
+        let temp = TestDir::new("preset-clear");
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.create_state.git_repo_root = Some(temp.path.join("repo"));
+        app.create_state.copy_directories_enabled = true;
+        app.create_state.copy_directories.selected_dirs = vec!["target".into()];
+        app.create_state.symlink_directories_enabled = true;
+        app.create_state.symlink_directories.selected_dirs = vec!["vendor".into()];
+
+        app.load_create_state_worktree_presets();
+
+        assert!(!app.create_state.copy_directories_enabled);
+        assert!(!app.create_state.symlink_directories_enabled);
+        assert!(app.create_state.copy_directories.selected_dirs.is_empty());
+        assert!(
+            app.create_state
+                .symlink_directories
+                .selected_dirs
+                .is_empty()
+        );
     }
 }
