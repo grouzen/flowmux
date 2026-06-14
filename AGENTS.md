@@ -11,6 +11,7 @@ Use Rust 1.90+, Zig 0.15.x, `git`, and `tmux`.
 - `cargo test` runs the inline unit tests across the crate.
 - `cargo fmt` formats the codebase with rustfmt.
 - `cargo clippy --all-targets --all-features` checks for common Rust issues.
+- `./tools/build-debug-prefetched-libghostty-vt.sh` builds a debug binary using prefetched Ghostty inputs.
 - `./tools/build-release-prefetched-libghostty-vt.sh` performs a reproducible release build using prefetched Ghostty inputs when available.
 
 ## Coding Style & Naming Conventions
