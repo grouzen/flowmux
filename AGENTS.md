@@ -6,13 +6,11 @@
 ## Build, Test, and Development Commands
 Use Rust 1.90+, Zig 0.15.x, `git`, and `tmux`.
 
-- `cargo build --locked` builds the debug binary.
-- `cargo build --release --locked` produces `target/release/flowmux`.
+- `./tools/build-debug-prefetched-libghostty-vt.sh` builds the debug binary.
+- `./tools/build-release-prefetched-libghostty-vt.sh` produces `target/release/flowmux`.
 - `cargo test` runs the inline unit tests across the crate.
 - `cargo fmt` formats the codebase with rustfmt.
 - `cargo clippy --all-targets --all-features` checks for common Rust issues.
-- `./tools/build-debug-prefetched-libghostty-vt.sh` builds a debug binary using prefetched Ghostty inputs.
-- `./tools/build-release-prefetched-libghostty-vt.sh` performs a reproducible release build using prefetched Ghostty inputs when available.
 
 ## Coding Style & Naming Conventions
 Follow standard Rust formatting: 4-space indentation, snake_case for functions/modules, PascalCase for types, and SCREAMING_SNAKE_CASE for constants. Keep modules focused by concern (`agents/claude.rs`, `ui/dashboard.rs`). Prefer brief, explanatory comments only where behavior is non-obvious. Run `cargo fmt` before submitting changes.
