@@ -6,6 +6,8 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Padding, Paragraph},
 };
 
+use crate::app::DashboardPreviewState;
+use crate::host_terminal::HostColors;
 use crate::models::{AgentEntry, AgentStatus, AgentStatusCounts};
 use crate::ui::theme::*;
 
@@ -32,13 +34,12 @@ pub fn render_dashboard(
     f: &mut Frame,
     area: Rect,
     agents: &[AgentEntry],
+    previews: &[DashboardPreviewState],
     visible_indices: &[usize],
     selected: Option<usize>,
     projects: &[String],
     active_project_idx: usize,
-    card_scroll: &[u16],
-    card_response_heights: &mut Vec<u16>,
-    card_response_widths: &mut Vec<u16>,
+    host_colors: HostColors,
     dimmed: bool,
     status_counts: AgentStatusCounts,
     blink_running: bool,
@@ -71,11 +72,10 @@ pub fn render_dashboard(
         f,
         main_area,
         agents,
+        previews,
         visible_indices,
         selected,
-        card_scroll,
-        card_response_heights,
-        card_response_widths,
+        host_colors,
         dimmed,
     );
 }
@@ -113,11 +113,10 @@ fn render_grid(
     f: &mut Frame,
     area: Rect,
     agents: &[AgentEntry],
+    previews: &[DashboardPreviewState],
     visible_indices: &[usize],
     selected: Option<usize>,
-    card_scroll: &[u16],
-    card_response_heights: &mut Vec<u16>,
-    card_response_widths: &mut Vec<u16>,
+    host_colors: HostColors,
     dimmed: bool,
 ) {
     if visible_indices.is_empty() {
@@ -150,14 +149,6 @@ fn render_grid(
         .constraints(row_constraints)
         .split(area);
 
-    // Ensure vecs have room for all slots
-    if card_response_heights.len() < agents.len() {
-        card_response_heights.resize(agents.len(), 0);
-    }
-    if card_response_widths.len() < agents.len() {
-        card_response_widths.resize(agents.len(), 0);
-    }
-
     for row in 0..rows {
         let col_areas = Layout::default()
             .direction(Direction::Horizontal)
@@ -169,17 +160,16 @@ fn render_grid(
             let cell_area = col_areas[col];
 
             if let Some(&agent_idx) = visible_indices.get(slot) {
-                let scroll = card_scroll.get(agent_idx).copied().unwrap_or(0);
-                let (resp_h, resp_w) = render_card(
+                let preview = previews.get(agent_idx);
+                render_card(
                     f,
                     cell_area,
                     &agents[agent_idx],
+                    preview,
                     selected == Some(agent_idx),
-                    scroll,
+                    host_colors,
                     dimmed,
                 );
-                card_response_heights[agent_idx] = resp_h;
-                card_response_widths[agent_idx] = resp_w;
             }
             // Empty slots render as blank (no border)
         }
@@ -252,10 +242,11 @@ fn render_card(
     f: &mut Frame,
     area: Rect,
     entry: &AgentEntry,
+    preview: Option<&DashboardPreviewState>,
     is_selected: bool,
-    response_scroll: u16,
+    host_colors: HostColors,
     dimmed: bool,
-) -> (u16, u16) {
+) {
     let (border_color, title_color) = if is_selected { (BLUE, BLUE) } else { (BG2, FG) };
 
     let border_style = if is_selected {
@@ -280,7 +271,7 @@ fn render_card(
     f.render_widget(block, area);
 
     if raw_inner.height == 0 || raw_inner.width < 2 {
-        return (0, 0);
+        return;
     }
     let inner = Rect {
         x: raw_inner.x + 1,
@@ -492,7 +483,7 @@ fn render_card(
     // -----------------------------------------------------------------------
 
     let Some(resp_area) = response_area else {
-        return (0, 0);
+        return;
     };
 
     // 1-line gap, then content
@@ -504,48 +495,40 @@ fn render_card(
             height: resp_area.height - 1,
         }
     } else {
-        return (0, 0);
+        return;
     };
 
-    // Render response content
-    match &entry.meta.last_model_response {
-        Some(response) if !response.is_empty() => {
-            let md_text = tui_markdown::from_str(response);
-            let scroll_offset = if is_selected { response_scroll } else { 0 };
-            let para = Paragraph::new(md_text)
-                .wrap(ratatui::widgets::Wrap { trim: false })
-                .scroll((scroll_offset, 0));
-            f.render_widget(para, content_area);
-
-            // Scroll hint on selected card
-            if is_selected && scroll_offset > 0 {
-                let hint_area = Rect {
-                    height: 1,
-                    ..content_area
-                };
-                let hint = Paragraph::new("▲ PgUp")
-                    .style(ds(dimmed).fg(GRAY))
-                    .alignment(Alignment::Right);
-                f.render_widget(hint, hint_area);
+    if let Some(ansi) = preview.and_then(DashboardPreviewState::ansi) {
+        crate::ghostty::render::render_embedded_content(
+            ansi.as_bytes(),
+            f,
+            content_area,
+            host_colors.fg,
+            host_colors.bg,
+        );
+        if dimmed {
+            let buf = f.buffer_mut();
+            for y in content_area.y..content_area.bottom() {
+                for x in content_area.x..content_area.right() {
+                    let cell = &mut buf[(x, y)];
+                    cell.set_style(cell.style().add_modifier(Modifier::DIM));
+                }
             }
         }
-        _ => {
-            let hint_top = content_area.height.saturating_sub(1) / 2;
-            let hint_area = Rect {
-                y: content_area.y + hint_top,
-                height: 1,
-                ..content_area
-            };
-            let hint = Paragraph::new(Span::styled(
-                "No response yet",
-                ds(dimmed).fg(GRAY).add_modifier(Modifier::ITALIC),
-            ))
-            .alignment(Alignment::Center);
-            f.render_widget(hint, hint_area);
-        }
+    } else {
+        let hint_top = content_area.height.saturating_sub(1) / 2;
+        let hint_area = Rect {
+            y: content_area.y + hint_top,
+            height: 1,
+            ..content_area
+        };
+        let hint = Paragraph::new(Span::styled(
+            "No preview yet",
+            ds(dimmed).fg(GRAY).add_modifier(Modifier::ITALIC),
+        ))
+        .alignment(Alignment::Center);
+        f.render_widget(hint, hint_area);
     }
-
-    (content_area.height, content_area.width)
 }
 
 // ---------------------------------------------------------------------------
@@ -586,8 +569,6 @@ fn render_keybindings_bar(
     push_keybind(&mut spans, "enter", "open", dimmed);
     spans.push(Span::raw(" "));
     push_keybind(&mut spans, "ctrl+arrows", "move card", dimmed);
-    spans.push(Span::raw(" "));
-    push_keybind(&mut spans, "pgup/pgdown", "scroll", dimmed);
     spans.push(Span::raw(" "));
     push_keybind(&mut spans, "q", "quit", dimmed);
 

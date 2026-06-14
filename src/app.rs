@@ -303,6 +303,33 @@ pub struct AgentViewState {
     pub remove_worktree_on_stop: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct DashboardPreviewState {
+    raw: String,
+    prev_raw_len: usize,
+    prev_raw: String,
+}
+
+impl DashboardPreviewState {
+    pub fn ansi(&self) -> Option<&str> {
+        if self.raw.is_empty() {
+            None
+        } else {
+            Some(self.raw.as_str())
+        }
+    }
+
+    pub fn update_raw(&mut self, raw: &str) -> bool {
+        if raw.len() == self.prev_raw_len && raw == self.prev_raw {
+            return false;
+        }
+        self.prev_raw_len = raw.len();
+        self.prev_raw = raw.to_owned();
+        self.raw = raw.to_owned();
+        true
+    }
+}
+
 impl AgentViewState {
     /// Returns `true` if the lines were updated (raw content changed),
     /// `false` if the capture was identical to the previous tick.
@@ -497,15 +524,8 @@ pub struct App {
     /// Set to `true` whenever state changes and a redraw is needed.
     /// Cleared to `false` by the render loop after each draw.
     pub dirty: bool,
-    /// Per-card scroll offset for the model response block on the dashboard.
-    pub card_scroll: Vec<u16>,
-    /// Per-card response viewport height, updated every render frame.
-    /// Used to cap scroll so content doesn't scroll past the last line.
-    pub card_response_heights: Vec<u16>,
-    /// Per-card response content area width, updated every render frame.
-    /// Used together with Paragraph::line_count to compute the true
-    /// wrapped line count for accurate max-scroll calculation.
-    pub card_response_widths: Vec<u16>,
+    /// Cached live tmux viewport snapshots for dashboard cards.
+    pub dashboard_previews: Vec<DashboardPreviewState>,
     /// Host terminal default colors (fg/bg), probed once at startup via OSC 10/11.
     /// Used as the default bg/fg for ghostty cells without explicit colors.
     pub host_colors: HostColors,
@@ -539,9 +559,7 @@ impl App {
             tx,
             rx,
             dirty: true, // force initial draw
-            card_scroll: vec![0u16; card_count],
-            card_response_heights: vec![0u16; card_count],
-            card_response_widths: vec![0u16; card_count],
+            dashboard_previews: vec![DashboardPreviewState::default(); card_count],
             host_colors,
             notification: StatusNotification::default(),
         };
@@ -715,7 +733,11 @@ impl App {
             }
             Event::DashboardTick => {
                 self.handle_dashboard_tick().await;
-                self.dirty = true;
+                if self.notification.is_blinking_running()
+                    || self.notification.is_blinking_waiting()
+                {
+                    self.dirty = true;
+                }
                 true
             }
             Event::AgentViewTick => {
@@ -788,49 +810,6 @@ impl App {
                         self.selected = global_idx;
                     }
                     self.dirty = true;
-                }
-            }
-            MouseEventKind::ScrollUp => {
-                if let Some(slot) = self.dashboard_slot_at(mouse.column, mouse.row) {
-                    if let Some(global_idx) = self.visible_agent_indices().get(slot).copied() {
-                        if let Some(s) = self.card_scroll.get_mut(global_idx) {
-                            *s = s.saturating_sub(1);
-                            self.dirty = true;
-                        }
-                    }
-                }
-            }
-            MouseEventKind::ScrollDown => {
-                if let Some(slot) = self.dashboard_slot_at(mouse.column, mouse.row) {
-                    let Some(global_idx) = self.visible_agent_indices().get(slot).copied() else {
-                        return;
-                    };
-                    let viewport_h = self
-                        .card_response_heights
-                        .get(global_idx)
-                        .copied()
-                        .unwrap_or(1)
-                        .max(1);
-                    let content_w = self
-                        .card_response_widths
-                        .get(global_idx)
-                        .copied()
-                        .unwrap_or(80)
-                        .max(1);
-                    let max_scroll = self
-                        .agents
-                        .get(global_idx)
-                        .and_then(|e| e.meta.last_model_response.as_deref())
-                        .map(|r| {
-                            let text = tui_markdown::from_str(r);
-                            let total = wrapped_line_count(&text, content_w);
-                            total.saturating_sub(viewport_h)
-                        })
-                        .unwrap_or(0);
-                    if let Some(s) = self.card_scroll.get_mut(global_idx) {
-                        *s = s.saturating_add(1).min(max_scroll);
-                        self.dirty = true;
-                    }
                 }
             }
             _ => {}
@@ -1032,16 +1011,14 @@ impl App {
     // -----------------------------------------------------------------------
 
     /// Swap the selected card with `target`, keeping `selected` tracking the
-    /// moved card.  Scroll offsets and cached geometry follow the swap.
+    /// moved card. Dashboard preview caches follow the swap.
     fn move_card(&mut self, target: usize) {
         self.agents.swap(self.selected, target);
         self.adapters.swap(self.selected, target);
         self.config.agents.swap(self.selected, target);
-        self.card_scroll.swap(self.selected, target);
         let max_idx = self.selected.max(target);
-        if self.card_response_heights.len() > max_idx {
-            self.card_response_heights.swap(self.selected, target);
-            self.card_response_widths.swap(self.selected, target);
+        if self.dashboard_previews.len() > max_idx {
+            self.dashboard_previews.swap(self.selected, target);
         }
         self.selected = target;
         self.dirty = true;
@@ -1169,7 +1146,7 @@ impl App {
                     // the previous row (same index arithmetic: selected - 1).
                     if selected_pos % cols > 0 || selected_pos >= cols {
                         self.selected = visible_indices[selected_pos - 1];
-                        self.reset_card_scroll();
+                        self.dirty = true;
                     }
                 }
             }
@@ -1179,7 +1156,7 @@ impl App {
                     // of the next row, as long as a next card exists.
                     if selected_pos + 1 < visible_indices.len() {
                         self.selected = visible_indices[selected_pos + 1];
-                        self.reset_card_scroll();
+                        self.dirty = true;
                     }
                 }
             }
@@ -1188,7 +1165,7 @@ impl App {
                     let (cols, _) = grid_layout(visible_indices.len());
                     if selected_pos >= cols {
                         self.selected = visible_indices[selected_pos - cols];
-                        self.reset_card_scroll();
+                        self.dirty = true;
                     }
                 }
             }
@@ -1197,54 +1174,13 @@ impl App {
                     let (cols, _) = grid_layout(visible_indices.len());
                     if selected_pos + cols < visible_indices.len() {
                         self.selected = visible_indices[selected_pos + cols];
-                        self.reset_card_scroll();
+                        self.dirty = true;
                     }
-                }
-            }
-            KeyCode::PageDown => {
-                if let Some(s) = self.card_scroll.get_mut(self.selected) {
-                    let viewport_h = self
-                        .card_response_heights
-                        .get(self.selected)
-                        .copied()
-                        .unwrap_or(1)
-                        .max(1);
-                    let content_w = self
-                        .card_response_widths
-                        .get(self.selected)
-                        .copied()
-                        .unwrap_or(80)
-                        .max(1);
-                    let max_scroll = self
-                        .agents
-                        .get(self.selected)
-                        .and_then(|e| e.meta.last_model_response.as_deref())
-                        .map(|r| {
-                            let text = tui_markdown::from_str(r);
-                            let total = wrapped_line_count(&text, content_w);
-                            total.saturating_sub(viewport_h)
-                        })
-                        .unwrap_or(0);
-                    *s = s.saturating_add(5).min(max_scroll);
-                    self.dirty = true;
-                }
-            }
-            KeyCode::PageUp => {
-                if let Some(s) = self.card_scroll.get_mut(self.selected) {
-                    *s = s.saturating_sub(5);
-                    self.dirty = true;
                 }
             }
             _ => {}
         }
         true
-    }
-
-    fn reset_card_scroll(&mut self) {
-        if let Some(s) = self.card_scroll.get_mut(self.selected) {
-            *s = 0;
-        }
-        self.dirty = true;
     }
 
     // -----------------------------------------------------------------------
@@ -1254,6 +1190,7 @@ impl App {
     async fn handle_dashboard_tick(&mut self) {
         let len = self.adapters.len();
         let mut config_dirty = false;
+        let mut metadata_changed = false;
 
         for i in 0..len {
             let status = self.adapters[i].get_status().await;
@@ -1274,6 +1211,15 @@ impl App {
             }
 
             if let Some(entry) = self.agents.get_mut(i) {
+                if entry.meta.status != status
+                    || entry.meta.context != context
+                    || entry.meta.first_prompt != first_prompt
+                    || entry.meta.last_model_response != last_model_response
+                    || entry.meta.model_name != model_name
+                    || entry.meta.total_work_ms != total_work_ms
+                {
+                    metadata_changed = true;
+                }
                 if entry.meta.status != status {
                     entry.meta.status_changed_at = Some(std::time::Instant::now());
                 }
@@ -1286,18 +1232,31 @@ impl App {
             }
         }
 
-        // Ensure card_scroll has an entry for every agent (agents may be added at runtime).
-        if self.card_scroll.len() < self.agents.len() {
-            self.card_scroll.resize(self.agents.len(), 0);
+        if self.dashboard_previews.len() < self.agents.len() {
+            self.dashboard_previews
+                .resize(self.agents.len(), DashboardPreviewState::default());
         }
-        if self.card_response_heights.len() < self.agents.len() {
-            self.card_response_heights.resize(self.agents.len(), 0);
-        }
-        if self.card_response_widths.len() < self.agents.len() {
-            self.card_response_widths.resize(self.agents.len(), 0);
+
+        let mut previews_changed = false;
+        for idx in self.visible_agent_indices() {
+            let Some(pane) = self.agents.get(idx).map(|entry| entry.config.pane.clone()) else {
+                continue;
+            };
+            if !tmux::is_alive(&pane) {
+                continue;
+            }
+            if let Ok(raw) = tmux::capture_pane(&pane)
+                && let Some(preview) = self.dashboard_previews.get_mut(idx)
+                && preview.update_raw(&raw)
+            {
+                previews_changed = true;
+            }
         }
         if config_dirty {
             let _ = self.config.save();
+        }
+        if metadata_changed || previews_changed {
+            self.dirty = true;
         }
     }
 
@@ -1990,6 +1949,8 @@ impl App {
                             };
                             self.agents.push(entry);
                             self.adapters.push(adapter);
+                            self.dashboard_previews
+                                .push(DashboardPreviewState::default());
                             let new_idx = self.agents.len() - 1;
                             self.selected = new_idx;
                             self.agent_view_state = AgentViewState::default();
@@ -2316,6 +2277,9 @@ impl App {
             self.agents.remove(idx);
             self.adapters.remove(idx);
             self.config.agents.remove(idx);
+            if idx < self.dashboard_previews.len() {
+                self.dashboard_previews.remove(idx);
+            }
             let _ = self.config.save();
             // Adjust selected if needed
             if self.selected >= self.agents.len() && !self.agents.is_empty() {
@@ -2451,36 +2415,6 @@ fn matching_agent_indices(
 // ---------------------------------------------------------------------------
 // Key → tmux string conversion
 // ---------------------------------------------------------------------------
-
-/// Count the number of visual (wrapped) lines a `Text` will occupy in a
-/// widget of the given `width`.  This is a lightweight approximation: it
-/// sums the display-column widths of each `Line`'s spans and divides by
-/// `width`, rounding up.  Empty logical lines count as one visual line.
-fn wrapped_line_count(text: &ratatui::text::Text, width: u16) -> u16 {
-    if width == 0 {
-        return 0;
-    }
-    let mut count: u16 = 0;
-    for line in text.iter() {
-        let line_width: usize = line
-            .spans
-            .iter()
-            .map(|s| unicode_display_width(s.content.as_ref()))
-            .sum();
-        let rows = if line_width == 0 {
-            1
-        } else {
-            ((line_width as u16).saturating_sub(1) / width) + 1
-        };
-        count = count.saturating_add(rows);
-    }
-    count
-}
-
-fn unicode_display_width(s: &str) -> usize {
-    use unicode_width::UnicodeWidthStr;
-    UnicodeWidthStr::width(s)
-}
 
 fn uses_captured_scrollback(kind: &AgentKind) -> bool {
     matches!(kind, AgentKind::Claude { .. } | AgentKind::Codex { .. })
