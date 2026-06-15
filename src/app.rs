@@ -27,6 +27,7 @@ const BLINK_DURATION: std::time::Duration = std::time::Duration::from_secs(3);
 const BLINK_INTERVAL_MS: u128 = 500;
 const PANE_CHROME_HEIGHT: u16 = 4;
 const PANE_BORDER_WIDTH: u16 = 2;
+const MOUSE_WHEEL_SCROLL_LINES: usize = 3;
 
 impl StatusNotification {
     pub fn reset(&mut self, counts: AgentStatusCounts) {
@@ -127,6 +128,8 @@ pub struct GitViewerState {
     pub pane: String,
     /// Captured pane output lines.
     pub lines: Vec<String>,
+    /// Number of lines scrolled up from the live bottom of the pane.
+    pub view_scroll: usize,
     /// Cursor position within the pane's visible screen (col, row).
     pub cursor: Option<(u16, u16)>,
     /// Last dimensions sent to tmux resize-window (width, height).
@@ -150,6 +153,8 @@ pub struct TerminalViewState {
     pub pane: String,
     /// Captured pane output lines.
     pub lines: Vec<String>,
+    /// Number of lines scrolled up from the live bottom of the pane.
+    pub view_scroll: usize,
     /// Cursor position within the pane's visible screen (col, row).
     pub cursor: Option<(u16, u16)>,
     /// Last dimensions sent to tmux resize-window (width, height).
@@ -170,6 +175,7 @@ impl TerminalViewState {
             agent_idx,
             pane,
             lines: Vec::new(),
+            view_scroll: 0,
             cursor: None,
             last_pane_size: None,
             pane_mouse_active: false,
@@ -188,7 +194,8 @@ impl TerminalViewState {
 
         let all_lines = raw.trim_end_matches('\n').split('\n');
         let new_lines: Vec<String> = all_lines.map(|s| s.to_string()).collect();
-        self.lines = new_lines;
+        let start = new_lines.len().saturating_sub(MAX_RETAINED_LINES);
+        self.lines = new_lines[start..].to_vec();
         true
     }
 }
@@ -199,6 +206,7 @@ impl GitViewerState {
             agent_idx,
             pane,
             lines: Vec::new(),
+            view_scroll: 0,
             cursor: None,
             last_pane_size: None,
             pane_mouse_active: false,
@@ -217,7 +225,8 @@ impl GitViewerState {
 
         let all_lines = raw.trim_end_matches('\n').split('\n');
         let new_lines: Vec<String> = all_lines.map(|s| s.to_string()).collect();
-        self.lines = new_lines;
+        let start = new_lines.len().saturating_sub(MAX_RETAINED_LINES);
+        self.lines = new_lines[start..].to_vec();
         true
     }
 }
@@ -851,11 +860,59 @@ impl App {
             AppState::GitViewer(gv) => {
                 let pane = gv.pane.clone();
                 let mouse_active = gv.pane_mouse_active;
+                if !pane_handles_own_scroll(mouse_active) {
+                    match mouse.kind {
+                        MouseEventKind::ScrollUp => {
+                            if let AppState::GitViewer(ref mut gv) = self.state {
+                                gv.view_scroll = gv
+                                    .view_scroll
+                                    .saturating_add(MOUSE_WHEEL_SCROLL_LINES)
+                                    .min(MAX_RETAINED_LINES);
+                            }
+                            self.dirty = true;
+                            return;
+                        }
+                        MouseEventKind::ScrollDown => {
+                            if let AppState::GitViewer(ref mut gv) = self.state {
+                                gv.view_scroll =
+                                    gv.view_scroll.saturating_sub(MOUSE_WHEEL_SCROLL_LINES);
+                            }
+                            self.dirty = true;
+                            return;
+                        }
+                        MouseEventKind::Down(_) => self.reset_git_viewer_scroll(),
+                        _ => {}
+                    }
+                }
                 self.handle_pane_mouse_generic(mouse, &pane, mouse_active, false);
             }
             AppState::TerminalView(tv) => {
                 let pane = tv.pane.clone();
                 let mouse_active = tv.pane_mouse_active;
+                if !pane_handles_own_scroll(mouse_active) {
+                    match mouse.kind {
+                        MouseEventKind::ScrollUp => {
+                            if let AppState::TerminalView(ref mut tv) = self.state {
+                                tv.view_scroll = tv
+                                    .view_scroll
+                                    .saturating_add(MOUSE_WHEEL_SCROLL_LINES)
+                                    .min(MAX_RETAINED_LINES);
+                            }
+                            self.dirty = true;
+                            return;
+                        }
+                        MouseEventKind::ScrollDown => {
+                            if let AppState::TerminalView(ref mut tv) = self.state {
+                                tv.view_scroll =
+                                    tv.view_scroll.saturating_sub(MOUSE_WHEEL_SCROLL_LINES);
+                            }
+                            self.dirty = true;
+                            return;
+                        }
+                        MouseEventKind::Down(_) => self.reset_terminal_view_scroll(),
+                        _ => {}
+                    }
+                }
                 self.handle_pane_mouse_generic(mouse, &pane, mouse_active, false);
             }
             _ => {}
@@ -879,7 +936,17 @@ impl App {
                         .min(MAX_RETAINED_LINES);
                     self.dirty = true;
                 } else if let Some(entry) = self.agents.get(idx) {
-                    let _ = tmux::send_keys(&entry.config.pane, "PPage");
+                    let pane = entry.config.pane.clone();
+                    if pane_handles_own_scroll(self.agent_view_state.pane_mouse_active) {
+                        self.forward_mouse_to_pane(
+                            mouse,
+                            &pane,
+                            false,
+                            self.agent_view_state.pane_mouse_active,
+                        );
+                    } else {
+                        let _ = tmux::scroll_lines_up(&pane, MOUSE_WHEEL_SCROLL_LINES);
+                    }
                 }
                 return;
             }
@@ -889,7 +956,17 @@ impl App {
                         self.agent_view_state.view_scroll.saturating_sub(3);
                     self.dirty = true;
                 } else if let Some(entry) = self.agents.get(idx) {
-                    let _ = tmux::send_keys(&entry.config.pane, "NPage");
+                    let pane = entry.config.pane.clone();
+                    if pane_handles_own_scroll(self.agent_view_state.pane_mouse_active) {
+                        self.forward_mouse_to_pane(
+                            mouse,
+                            &pane,
+                            false,
+                            self.agent_view_state.pane_mouse_active,
+                        );
+                    } else {
+                        let _ = tmux::scroll_lines_down(&pane, MOUSE_WHEEL_SCROLL_LINES);
+                    }
                 }
                 return;
             }
@@ -917,22 +994,40 @@ impl App {
     ) {
         match mouse.kind {
             MouseEventKind::ScrollUp => {
-                let _ = tmux::send_keys(pane, "PPage");
+                if pane_handles_own_scroll(mouse_active) {
+                    self.forward_mouse_to_pane(mouse, pane, show_overlay, mouse_active);
+                } else {
+                    let _ = tmux::scroll_lines_up(pane, MOUSE_WHEEL_SCROLL_LINES);
+                }
                 return;
             }
             MouseEventKind::ScrollDown => {
-                let _ = tmux::send_keys(pane, "NPage");
+                if pane_handles_own_scroll(mouse_active) {
+                    self.forward_mouse_to_pane(mouse, pane, show_overlay, mouse_active);
+                } else {
+                    let _ = tmux::scroll_lines_down(pane, MOUSE_WHEEL_SCROLL_LINES);
+                }
                 return;
             }
             _ => {}
         }
 
+        self.forward_mouse_to_pane(mouse, pane, show_overlay, mouse_active);
+    }
+
+    fn forward_mouse_to_pane(
+        &mut self,
+        mouse: MouseEvent,
+        pane: &str,
+        show_overlay: bool,
+        mouse_active: bool,
+    ) {
+        let Some(seq) = mouse_event_to_sgr(mouse, show_overlay) else {
+            return;
+        };
+
         let term_height = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
         if mouse.row >= term_height.saturating_sub(1) {
-            return;
-        }
-
-        if show_overlay {
             return;
         }
 
@@ -940,41 +1035,18 @@ impl App {
             return;
         }
 
-        let (mut cb, press) = match mouse.kind {
-            MouseEventKind::Down(btn) => (Self::sgr_button(btn), true),
-            MouseEventKind::Up(btn) => (Self::sgr_button(btn), false),
-            MouseEventKind::Drag(btn) => (Self::sgr_button(btn) + 32, true),
-            MouseEventKind::Moved => (35u8, true),
-            _ => return,
-        };
-
-        if mouse.modifiers.contains(KeyModifiers::SHIFT) {
-            cb += 4;
-        }
-        if mouse.modifiers.contains(KeyModifiers::ALT) {
-            cb += 8;
-        }
-        if mouse.modifiers.contains(KeyModifiers::CONTROL) {
-            cb += 16;
-        }
-
-        let suffix = if press { 'M' } else { 'm' };
-        let seq = format!(
-            "\x1b[<{};{};{}{}",
-            cb,
-            mouse.column.saturating_sub(1) + 1,
-            mouse.row.saturating_sub(2) + 1,
-            suffix
-        );
-
         let _ = tmux::send_literal(pane, &seq);
     }
 
-    fn sgr_button(btn: MouseButton) -> u8 {
-        match btn {
-            MouseButton::Left => 0,
-            MouseButton::Middle => 1,
-            MouseButton::Right => 2,
+    fn reset_git_viewer_scroll(&mut self) {
+        if let AppState::GitViewer(ref mut gv) = self.state {
+            gv.view_scroll = 0;
+        }
+    }
+
+    fn reset_terminal_view_scroll(&mut self) {
+        if let AppState::TerminalView(ref mut tv) = self.state {
+            tv.view_scroll = 0;
         }
     }
 
@@ -1505,8 +1577,10 @@ impl App {
                             .saturating_add(page)
                             .min(MAX_RETAINED_LINES);
                         self.dirty = true;
-                    } else {
+                    } else if pane_handles_own_scroll(self.agent_view_state.pane_mouse_active) {
                         let _ = tmux::send_keys(&entry.config.pane, "PPage");
+                    } else {
+                        let _ = tmux::scroll_page_up(&entry.config.pane);
                     }
                 }
             }
@@ -1520,8 +1594,10 @@ impl App {
                         self.agent_view_state.view_scroll =
                             self.agent_view_state.view_scroll.saturating_sub(page);
                         self.dirty = true;
-                    } else {
+                    } else if pane_handles_own_scroll(self.agent_view_state.pane_mouse_active) {
                         let _ = tmux::send_keys(&entry.config.pane, "NPage");
+                    } else {
+                        let _ = tmux::scroll_page_down(&entry.config.pane);
                     }
                 }
             }
@@ -1598,6 +1674,10 @@ impl App {
             AppState::GitViewer(gv) => gv.pane.clone(),
             _ => return true,
         };
+        let pane_mouse_active = match &self.state {
+            AppState::GitViewer(gv) => gv.pane_mouse_active,
+            _ => false,
+        };
 
         let prefix_active = match &self.state {
             AppState::GitViewer(gv) => gv.prefix_active,
@@ -1629,7 +1709,33 @@ impl App {
             KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.exit_git_viewer_to_dashboard();
             }
+            KeyCode::PageUp => match page_key_route(pane_mouse_active) {
+                PaneScrollRoute::ForwardToPane => {
+                    let _ = tmux::send_keys(&pane, "PPage");
+                }
+                PaneScrollRoute::UseCapturedScrollback => {
+                    if let AppState::GitViewer(ref mut gv) = self.state {
+                        gv.view_scroll = gv
+                            .view_scroll
+                            .saturating_add(pane_page_scroll())
+                            .min(MAX_RETAINED_LINES);
+                    }
+                    self.dirty = true;
+                }
+            },
+            KeyCode::PageDown => match page_key_route(pane_mouse_active) {
+                PaneScrollRoute::ForwardToPane => {
+                    let _ = tmux::send_keys(&pane, "NPage");
+                }
+                PaneScrollRoute::UseCapturedScrollback => {
+                    if let AppState::GitViewer(ref mut gv) = self.state {
+                        gv.view_scroll = gv.view_scroll.saturating_sub(pane_page_scroll());
+                    }
+                    self.dirty = true;
+                }
+            },
             _ => {
+                self.reset_git_viewer_scroll();
                 let keys = key_event_to_tmux(&key);
                 if !keys.is_empty() {
                     let _ = tmux::send_keys(&pane, &keys);
@@ -1687,15 +1793,27 @@ impl App {
             return;
         }
 
-        if let Ok(raw) = tmux::capture_pane(&pane) {
-            let changed = if let AppState::GitViewer(ref mut gv) = self.state {
-                gv.update_lines(&raw)
+        let changed = if let AppState::GitViewer(ref mut gv) = self.state {
+            if gv.view_scroll > 0 {
+                tmux::capture_pane_history(&pane, MAX_RETAINED_LINES)
+                    .ok()
+                    .map(|raw| {
+                        let changed = gv.update_lines(&raw);
+                        clamp_external_pane_scroll(&mut gv.view_scroll, gv.lines.len());
+                        changed
+                    })
+                    .unwrap_or(false)
             } else {
-                false
-            };
-            if changed {
-                self.dirty = true;
+                tmux::capture_pane(&pane)
+                    .ok()
+                    .map(|raw| gv.update_lines(&raw))
+                    .unwrap_or(false)
             }
+        } else {
+            false
+        };
+        if changed {
+            self.dirty = true;
         }
 
         let new_cursor = tmux::cursor_position(&pane);
@@ -1757,6 +1875,10 @@ impl App {
             AppState::TerminalView(tv) => tv.pane.clone(),
             _ => return true,
         };
+        let pane_mouse_active = match &self.state {
+            AppState::TerminalView(tv) => tv.pane_mouse_active,
+            _ => false,
+        };
 
         let prefix_active = match &self.state {
             AppState::TerminalView(tv) => tv.prefix_active,
@@ -1788,7 +1910,33 @@ impl App {
             KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.exit_terminal_to_dashboard();
             }
+            KeyCode::PageUp => match page_key_route(pane_mouse_active) {
+                PaneScrollRoute::ForwardToPane => {
+                    let _ = tmux::send_keys(&pane, "PPage");
+                }
+                PaneScrollRoute::UseCapturedScrollback => {
+                    if let AppState::TerminalView(ref mut tv) = self.state {
+                        tv.view_scroll = tv
+                            .view_scroll
+                            .saturating_add(pane_page_scroll())
+                            .min(MAX_RETAINED_LINES);
+                    }
+                    self.dirty = true;
+                }
+            },
+            KeyCode::PageDown => match page_key_route(pane_mouse_active) {
+                PaneScrollRoute::ForwardToPane => {
+                    let _ = tmux::send_keys(&pane, "NPage");
+                }
+                PaneScrollRoute::UseCapturedScrollback => {
+                    if let AppState::TerminalView(ref mut tv) = self.state {
+                        tv.view_scroll = tv.view_scroll.saturating_sub(pane_page_scroll());
+                    }
+                    self.dirty = true;
+                }
+            },
             _ => {
+                self.reset_terminal_view_scroll();
                 let keys = key_event_to_tmux(&key);
                 if !keys.is_empty() {
                     let _ = tmux::send_keys(&pane, &keys);
@@ -1842,15 +1990,27 @@ impl App {
             }
         }
 
-        if let Ok(raw) = tmux::capture_pane(&pane) {
-            let changed = if let AppState::TerminalView(ref mut tv) = self.state {
-                tv.update_lines(&raw)
+        let changed = if let AppState::TerminalView(ref mut tv) = self.state {
+            if tv.view_scroll > 0 {
+                tmux::capture_pane_history(&pane, MAX_RETAINED_LINES)
+                    .ok()
+                    .map(|raw| {
+                        let changed = tv.update_lines(&raw);
+                        clamp_external_pane_scroll(&mut tv.view_scroll, tv.lines.len());
+                        changed
+                    })
+                    .unwrap_or(false)
             } else {
-                false
-            };
-            if changed {
-                self.dirty = true;
+                tmux::capture_pane(&pane)
+                    .ok()
+                    .map(|raw| tv.update_lines(&raw))
+                    .unwrap_or(false)
             }
+        } else {
+            false
+        };
+        if changed {
+            self.dirty = true;
         }
 
         let new_cursor = tmux::cursor_position(&pane);
@@ -2465,6 +2625,99 @@ fn unicode_display_width(s: &str) -> usize {
     UnicodeWidthStr::width(s)
 }
 
+fn pane_handles_own_scroll(mouse_active: bool) -> bool {
+    mouse_active
+}
+
+fn pane_page_scroll() -> usize {
+    pane_content_height().max(1)
+}
+
+pub(crate) fn pane_content_height() -> usize {
+    crossterm::terminal::size()
+        .map(|(_, rows)| rows.saturating_sub(PANE_CHROME_HEIGHT) as usize)
+        .unwrap_or(20)
+}
+
+pub(crate) fn pane_visible_line_range(
+    total_lines: usize,
+    view_scroll: usize,
+    viewport_height: usize,
+) -> (usize, usize) {
+    let max_scroll = total_lines.saturating_sub(viewport_height);
+    let effective_scroll = view_scroll.min(max_scroll);
+    if total_lines == 0 {
+        (0, 0)
+    } else {
+        let end = total_lines.saturating_sub(effective_scroll);
+        let start = end.saturating_sub(viewport_height);
+        (start, end)
+    }
+}
+
+fn clamp_external_pane_scroll(view_scroll: &mut usize, total_lines: usize) {
+    let max_scroll = total_lines.saturating_sub(pane_content_height());
+    if *view_scroll > max_scroll {
+        *view_scroll = max_scroll;
+    }
+}
+
+fn page_key_route(mouse_active: bool) -> PaneScrollRoute {
+    if pane_handles_own_scroll(mouse_active) {
+        PaneScrollRoute::ForwardToPane
+    } else {
+        PaneScrollRoute::UseCapturedScrollback
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaneScrollRoute {
+    ForwardToPane,
+    UseCapturedScrollback,
+}
+
+fn mouse_event_to_sgr(mouse: MouseEvent, show_overlay: bool) -> Option<String> {
+    if show_overlay {
+        return None;
+    }
+
+    let (mut cb, suffix) = match mouse.kind {
+        MouseEventKind::Down(btn) => (sgr_button(btn), 'M'),
+        MouseEventKind::Up(btn) => (sgr_button(btn), 'm'),
+        MouseEventKind::Drag(btn) => (sgr_button(btn) + 32, 'M'),
+        MouseEventKind::Moved => (35u8, 'M'),
+        MouseEventKind::ScrollUp => (64u8, 'M'),
+        MouseEventKind::ScrollDown => (65u8, 'M'),
+        _ => return None,
+    };
+
+    if mouse.modifiers.contains(KeyModifiers::SHIFT) {
+        cb += 4;
+    }
+    if mouse.modifiers.contains(KeyModifiers::ALT) {
+        cb += 8;
+    }
+    if mouse.modifiers.contains(KeyModifiers::CONTROL) {
+        cb += 16;
+    }
+
+    Some(format!(
+        "\x1b[<{};{};{}{}",
+        cb,
+        mouse.column.saturating_sub(1) + 1,
+        mouse.row.saturating_sub(2) + 1,
+        suffix
+    ))
+}
+
+fn sgr_button(btn: MouseButton) -> u8 {
+    match btn {
+        MouseButton::Left => 0,
+        MouseButton::Middle => 1,
+        MouseButton::Right => 2,
+    }
+}
+
 fn uses_captured_scrollback(kind: &AgentKind) -> bool {
     matches!(kind, AgentKind::Claude { .. } | AgentKind::Codex { .. })
 }
@@ -2504,6 +2757,48 @@ mod project_tests {
             KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL).code,
             KeyCode::Char('p')
         );
+    }
+
+    #[test]
+    fn page_keys_forward_to_interactive_panes() {
+        assert_eq!(page_key_route(true), PaneScrollRoute::ForwardToPane);
+    }
+
+    #[test]
+    fn page_keys_use_captured_scrollback_for_plain_panes() {
+        assert_eq!(page_key_route(false), PaneScrollRoute::UseCapturedScrollback);
+    }
+
+    #[test]
+    fn scroll_wheel_mouse_events_encode_as_sgr_sequences() {
+        let scroll_up = MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 4,
+            row: 6,
+            modifiers: KeyModifiers::empty(),
+        };
+        let scroll_down = MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 4,
+            row: 6,
+            modifiers: KeyModifiers::SHIFT,
+        };
+
+        assert_eq!(
+            mouse_event_to_sgr(scroll_up, false).as_deref(),
+            Some("\x1b[<64;4;5M")
+        );
+        assert_eq!(
+            mouse_event_to_sgr(scroll_down, false).as_deref(),
+            Some("\x1b[<69;4;5M")
+        );
+    }
+
+    #[test]
+    fn pane_visible_line_range_slices_from_bottom_with_offset() {
+        assert_eq!(pane_visible_line_range(6, 0, 3), (3, 6));
+        assert_eq!(pane_visible_line_range(6, 2, 3), (1, 4));
+        assert_eq!(pane_visible_line_range(2, 8, 3), (0, 2));
     }
 }
 

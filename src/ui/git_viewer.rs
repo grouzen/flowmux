@@ -34,13 +34,25 @@ pub fn render_git_viewer(
     let content_area = chunks[1];
     let status_area = chunks[2];
 
-    let visible_text = state.lines.join("\r\n");
+    let viewport_height = content_area.height.saturating_sub(2) as usize;
+    let (start, end) =
+        crate::app::pane_visible_line_range(state.lines.len(), state.view_scroll, viewport_height);
+    let visible_text = if state.lines.is_empty() {
+        String::new()
+    } else {
+        state.lines[start..end].join("\r\n")
+    };
+    let cursor_position = if state.view_scroll == 0 {
+        state.cursor
+    } else {
+        None
+    };
 
     crate::ghostty::render::render_pane_content(
         visible_text.as_bytes(),
         f,
         content_area,
-        state.cursor,
+        cursor_position,
         host_colors.fg,
         host_colors.bg,
     );

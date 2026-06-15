@@ -145,12 +145,15 @@ pub fn send_literal(target: &str, data: &str) -> Result<()> {
 ///      visible area is never used.
 ///   2. Capturing the full scrollback causes the piped string to grow without
 ///      bound as the agent produces output, driving CPU usage up linearly.
-///   3. Scrolling is handled by tmux copy-mode (PPage/NPage), which shifts the
-///      visible viewport.  capture-pane captures whatever is currently visible,
-///      so scrolled content is captured correctly without needing -S -.
+///   3. When tmux copy-mode is active, we capture the copy-mode screen (`-M`)
+///      so pane scrolling is reflected in the rendered viewport.
 pub fn capture_pane(target: &str) -> Result<String> {
-    let output = Command::new("tmux")
-        .args(["capture-pane", "-t", target, "-p", "-e"])
+    let mut cmd = Command::new("tmux");
+    cmd.args(["capture-pane", "-t", target, "-p", "-e"]);
+    if pane_in_mode(target) {
+        cmd.arg("-M");
+    }
+    let output = cmd
         .output()
         .with_context(|| format!("failed to capture pane {}", target))?;
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
@@ -209,6 +212,52 @@ pub fn pane_mouse_active(target: &str) -> bool {
         .output()
         .map(|o| o.stdout.first().copied() == Some(b'1'))
         .unwrap_or(false)
+}
+
+pub fn pane_in_mode(target: &str) -> bool {
+    Command::new("tmux")
+        .args(["display-message", "-t", target, "-p", "#{pane_in_mode}"])
+        .output()
+        .map(|o| o.stdout.first().copied() == Some(b'1'))
+        .unwrap_or(false)
+}
+
+fn ensure_copy_mode(target: &str) -> Result<()> {
+    Command::new("tmux")
+        .args(["copy-mode", "-t", target])
+        .status()
+        .with_context(|| format!("failed to enter copy-mode for {}", target))?;
+    Ok(())
+}
+
+fn copy_mode_command(target: &str, command: &str, repeat: Option<usize>) -> Result<()> {
+    ensure_copy_mode(target)?;
+
+    let mut cmd = Command::new("tmux");
+    cmd.args(["send-keys", "-X"]);
+    if let Some(repeat) = repeat {
+        cmd.args(["-N", &repeat.to_string()]);
+    }
+    cmd.args(["-t", target, command])
+        .status()
+        .with_context(|| format!("failed to run copy-mode command `{command}` on {target}"))?;
+    Ok(())
+}
+
+pub fn scroll_page_up(target: &str) -> Result<()> {
+    copy_mode_command(target, "page-up", None)
+}
+
+pub fn scroll_page_down(target: &str) -> Result<()> {
+    copy_mode_command(target, "page-down", None)
+}
+
+pub fn scroll_lines_up(target: &str, lines: usize) -> Result<()> {
+    copy_mode_command(target, "scroll-up", Some(lines.max(1)))
+}
+
+pub fn scroll_lines_down(target: &str, lines: usize) -> Result<()> {
+    copy_mode_command(target, "scroll-down", Some(lines.max(1)))
 }
 
 /// Check whether a pane is alive.

@@ -46,17 +46,9 @@ pub fn render_agent_view(
     // This avoids a flicker cycle that would occur if we mutated state and
     // triggered a dirty→redraw round-trip.
     let lines = &state.lines;
-    let total = lines.len();
-    let max_scroll = total.saturating_sub(viewport_height);
-    let effective_scroll = state.view_scroll.min(max_scroll);
-    let (start, end) = if total == 0 {
-        (0, 0)
-    } else {
-        let end = total.saturating_sub(effective_scroll);
-        let start = end.saturating_sub(viewport_height);
-        (start, end)
-    };
-    let visible_text = if total == 0 {
+    let (start, end) =
+        crate::app::pane_visible_line_range(lines.len(), state.view_scroll, viewport_height);
+    let visible_text = if lines.is_empty() {
         String::new()
     } else {
         lines[start..end].join("\r\n")
