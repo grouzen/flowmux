@@ -199,10 +199,10 @@ async fn hook_handler(
                 // the payload) don't erase the previous response.
                 if last_assistant_message.is_some() {
                     entry.last_model_response = last_assistant_message;
-                } else if let Some(ref info) = parsed {
-                    if info.last_response_text.is_some() {
-                        entry.last_model_response = info.last_response_text.clone();
-                    }
+                } else if let Some(ref info) = parsed
+                    && info.last_response_text.is_some()
+                {
+                    entry.last_model_response = info.last_response_text.clone();
                 }
                 if let Some(info) = parsed {
                     entry.context_used = Some(info.context_used);
@@ -392,13 +392,12 @@ pub fn parse_transcript(transcript_path: &str) -> Option<TranscriptInfo> {
                 if !matches!(u.message.role, UserRole::User) {
                     continue;
                 }
-                if let UserContent::Blocks(blocks) = &u.message.content {
-                    if blocks
+                if let UserContent::Blocks(blocks) = &u.message.content
+                    && blocks
                         .iter()
                         .any(|b| matches!(b, UserContentBlock::ToolResult { .. }))
-                    {
-                        continue;
-                    }
+                {
+                    continue;
                 }
 
                 let text = match &u.message.content {
@@ -458,10 +457,10 @@ pub fn parse_transcript(transcript_path: &str) -> Option<TranscriptInfo> {
             }
 
             Entry::System(s) => {
-                if matches!(s.subtype, SystemSubtype::TurnDuration) {
-                    if let Some(ms) = s.duration_ms {
-                        turn_duration_sum_ms += ms as u64;
-                    }
+                if matches!(s.subtype, SystemSubtype::TurnDuration)
+                    && let Some(ms) = s.duration_ms
+                {
+                    turn_duration_sum_ms += ms as u64;
                 }
             }
 

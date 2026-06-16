@@ -70,6 +70,7 @@ fn acquire_session_lock(session: &str) -> Result<std::fs::File> {
 
     let file = std::fs::OpenOptions::new()
         .create(true)
+        .truncate(false)
         .write(true)
         .open(&lock_path)?;
 
@@ -141,13 +142,13 @@ async fn main() -> Result<()> {
     // gracefully (restart returns Err for Claude).
     let mut config_dirty = false;
     for agent_config in config.agents.iter_mut() {
-        if !tmux::is_alive(&agent_config.pane) {
-            if let Ok((updated_config, _adapter)) = runner.restart(agent_config).await {
-                *agent_config = updated_config;
-                config_dirty = true;
-            }
-            // On failure (including Claude agents) the config is left unchanged.
+        if !tmux::is_alive(&agent_config.pane)
+            && let Ok((updated_config, _adapter)) = runner.restart(agent_config).await
+        {
+            *agent_config = updated_config;
+            config_dirty = true;
         }
+        // On failure (including Claude agents) the config is left unchanged.
     }
     if config_dirty {
         let _ = config.save();

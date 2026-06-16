@@ -7,18 +7,12 @@ use anyhow::Result;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 
 /// Probed colors from the host terminal.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct HostColors {
     /// Foreground color (OSC 10), if successfully queried.
     pub fg: Option<(u8, u8, u8)>,
     /// Background color (OSC 11), if successfully queried.
     pub bg: Option<(u8, u8, u8)>,
-}
-
-impl Default for HostColors {
-    fn default() -> Self {
-        Self { fg: None, bg: None }
-    }
 }
 
 /// Probe the host terminal's default fg/bg colors via tmux passthrough.

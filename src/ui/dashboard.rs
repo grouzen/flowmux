@@ -28,6 +28,7 @@ fn ds(dimmed: bool) -> Style {
 // Public entry point
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_dashboard(
     f: &mut Frame,
     area: Rect,
@@ -109,6 +110,7 @@ pub fn grid_layout(n: usize) -> (usize, usize) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_grid(
     f: &mut Frame,
     area: Rect,
@@ -237,17 +239,16 @@ fn first_line(s: &str) -> &str {
 
 /// Replaces the home directory prefix with `~` for compact display.
 pub(crate) fn shellify_dir(dir: &str) -> String {
-    if let Ok(home) = std::env::var("HOME") {
-        if let Some(rest) = dir.strip_prefix(&home) {
-            return format!("~{}", rest);
-        }
+    if let Ok(home) = std::env::var("HOME")
+        && let Some(rest) = dir.strip_prefix(&home)
+    {
+        return format!("~{}", rest);
     }
     dir.to_string()
 }
 
 /// Formats a millisecond duration into a human-readable string
 /// (e.g. "3h 12m", "45m", "< 1m").
-
 fn render_card(
     f: &mut Frame,
     area: Rect,

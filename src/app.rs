@@ -1053,13 +1053,12 @@ impl App {
                 }
             }
             MouseEventKind::ScrollUp => {
-                if let Some(slot) = self.dashboard_slot_at(mouse.column, mouse.row) {
-                    if let Some(global_idx) = self.visible_agent_indices().get(slot).copied() {
-                        if let Some(s) = self.card_scroll.get_mut(global_idx) {
-                            *s = s.saturating_sub(1);
-                            self.dirty = true;
-                        }
-                    }
+                if let Some(slot) = self.dashboard_slot_at(mouse.column, mouse.row)
+                    && let Some(global_idx) = self.visible_agent_indices().get(slot).copied()
+                    && let Some(s) = self.card_scroll.get_mut(global_idx)
+                {
+                    *s = s.saturating_sub(1);
+                    self.dirty = true;
                 }
             }
             MouseEventKind::ScrollDown => {
@@ -1436,15 +1435,13 @@ impl App {
                 self.create_project_state = CreateProjectState::default();
                 self.state = AppState::CreateProjectDialog;
             }
-            KeyCode::Char('d') if ctrl => {
-                if self.active_project_name() != DEFAULT_PROJECT_NAME {
-                    self.state = AppState::RemoveProjectDialog(RemoveProjectState {
-                        idx: self.active_project_idx,
-                        name: self.active_project_name().to_string(),
-                        agent_count: self.current_project_agent_count(),
-                        confirm_remove_agents: false,
-                    });
-                }
+            KeyCode::Char('d') if ctrl && self.active_project_name() != DEFAULT_PROJECT_NAME => {
+                self.state = AppState::RemoveProjectDialog(RemoveProjectState {
+                    idx: self.active_project_idx,
+                    name: self.active_project_name().to_string(),
+                    agent_count: self.current_project_agent_count(),
+                    confirm_remove_agents: false,
+                });
             }
             KeyCode::Char('d') => {
                 if let Some(idx) = selected_visible
@@ -1617,11 +1614,12 @@ impl App {
             // Persist newly discovered session IDs so the dashboard shows
             // correct history immediately on the next startup.
             let session_id = self.adapters[i].get_cached_session_id();
-            if let Some(agent_config) = self.config.agents.get_mut(i) {
-                if session_id.is_some() && session_id.as_deref() != agent_config.session_id() {
-                    agent_config.set_session_id(session_id);
-                    config_dirty = true;
-                }
+            if let Some(agent_config) = self.config.agents.get_mut(i)
+                && session_id.is_some()
+                && session_id.as_deref() != agent_config.session_id()
+            {
+                agent_config.set_session_id(session_id);
+                config_dirty = true;
             }
 
             if let Some(entry) = self.agents.get_mut(i) {
@@ -2033,11 +2031,11 @@ impl App {
             _ => return,
         };
 
-        if let Some(colon_pos) = pane.find(':') {
-            if let Some(dot_pos) = pane[colon_pos..].find('.') {
-                let window_target = &pane[..colon_pos + dot_pos];
-                let _ = tmux::kill_window(window_target);
-            }
+        if let Some(colon_pos) = pane.find(':')
+            && let Some(dot_pos) = pane[colon_pos..].find('.')
+        {
+            let window_target = &pane[..colon_pos + dot_pos];
+            let _ = tmux::kill_window(window_target);
         }
 
         self.agent_view_state = AgentViewState::default();
@@ -2052,11 +2050,11 @@ impl App {
             _ => return,
         };
 
-        if let Some(colon_pos) = pane.find(':') {
-            if let Some(dot_pos) = pane[colon_pos..].find('.') {
-                let window_target = &pane[..colon_pos + dot_pos];
-                let _ = tmux::kill_window(window_target);
-            }
+        if let Some(colon_pos) = pane.find(':')
+            && let Some(dot_pos) = pane[colon_pos..].find('.')
+        {
+            let window_target = &pane[..colon_pos + dot_pos];
+            let _ = tmux::kill_window(window_target);
         }
 
         self.state = AppState::Dashboard;
@@ -2075,13 +2073,13 @@ impl App {
             return;
         }
 
-        if let AppState::GitViewer(ref mut gv) = self.state {
-            if let Ok((term_cols, term_rows)) = crossterm::terminal::size() {
-                let desired = tmux_pane_viewport_size(term_cols, term_rows);
-                if gv.last_pane_size != Some(desired) {
-                    let _ = tmux::resize_window(&pane, desired.0, desired.1);
-                    gv.last_pane_size = Some(desired);
-                }
+        if let AppState::GitViewer(ref mut gv) = self.state
+            && let Ok((term_cols, term_rows)) = crossterm::terminal::size()
+        {
+            let desired = tmux_pane_viewport_size(term_cols, term_rows);
+            if gv.last_pane_size != Some(desired) {
+                let _ = tmux::resize_window(&pane, desired.0, desired.1);
+                gv.last_pane_size = Some(desired);
             }
         }
 
@@ -2267,13 +2265,13 @@ impl App {
             return;
         }
 
-        if let AppState::TerminalView(ref mut tv) = self.state {
-            if let Ok((term_cols, term_rows)) = crossterm::terminal::size() {
-                let desired = tmux_pane_viewport_size(term_cols, term_rows);
-                if tv.last_pane_size != Some(desired) {
-                    let _ = tmux::resize_window(&pane, desired.0, desired.1);
-                    tv.last_pane_size = Some(desired);
-                }
+        if let AppState::TerminalView(ref mut tv) = self.state
+            && let Ok((term_cols, term_rows)) = crossterm::terminal::size()
+        {
+            let desired = tmux_pane_viewport_size(term_cols, term_rows);
+            if tv.last_pane_size != Some(desired) {
+                let _ = tmux::resize_window(&pane, desired.0, desired.1);
+                tv.last_pane_size = Some(desired);
             }
         }
 
@@ -2339,19 +2337,19 @@ impl App {
                         }
                     };
 
-                    if let Some(should_commit) = action {
-                        if should_commit {
-                            match self.create_state.commit_selector_candidate(&current_focus) {
-                                Ok(true) => {
-                                    self.create_state.error = None;
-                                }
-                                Ok(false) => {}
-                                Err(err) => {
-                                    self.create_state.error = Some(err);
-                                }
+                    if let Some(should_commit) = action
+                        && should_commit
+                    {
+                        match self.create_state.commit_selector_candidate(&current_focus) {
+                            Ok(true) => {
+                                self.create_state.error = None;
                             }
-                            return true;
+                            Ok(false) => {}
+                            Err(err) => {
+                                self.create_state.error = Some(err);
+                            }
                         }
+                        return true;
                     }
                 }
 
@@ -2389,15 +2387,15 @@ impl App {
                 }
                 CreateField::CopyDirectories | CreateField::SymlinkDirectories => {
                     let focus = self.create_state.focus.clone();
-                    if self.create_state.selector_enabled(&focus) {
-                        if let Some(selector) = self.create_state.selector_mut(&focus) {
-                            let n = selector.matches.len();
-                            if n > 0 {
-                                let new_idx = selector.selected_idx.saturating_sub(1);
-                                selector.selected_idx = new_idx;
-                                if new_idx < selector.scroll_offset {
-                                    selector.scroll_offset = new_idx;
-                                }
+                    if self.create_state.selector_enabled(&focus)
+                        && let Some(selector) = self.create_state.selector_mut(&focus)
+                    {
+                        let n = selector.matches.len();
+                        if n > 0 {
+                            let new_idx = selector.selected_idx.saturating_sub(1);
+                            selector.selected_idx = new_idx;
+                            if new_idx < selector.scroll_offset {
+                                selector.scroll_offset = new_idx;
                             }
                         }
                     }
@@ -2425,15 +2423,15 @@ impl App {
                 }
                 CreateField::CopyDirectories | CreateField::SymlinkDirectories => {
                     let focus = self.create_state.focus.clone();
-                    if self.create_state.selector_enabled(&focus) {
-                        if let Some(selector) = self.create_state.selector_mut(&focus) {
-                            let n = selector.matches.len();
-                            if n > 0 {
-                                let new_idx = (selector.selected_idx + 1).min(n - 1);
-                                selector.selected_idx = new_idx;
-                                if new_idx >= selector.scroll_offset + MAX_DIR_VISIBLE {
-                                    selector.scroll_offset = new_idx + 1 - MAX_DIR_VISIBLE;
-                                }
+                    if self.create_state.selector_enabled(&focus)
+                        && let Some(selector) = self.create_state.selector_mut(&focus)
+                    {
+                        let n = selector.matches.len();
+                        if n > 0 {
+                            let new_idx = (selector.selected_idx + 1).min(n - 1);
+                            selector.selected_idx = new_idx;
+                            if new_idx >= selector.scroll_offset + MAX_DIR_VISIBLE {
+                                selector.scroll_offset = new_idx + 1 - MAX_DIR_VISIBLE;
                             }
                         }
                     }
@@ -2474,11 +2472,11 @@ impl App {
                 {
                     let focus = self.create_state.focus.clone();
                     let directory = self.create_state.directory.clone();
-                    if let Some(selector) = self.create_state.selector_mut(&focus) {
-                        if selector.descend() {
-                            selector.refresh_matches(&directory);
-                            self.create_state.error = None;
-                        }
+                    if let Some(selector) = self.create_state.selector_mut(&focus)
+                        && selector.descend()
+                    {
+                        selector.refresh_matches(&directory);
+                        self.create_state.error = None;
                     }
                 } else if self.create_state.is_valid() {
                     let name = tmux::sanitize_name(&self.create_state.name.clone());
@@ -2701,23 +2699,21 @@ impl App {
                     CreateField::AgentType => {}
                     CreateField::CreateWorktree => {
                         // Space handled separately; other chars are no-ops here.
-                        if c == ' ' {
-                            if self.create_state.git_repo_root.is_some() {
-                                self.create_state.create_worktree =
-                                    !self.create_state.create_worktree;
-                                if self.create_state.create_worktree {
-                                    self.create_state.refresh_worktree_selector_matches();
-                                } else if matches!(
-                                    self.create_state.focus,
-                                    CreateField::CopyDirectories | CreateField::SymlinkDirectories
-                                ) {
-                                    self.create_state.focus = next_create_field(
-                                        &CreateField::CreateWorktree,
-                                        self.create_state.git_repo_root.is_some(),
-                                        self.create_state.create_worktree,
-                                        self.create_state.available_types.len() > 1,
-                                    );
-                                }
+                        if c == ' ' && self.create_state.git_repo_root.is_some() {
+                            self.create_state.create_worktree =
+                                !self.create_state.create_worktree;
+                            if self.create_state.create_worktree {
+                                self.create_state.refresh_worktree_selector_matches();
+                            } else if matches!(
+                                self.create_state.focus,
+                                CreateField::CopyDirectories | CreateField::SymlinkDirectories
+                            ) {
+                                self.create_state.focus = next_create_field(
+                                    &CreateField::CreateWorktree,
+                                    self.create_state.git_repo_root.is_some(),
+                                    self.create_state.create_worktree,
+                                    self.create_state.available_types.len() > 1,
+                                );
                             }
                         }
                     }
@@ -2846,11 +2842,11 @@ impl App {
         state: RemoveProjectState,
     ) -> bool {
         match key.code {
-            KeyCode::Char('y') | KeyCode::Enter => {
-                if state.agent_count == 0 || state.confirm_remove_agents {
-                    self.remove_project(state.idx).await;
-                    self.state = AppState::Dashboard;
-                }
+            KeyCode::Char('y') | KeyCode::Enter
+                if state.agent_count == 0 || state.confirm_remove_agents =>
+            {
+                self.remove_project(state.idx).await;
+                self.state = AppState::Dashboard;
             }
             KeyCode::Char('n') | KeyCode::Esc => {
                 self.state = AppState::Dashboard;
@@ -2894,11 +2890,11 @@ impl App {
             if let Some(agent_config) = self.config.agents.get(idx) {
                 if stop_agent {
                     // Extract window target from pane (e.g., "flowmux:1.0" -> "flowmux:1")
-                    if let Some(colon_pos) = agent_config.pane.find(':') {
-                        if let Some(dot_pos) = agent_config.pane[colon_pos..].find('.') {
-                            let window_target = &agent_config.pane[..colon_pos + dot_pos];
-                            let _ = tmux::kill_window(window_target);
-                        }
+                    if let Some(colon_pos) = agent_config.pane.find(':')
+                        && let Some(dot_pos) = agent_config.pane[colon_pos..].find('.')
+                    {
+                        let window_target = &agent_config.pane[..colon_pos + dot_pos];
+                        let _ = tmux::kill_window(window_target);
                     }
                     if let Err(error) = self.adapters[idx].stop().await {
                         eprintln!("warning: failed to stop agent: {error}");
@@ -2906,24 +2902,24 @@ impl App {
                 }
 
                 // Remove the git worktree if requested and present.
-                if remove_worktree {
-                    if let (Some(wt_path), Some(repo_root)) = (
+                if remove_worktree
+                    && let (Some(wt_path), Some(repo_root)) = (
                         Some(agent_config.directory.as_str()),
                         agent_config.git_repo_root.as_deref(),
+                    )
+                {
+                    let branch = crate::git::sanitize_branch_name(&agent_config.name);
+                    // Non-fatal: log error but continue removal.
+                    if let Err(e) = crate::git::remove_worktree(
+                        std::path::Path::new(repo_root),
+                        std::path::Path::new(wt_path),
+                        &branch,
+                        true,
                     ) {
-                        let branch = crate::git::sanitize_branch_name(&agent_config.name);
-                        // Non-fatal: log error but continue removal.
-                        if let Err(e) = crate::git::remove_worktree(
-                            std::path::Path::new(repo_root),
-                            std::path::Path::new(wt_path),
-                            &branch,
-                            true,
-                        ) {
-                            // Surface in the UI via a best-effort approach.
-                            // We cannot show a dialog here since we're already
-                            // tearing down — just emit to stderr.
-                            eprintln!("warning: failed to remove git worktree: {}", e);
-                        }
+                        // Surface in the UI via a best-effort approach.
+                        // We cannot show a dialog here since we're already
+                        // tearing down — just emit to stderr.
+                        eprintln!("warning: failed to remove git worktree: {}", e);
                     }
                 }
             }
@@ -3348,7 +3344,7 @@ fn ctrl_w_delete(s: &mut String) {
     // Trim trailing spaces, then remove back to the next space
     let trimmed_len = s.trim_end().len();
     s.truncate(trimmed_len);
-    if let Some(pos) = s.rfind(|c: char| c == ' ') {
+    if let Some(pos) = s.rfind(' ') {
         s.truncate(pos + 1);
     } else {
         s.clear();
@@ -3714,11 +3710,10 @@ mod tests {
         };
         state.copy_directories.current_dir = "cache".into();
 
-        assert_eq!(
+        assert!(
             state
                 .commit_selector_candidate(&CreateField::CopyDirectories)
-                .unwrap(),
-            true
+                .unwrap()
         );
         assert_eq!(state.copy_directories.selected_dirs, vec!["cache"]);
         assert_eq!(state.copy_directories.current_display(), "./");

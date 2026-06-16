@@ -11,6 +11,7 @@ use crate::host_terminal::HostColors;
 use crate::models::{AgentEntry, AgentStatusCounts};
 use crate::ui::theme::*;
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_terminal_view(
     f: &mut Frame,
     area: Rect,

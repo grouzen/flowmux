@@ -96,17 +96,15 @@ async fn launch(
     let mut healthy = false;
     for _ in 0..25 {
         sleep(tokio::time::Duration::from_millis(200)).await;
-        if let Ok(resp) = client.get(&health_url).send().await {
-            if let Ok(body) = resp.json::<Value>().await {
-                if body
-                    .get("healthy")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false)
-                {
-                    healthy = true;
-                    break;
-                }
-            }
+        if let Ok(resp) = client.get(&health_url).send().await
+            && let Ok(body) = resp.json::<Value>().await
+            && body
+                .get("healthy")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        {
+            healthy = true;
+            break;
         }
     }
 
@@ -256,18 +254,18 @@ async fn run_sse_loop(
                         let line = line_buf[..nl].trim_end_matches('\r').to_string();
                         line_buf.drain(..=nl);
 
-                        if let Some(json_str) = line.strip_prefix("data: ") {
-                            if let Ok(envelope) = serde_json::from_str::<Value>(json_str) {
-                                handle_event(
-                                    port,
-                                    &client,
-                                    &live_cache,
-                                    &cached_session_id,
-                                    &envelope,
-                                    &mut last_tail_fetch,
-                                )
-                                .await;
-                            }
+                        if let Some(json_str) = line.strip_prefix("data: ")
+                            && let Ok(envelope) = serde_json::from_str::<Value>(json_str)
+                        {
+                            handle_event(
+                                port,
+                                &client,
+                                &live_cache,
+                                &cached_session_id,
+                                &envelope,
+                                &mut last_tail_fetch,
+                            )
+                            .await;
                         }
                     }
                 }
@@ -296,36 +294,36 @@ async fn populate_initial(
     match client.get(&status_url).send().await {
         Err(_) => return false, // connection refused — server is down
         Ok(resp) => {
-            if let Ok(body) = resp.json::<Value>().await {
-                if let Some(obj) = body.as_object() {
-                    if !obj.is_empty() {
-                        let mut best = AgentStatus::Idle;
-                        for entry in obj.values() {
-                            match entry.get("status").and_then(Value::as_str).unwrap_or("") {
-                                "busy" | "retry" => {
-                                    best = AgentStatus::Running;
-                                    break;
-                                }
-                                _ => {}
+            if let Ok(body) = resp.json::<Value>().await
+                && let Some(obj) = body.as_object()
+            {
+                if !obj.is_empty() {
+                    let mut best = AgentStatus::Idle;
+                    for entry in obj.values() {
+                        match entry.get("status").and_then(Value::as_str).unwrap_or("") {
+                            "busy" | "retry" => {
+                                best = AgentStatus::Running;
+                                break;
                             }
+                            _ => {}
                         }
-                        let id = obj
-                            .keys()
-                            .max_by_key(|id| {
-                                obj[*id]
-                                    .get("time")
-                                    .and_then(|t| t.get("updated"))
-                                    .and_then(Value::as_u64)
-                                    .unwrap_or(0)
-                            })
-                            .map(|id| id.to_string());
-                        if let Some(ref sid) = id {
-                            *cached_session_id.lock().unwrap() = Some(sid.clone());
-                        }
-                        live_cache.write().unwrap().status = best;
-                    } else {
-                        live_cache.write().unwrap().status = AgentStatus::Idle;
                     }
+                    let id = obj
+                        .keys()
+                        .max_by_key(|id| {
+                            obj[*id]
+                                .get("time")
+                                .and_then(|t| t.get("updated"))
+                                .and_then(Value::as_u64)
+                                .unwrap_or(0)
+                        })
+                        .map(|id| id.to_string());
+                    if let Some(ref sid) = id {
+                        *cached_session_id.lock().unwrap() = Some(sid.clone());
+                    }
+                    live_cache.write().unwrap().status = best;
+                } else {
+                    live_cache.write().unwrap().status = AgentStatus::Idle;
                 }
             }
         }
@@ -509,7 +507,7 @@ async fn fetch_and_store_tail(
             // Session is short — the tail already starts from message 0.
             msgs.iter()
                 .find(|m| msg_role(m) == Some("user"))
-                .and_then(|m| all_text_parts(m))
+                .and_then(all_text_parts)
         }
     } else {
         None
@@ -564,10 +562,10 @@ async fn fetch_and_store_tail(
                     .and_then(Value::as_str)
                     .map(|s| s.to_string())
             });
-        if let Some(mid) = model_id {
-            if !mid.is_empty() {
-                cache.model_id = Some(mid);
-            }
+        if let Some(mid) = model_id
+            && !mid.is_empty()
+        {
+            cache.model_id = Some(mid);
         }
     }
 }
@@ -829,7 +827,7 @@ impl AgentAdapter for OpenCodeAdapter {
     async fn get_last_model_response(&self) -> Option<String> {
         let mut messages = self.live_cache.read().unwrap().recent_messages.clone()?;
         // Sort oldest-first by creation timestamp so positional ordering is reliable.
-        messages.sort_by_key(|m| msg_time_created(m));
+        messages.sort_by_key(msg_time_created);
 
         // Collect the start index of each response turn (the index just after
         // each user message).
@@ -847,7 +845,7 @@ impl AgentAdapter for OpenCodeAdapter {
             let parts: Vec<String> = messages[start..]
                 .iter()
                 .filter(|m| msg_role(m) == Some("assistant"))
-                .filter_map(|m| all_text_parts(m))
+                .filter_map(all_text_parts)
                 .collect();
             if !parts.is_empty() {
                 return Some(parts.join("\n\n"));
@@ -861,7 +859,7 @@ impl AgentAdapter for OpenCodeAdapter {
         let parts: Vec<String> = messages[..first_turn_start]
             .iter()
             .filter(|m| msg_role(m) == Some("assistant"))
-            .filter_map(|m| all_text_parts(m))
+            .filter_map(all_text_parts)
             .collect();
         if !parts.is_empty() {
             Some(parts.join("\n\n"))
