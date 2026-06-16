@@ -1,6 +1,6 @@
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -72,9 +72,7 @@ fn probe_host_colors_inner() -> Result<HostColors> {
             };
             let ret = unsafe { libc::poll(&mut pfd, 1, 50) };
             if ret > 0 && (pfd.revents & libc::POLLIN) != 0 {
-                let n = unsafe {
-                    libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, 1)
-                };
+                let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, 1) };
                 match n {
                     0 => break,
                     1 => {
