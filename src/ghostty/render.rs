@@ -81,43 +81,6 @@ fn count_visible_columns(line: &[u8]) -> usize {
     cols
 }
 
-/// Pad each line with spaces to fill the full width. The SGR state at the end
-/// of each line will apply to the padding spaces, ensuring correct background
-/// colors for cells that tmux capture-pane stripped (trailing spaces).
-fn pad_ansi_lines_to_width(input: &[u8], width: u16) -> Vec<u8> {
-    let width = width as usize;
-    let mut output = Vec::with_capacity(input.len() + input.len() / 10);
-
-    let lines = input.split(|&b| b == b'\n');
-    let mut first = true;
-
-    for line in lines {
-        if !first {
-            output.push(b'\r');
-            output.push(b'\n');
-        }
-        first = false;
-
-        // Strip trailing \r if present (we'll add it back with padding)
-        let line = if line.last() == Some(&b'\r') {
-            &line[..line.len() - 1]
-        } else {
-            line
-        };
-
-        output.extend_from_slice(line);
-
-        // Pad with spaces to fill width
-        let cols = count_visible_columns(line);
-        if cols < width {
-            let padding = width - cols;
-            output.extend(std::iter::repeat_n(b' ', padding));
-        }
-    }
-
-    output
-}
-
 /// Prepare a tmux `capture-pane` screen snapshot for replay into the offscreen
 /// terminal.  Capture-pane has already converted output into physical rows, so
 /// row separators must move directly to the next screen row instead of letting
@@ -360,38 +323,38 @@ mod tests {
     }
 
     #[test]
-    fn test_pad_ansi_lines_single_line() {
+    fn test_prepare_captured_ansi_for_replay_single_line() {
         let input = b"hello";
-        let output = pad_ansi_lines_to_width(input, 10);
+        let output = prepare_captured_ansi_for_replay(input, 10);
         assert_eq!(output, b"hello     ");
     }
 
     #[test]
-    fn test_pad_ansi_lines_multiple_lines() {
+    fn test_prepare_captured_ansi_for_replay_multiple_lines() {
         let input = b"hi\r\nworld";
-        let output = pad_ansi_lines_to_width(input, 8);
-        assert_eq!(output, b"hi      \r\nworld   ");
+        let output = prepare_captured_ansi_for_replay(input, 8);
+        assert_eq!(output, b"hi      \x1b[2;1Hworld   ");
     }
 
     #[test]
-    fn test_pad_ansi_lines_with_sgr() {
+    fn test_prepare_captured_ansi_for_replay_with_sgr() {
         // SGR should be preserved and padding should come after
         let input = b"\x1b[31mred\x1b[0m";
-        let output = pad_ansi_lines_to_width(input, 8);
+        let output = prepare_captured_ansi_for_replay(input, 8);
         assert_eq!(output, b"\x1b[31mred\x1b[0m     ");
     }
 
     #[test]
-    fn test_pad_ansi_lines_already_full_width() {
+    fn test_prepare_captured_ansi_for_replay_already_full_width() {
         let input = b"1234567890";
-        let output = pad_ansi_lines_to_width(input, 10);
+        let output = prepare_captured_ansi_for_replay(input, 10);
         assert_eq!(output, b"1234567890");
     }
 
     #[test]
-    fn test_pad_ansi_lines_empty() {
+    fn test_prepare_captured_ansi_for_replay_empty() {
         let input = b"";
-        let output = pad_ansi_lines_to_width(input, 5);
+        let output = prepare_captured_ansi_for_replay(input, 5);
         assert_eq!(output, b"     ");
     }
 

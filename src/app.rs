@@ -386,10 +386,6 @@ impl RelativeDirSelector {
         }
     }
 
-    pub fn is_at_root(&self) -> bool {
-        self.current_dir.is_empty() && self.filter.is_empty()
-    }
-
     pub fn clear_all(&mut self) {
         self.selected_dirs.clear();
         self.reset_candidate();
