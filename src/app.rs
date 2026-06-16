@@ -2046,6 +2046,16 @@ impl App {
             return;
         }
 
+        if let AppState::GitViewer(ref mut gv) = self.state {
+            if let Ok((term_cols, term_rows)) = crossterm::terminal::size() {
+                let desired = tmux_pane_viewport_size(term_cols, term_rows);
+                if gv.last_pane_size != Some(desired) {
+                    let _ = tmux::resize_window(&pane, desired.0, desired.1);
+                    gv.last_pane_size = Some(desired);
+                }
+            }
+        }
+
         let changed = if let AppState::GitViewer(ref mut gv) = self.state {
             if gv.view_scroll > 0 {
                 tmux::capture_pane_history(&pane, MAX_RETAINED_LINES)
@@ -2077,14 +2087,6 @@ impl App {
             }
 
             gv.pane_mouse_active = tmux::pane_mouse_active(&pane);
-
-            if let Ok((term_cols, term_rows)) = crossterm::terminal::size() {
-                let desired = tmux_pane_viewport_size(term_cols, term_rows);
-                if gv.last_pane_size != Some(desired) {
-                    let _ = tmux::resize_window(&pane, desired.0, desired.1);
-                    gv.last_pane_size = Some(desired);
-                }
-            }
         }
     }
 
