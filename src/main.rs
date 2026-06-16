@@ -198,7 +198,7 @@ async fn main() -> Result<()> {
 
                 // Detect status count changes on every render frame (catches
                 // changes from both dashboard tick and agent view tick).
-                let status_counts = app.active_project_status_counts();
+                let status_counts = app.global_status_counts();
                 app.notification.observe(status_counts);
 
                 let state = app.state.clone();

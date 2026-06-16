@@ -81,13 +81,10 @@ pub struct AgentStatusCounts {
 }
 
 impl AgentStatusCounts {
-    pub fn for_project(agents: &[AgentEntry], project: &str) -> Self {
+    pub fn for_agents(agents: &[AgentEntry]) -> Self {
         let mut counts = Self::default();
 
-        for agent in agents
-            .iter()
-            .filter(|agent| agent.config.project == project)
-        {
+        for agent in agents {
             match agent.meta.status {
                 AgentStatus::Running => counts.running += 1,
                 AgentStatus::WaitingForInput => counts.waiting += 1,

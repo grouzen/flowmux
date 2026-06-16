@@ -757,7 +757,7 @@ impl App {
             notification: StatusNotification::default(),
         };
         app.ensure_project_selection();
-        app.reset_project_notification();
+        app.reset_notification();
         app
     }
 
@@ -824,12 +824,12 @@ impl App {
         visible_agent_indices_for_project(&self.agents, self.active_project_name())
     }
 
-    pub fn active_project_status_counts(&self) -> AgentStatusCounts {
-        AgentStatusCounts::for_project(&self.agents, self.active_project_name())
+    pub fn global_status_counts(&self) -> AgentStatusCounts {
+        AgentStatusCounts::for_agents(&self.agents)
     }
 
-    fn reset_project_notification(&mut self) {
-        let counts = self.active_project_status_counts();
+    fn reset_notification(&mut self) {
+        let counts = self.global_status_counts();
         self.notification.reset(counts);
     }
 
@@ -853,12 +853,8 @@ impl App {
         if idx >= self.config.projects.len() {
             return;
         }
-        let project_changed = self.active_project_idx != idx;
         self.active_project_idx = idx;
         self.ensure_project_selection();
-        if project_changed {
-            self.reset_project_notification();
-        }
         self.dirty = true;
     }
 
@@ -2867,17 +2863,19 @@ impl App {
 
     fn switch_to_next_by_status(&mut self, target: AgentStatus) {
         let current = self.selected;
-        let Some(next) = next_agent_by_status(
-            &self.agents,
-            self.active_project_name(),
-            current,
-            target,
-            None,
-        ) else {
+        let Some(next) = next_agent_by_status(&self.agents, current, target, None) else {
             return;
         };
 
         if next != current {
+            if let Some(project_idx) = self
+                .config
+                .projects
+                .iter()
+                .position(|project| project == &self.agents[next].config.project)
+            {
+                self.set_active_project_idx(project_idx);
+            }
             self.selected = next;
             self.state = AppState::AgentView(next);
             self.agent_view_state = AgentViewState::default();
@@ -2968,7 +2966,7 @@ impl App {
             let next_idx = project_idx.min(self.config.projects.len().saturating_sub(1));
             self.active_project_idx = next_idx;
             self.ensure_project_selection();
-            self.reset_project_notification();
+            self.reset_notification();
             let _ = self.config.save();
             self.dirty = true;
         }
@@ -3023,18 +3021,17 @@ fn visible_agent_indices_for_project(agents: &[AgentEntry], project: &str) -> Ve
 
 fn next_agent_by_status(
     agents: &[AgentEntry],
-    project: &str,
     current: usize,
     target: AgentStatus,
     fallback: Option<AgentStatus>,
 ) -> Option<usize> {
     let now = std::time::Instant::now();
-    let mut matches = matching_agent_indices(agents, project, &target);
+    let mut matches = matching_agent_indices(agents, &target);
 
     if matches.is_empty()
         && let Some(fallback) = fallback
     {
-        matches = matching_agent_indices(agents, project, &fallback);
+        matches = matching_agent_indices(agents, &fallback);
     }
 
     matches.sort_by_key(|&idx| agents[idx].meta.status_changed_at.unwrap_or(now));
@@ -3045,15 +3042,11 @@ fn next_agent_by_status(
     }
 }
 
-fn matching_agent_indices(
-    agents: &[AgentEntry],
-    project: &str,
-    status: &AgentStatus,
-) -> Vec<usize> {
+fn matching_agent_indices(agents: &[AgentEntry], status: &AgentStatus) -> Vec<usize> {
     agents
         .iter()
         .enumerate()
-        .filter(|(_, entry)| entry.config.project == project && entry.meta.status == *status)
+        .filter(|(_, entry)| entry.meta.status == *status)
         .map(|(idx, _)| idx)
         .collect()
 }
@@ -3538,7 +3531,7 @@ mod tests {
     }
 
     #[test]
-    fn status_counts_are_project_scoped() {
+    fn status_counts_are_global() {
         let agents = vec![
             test_agent("default-running", "Default", AgentStatus::Running),
             test_agent("work-waiting", "work", AgentStatus::WaitingForInput),
@@ -3547,9 +3540,9 @@ mod tests {
         ];
 
         assert_eq!(
-            AgentStatusCounts::for_project(&agents, "work"),
+            AgentStatusCounts::for_agents(&agents),
             AgentStatusCounts {
-                running: 0,
+                running: 2,
                 waiting: 1,
                 idle: 1,
             }
@@ -3557,7 +3550,7 @@ mod tests {
     }
 
     #[test]
-    fn next_agent_by_status_never_crosses_projects() {
+    fn next_agent_by_status_crosses_projects() {
         let now = std::time::Instant::now();
         let mut agents = vec![
             test_agent("work-old", "work", AgentStatus::WaitingForInput),
@@ -3569,17 +3562,21 @@ mod tests {
         agents[2].meta.status_changed_at = Some(now - std::time::Duration::from_secs(1));
 
         assert_eq!(
-            next_agent_by_status(&agents, "work", 0, AgentStatus::WaitingForInput, None,),
+            next_agent_by_status(&agents, 0, AgentStatus::WaitingForInput, None,),
             Some(2)
         );
         assert_eq!(
-            next_agent_by_status(&agents, "work", 2, AgentStatus::WaitingForInput, None,),
+            next_agent_by_status(&agents, 2, AgentStatus::WaitingForInput, None,),
+            Some(1)
+        );
+        assert_eq!(
+            next_agent_by_status(&agents, 1, AgentStatus::WaitingForInput, None,),
             Some(0)
         );
     }
 
     #[test]
-    fn next_running_agent_stays_project_scoped() {
+    fn next_running_agent_cycles_globally() {
         let agents = vec![
             test_agent("other-running", "other", AgentStatus::Running),
             test_agent("work-old", "work", AgentStatus::Running),
@@ -3587,17 +3584,21 @@ mod tests {
         ];
 
         assert_eq!(
-            next_agent_by_status(&agents, "work", 1, AgentStatus::Running, None),
+            next_agent_by_status(&agents, 1, AgentStatus::Running, None),
             Some(2)
         );
         assert_eq!(
-            next_agent_by_status(&agents, "work", 2, AgentStatus::Running, None),
-            Some(1)
+            next_agent_by_status(&agents, 2, AgentStatus::Running, None),
+            Some(0)
+        );
+        assert_eq!(
+            next_agent_by_status(&agents, 99, AgentStatus::Running, None),
+            Some(0)
         );
     }
 
     #[test]
-    fn next_waiting_agent_stays_project_scoped() {
+    fn next_waiting_agent_cycles_globally() {
         let agents = vec![
             test_agent("other-waiting", "other", AgentStatus::WaitingForInput),
             test_agent("work-old", "work", AgentStatus::WaitingForInput),
@@ -3605,17 +3606,17 @@ mod tests {
         ];
 
         assert_eq!(
-            next_agent_by_status(&agents, "work", 1, AgentStatus::WaitingForInput, None),
+            next_agent_by_status(&agents, 1, AgentStatus::WaitingForInput, None),
             Some(2)
         );
         assert_eq!(
-            next_agent_by_status(&agents, "work", 2, AgentStatus::WaitingForInput, None),
-            Some(1)
+            next_agent_by_status(&agents, 2, AgentStatus::WaitingForInput, None),
+            Some(0)
         );
     }
 
     #[test]
-    fn next_idle_agent_stays_project_scoped() {
+    fn next_idle_agent_cycles_globally() {
         let agents = vec![
             test_agent("other-idle", "other", AgentStatus::Idle),
             test_agent("work-old", "work", AgentStatus::Idle),
@@ -3623,13 +3624,75 @@ mod tests {
         ];
 
         assert_eq!(
-            next_agent_by_status(&agents, "work", 1, AgentStatus::Idle, None),
+            next_agent_by_status(&agents, 1, AgentStatus::Idle, None),
             Some(2)
         );
         assert_eq!(
-            next_agent_by_status(&agents, "work", 2, AgentStatus::Idle, None),
-            Some(1)
+            next_agent_by_status(&agents, 2, AgentStatus::Idle, None),
+            Some(0)
         );
+    }
+
+    #[test]
+    fn switch_to_next_by_status_follows_target_project() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.config.projects = vec!["Default".into(), "work".into(), "other".into()];
+        app.agents = vec![
+            test_agent("default-idle", "Default", AgentStatus::Idle),
+            test_agent("work-running", "work", AgentStatus::Running),
+            test_agent("other-running", "other", AgentStatus::Running),
+        ];
+        app.adapters = Vec::new();
+        app.selected = 1;
+        app.active_project_idx = 1;
+
+        app.switch_to_next_by_status(AgentStatus::Running);
+
+        assert_eq!(app.selected, 2);
+        assert_eq!(app.active_project_idx, 2);
+        assert_eq!(app.active_project_name(), "other");
+        assert!(matches!(app.state, AppState::AgentView(2)));
+    }
+
+    #[test]
+    fn notification_observe_blinks_for_global_count_changes() {
+        let mut notification = StatusNotification::default();
+        notification.reset(AgentStatusCounts {
+            running: 0,
+            waiting: 0,
+            idle: 1,
+        });
+        notification.observe(AgentStatusCounts {
+            running: 0,
+            waiting: 1,
+            idle: 0,
+        });
+
+        assert!(notification.waiting_blink.is_some());
+        assert!(notification.running_blink.is_none());
+    }
+
+    #[test]
+    fn switching_projects_does_not_reset_notification_baseline() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.config.projects = vec!["Default".into(), "work".into()];
+        app.agents = vec![
+            test_agent("default-running", "Default", AgentStatus::Running),
+            test_agent("work-idle", "work", AgentStatus::Idle),
+        ];
+        app.notification.reset(app.global_status_counts());
+        app.notification.observe(AgentStatusCounts {
+            running: 0,
+            waiting: 1,
+            idle: 1,
+        });
+
+        assert!(app.notification.waiting_blink.is_some());
+
+        app.set_active_project_idx(1);
+
+        assert!(app.notification.waiting_blink.is_some());
+        assert_eq!(app.active_project_name(), "work");
     }
 
     #[test]
@@ -3663,24 +3726,6 @@ mod tests {
         });
         assert!(notification.running_blink.is_none());
         assert!(notification.waiting_blink.is_none());
-    }
-
-    #[test]
-    fn notification_observe_blinks_for_active_project_count_changes() {
-        let mut notification = StatusNotification::default();
-        notification.reset(AgentStatusCounts {
-            running: 0,
-            waiting: 0,
-            idle: 1,
-        });
-        notification.observe(AgentStatusCounts {
-            running: 0,
-            waiting: 1,
-            idle: 0,
-        });
-
-        assert!(notification.waiting_blink.is_some());
-        assert!(notification.running_blink.is_none());
     }
 
     #[test]
