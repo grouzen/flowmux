@@ -880,7 +880,11 @@ impl App {
                             self.dirty = true;
                             return;
                         }
-                        MouseEventKind::Down(_) => self.reset_git_viewer_scroll(),
+                        MouseEventKind::Down(_) => {
+                            if let AppState::GitViewer(ref mut gv) = self.state {
+                                gv.view_scroll = 0;
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -909,7 +913,11 @@ impl App {
                             self.dirty = true;
                             return;
                         }
-                        MouseEventKind::Down(_) => self.reset_terminal_view_scroll(),
+                        MouseEventKind::Down(_) => {
+                            if let AppState::TerminalView(ref mut tv) = self.state {
+                                tv.view_scroll = 0;
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -1036,18 +1044,6 @@ impl App {
         }
 
         let _ = tmux::send_literal(pane, &seq);
-    }
-
-    fn reset_git_viewer_scroll(&mut self) {
-        if let AppState::GitViewer(ref mut gv) = self.state {
-            gv.view_scroll = 0;
-        }
-    }
-
-    fn reset_terminal_view_scroll(&mut self) {
-        if let AppState::TerminalView(ref mut tv) = self.state {
-            tv.view_scroll = 0;
-        }
     }
 
     /// Forward a paste event to the active tmux pane using bracketed paste
@@ -1709,11 +1705,10 @@ impl App {
             KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.exit_git_viewer_to_dashboard();
             }
-            KeyCode::PageUp => match page_key_route(pane_mouse_active) {
-                PaneScrollRoute::ForwardToPane => {
+            KeyCode::PageUp => {
+                if pane_handles_own_scroll(pane_mouse_active) {
                     let _ = tmux::send_keys(&pane, "PPage");
-                }
-                PaneScrollRoute::UseCapturedScrollback => {
+                } else {
                     if let AppState::GitViewer(ref mut gv) = self.state {
                         gv.view_scroll = gv
                             .view_scroll
@@ -1722,20 +1717,21 @@ impl App {
                     }
                     self.dirty = true;
                 }
-            },
-            KeyCode::PageDown => match page_key_route(pane_mouse_active) {
-                PaneScrollRoute::ForwardToPane => {
+            }
+            KeyCode::PageDown => {
+                if pane_handles_own_scroll(pane_mouse_active) {
                     let _ = tmux::send_keys(&pane, "NPage");
-                }
-                PaneScrollRoute::UseCapturedScrollback => {
+                } else {
                     if let AppState::GitViewer(ref mut gv) = self.state {
                         gv.view_scroll = gv.view_scroll.saturating_sub(pane_page_scroll());
                     }
                     self.dirty = true;
                 }
-            },
+            }
             _ => {
-                self.reset_git_viewer_scroll();
+                if let AppState::GitViewer(ref mut gv) = self.state {
+                    gv.view_scroll = 0;
+                }
                 let keys = key_event_to_tmux(&key);
                 if !keys.is_empty() {
                     let _ = tmux::send_keys(&pane, &keys);
@@ -1910,11 +1906,10 @@ impl App {
             KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.exit_terminal_to_dashboard();
             }
-            KeyCode::PageUp => match page_key_route(pane_mouse_active) {
-                PaneScrollRoute::ForwardToPane => {
+            KeyCode::PageUp => {
+                if pane_handles_own_scroll(pane_mouse_active) {
                     let _ = tmux::send_keys(&pane, "PPage");
-                }
-                PaneScrollRoute::UseCapturedScrollback => {
+                } else {
                     if let AppState::TerminalView(ref mut tv) = self.state {
                         tv.view_scroll = tv
                             .view_scroll
@@ -1923,20 +1918,21 @@ impl App {
                     }
                     self.dirty = true;
                 }
-            },
-            KeyCode::PageDown => match page_key_route(pane_mouse_active) {
-                PaneScrollRoute::ForwardToPane => {
+            }
+            KeyCode::PageDown => {
+                if pane_handles_own_scroll(pane_mouse_active) {
                     let _ = tmux::send_keys(&pane, "NPage");
-                }
-                PaneScrollRoute::UseCapturedScrollback => {
+                } else {
                     if let AppState::TerminalView(ref mut tv) = self.state {
                         tv.view_scroll = tv.view_scroll.saturating_sub(pane_page_scroll());
                     }
                     self.dirty = true;
                 }
-            },
+            }
             _ => {
-                self.reset_terminal_view_scroll();
+                if let AppState::TerminalView(ref mut tv) = self.state {
+                    tv.view_scroll = 0;
+                }
                 let keys = key_event_to_tmux(&key);
                 if !keys.is_empty() {
                     let _ = tmux::send_keys(&pane, &keys);
@@ -2662,20 +2658,6 @@ fn clamp_external_pane_scroll(view_scroll: &mut usize, total_lines: usize) {
     }
 }
 
-fn page_key_route(mouse_active: bool) -> PaneScrollRoute {
-    if pane_handles_own_scroll(mouse_active) {
-        PaneScrollRoute::ForwardToPane
-    } else {
-        PaneScrollRoute::UseCapturedScrollback
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PaneScrollRoute {
-    ForwardToPane,
-    UseCapturedScrollback,
-}
-
 fn mouse_event_to_sgr(mouse: MouseEvent, show_overlay: bool) -> Option<String> {
     if show_overlay {
         return None;
@@ -2757,16 +2739,6 @@ mod project_tests {
             KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL).code,
             KeyCode::Char('p')
         );
-    }
-
-    #[test]
-    fn page_keys_forward_to_interactive_panes() {
-        assert_eq!(page_key_route(true), PaneScrollRoute::ForwardToPane);
-    }
-
-    #[test]
-    fn page_keys_use_captured_scrollback_for_plain_panes() {
-        assert_eq!(page_key_route(false), PaneScrollRoute::UseCapturedScrollback);
     }
 
     #[test]
