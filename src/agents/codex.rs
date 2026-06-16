@@ -1376,7 +1376,10 @@ mod tests {
         );
 
         let cache = cache.read().unwrap();
-        let context = cache.context.as_ref().expect("new thread should update context");
+        let context = cache
+            .context
+            .as_ref()
+            .expect("new thread should update context");
         assert_eq!(context.used, 80);
         assert_eq!(context.total, Some(200));
         assert_eq!(cache.last_model_response.as_deref(), Some("New response"));

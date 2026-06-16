@@ -205,8 +205,8 @@ pub fn render_pane_content(
                     .and_then(|raw_cell| raw_cell.wide())
                     .unwrap_or(CellWide::Narrow);
                 let style = ghostty_cell_style(&cells, default_fg, default_bg, resolved_bg);
-                let symbol = ghostty_buffer_symbol_into(&cells, wide, &mut symbol_scratch)
-                    .unwrap_or(" ");
+                let symbol =
+                    ghostty_buffer_symbol_into(&cells, wide, &mut symbol_scratch).unwrap_or(" ");
                 let cell = &mut buf[(inner.x + x, inner.y + y)];
                 cell.reset();
                 cell.set_symbol(symbol);
@@ -417,13 +417,7 @@ mod tests {
 
     #[test]
     fn test_render_preserves_inverse_host_default_colors() {
-        let buffer = render_buffer(
-            b"\x1b[7mA\x1b[0m",
-            6,
-            3,
-            Some((1, 2, 3)),
-            Some((4, 5, 6)),
-        );
+        let buffer = render_buffer(b"\x1b[7mA\x1b[0m", 6, 3, Some((1, 2, 3)), Some((4, 5, 6)));
         let cell = &buffer[(1, 1)];
         assert_eq!(cell.symbol(), "A");
         assert_eq!(cell.fg, Color::Rgb(4, 5, 6));
@@ -432,13 +426,7 @@ mod tests {
 
     #[test]
     fn test_render_preserves_invisible_text_and_trailing_background() {
-        let buffer = render_buffer(
-            b"\x1b[41m\x1b[8mA",
-            7,
-            3,
-            Some((1, 2, 3)),
-            Some((4, 5, 6)),
-        );
+        let buffer = render_buffer(b"\x1b[41m\x1b[8mA", 7, 3, Some((1, 2, 3)), Some((4, 5, 6)));
         let cell = &buffer[(1, 1)];
         assert_eq!(cell.symbol(), "A");
         assert_eq!(cell.fg, cell.bg);
