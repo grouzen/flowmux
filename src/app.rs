@@ -1,4 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use std::process::Command;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::time::{Duration, interval};
 
@@ -1112,6 +1113,13 @@ impl App {
             AppState::GitViewer(gv) => {
                 let pane = gv.pane.clone();
                 let mouse_active = gv.pane_mouse_active;
+                if is_middle_button_down(mouse) {
+                    self.paste_host_selection_to_pane(&pane);
+                    return;
+                }
+                if is_middle_button_up(mouse) {
+                    return;
+                }
                 if !pane_handles_own_scroll(mouse_active) {
                     match mouse.kind {
                         MouseEventKind::ScrollUp => {
@@ -1145,6 +1153,13 @@ impl App {
             AppState::TerminalView(tv) => {
                 let pane = tv.pane.clone();
                 let mouse_active = tv.pane_mouse_active;
+                if is_middle_button_down(mouse) {
+                    self.paste_host_selection_to_pane(&pane);
+                    return;
+                }
+                if is_middle_button_up(mouse) {
+                    return;
+                }
                 if !pane_handles_own_scroll(mouse_active) {
                     match mouse.kind {
                         MouseEventKind::ScrollUp => {
@@ -1312,17 +1327,32 @@ impl App {
                     return;
                 }
                 if let Some(entry) = self.agents.get(idx) {
-                    let seq = format!("\x1b[200~{}\x1b[201~", text);
-                    let _ = tmux::send_literal(&entry.config.pane, &seq);
+                    paste_text_to_pane(&entry.config.pane, &text);
                 }
             }
             AppState::GitViewer(gv) => {
                 let pane = gv.pane.clone();
-                let seq = format!("\x1b[200~{}\x1b[201~", text);
-                let _ = tmux::send_literal(&pane, &seq);
+                paste_text_to_pane(&pane, &text);
+            }
+            AppState::TerminalView(tv) => {
+                let pane = tv.pane.clone();
+                paste_text_to_pane(&pane, &text);
             }
             _ => {}
         }
+    }
+
+    fn paste_host_selection_to_pane(&mut self, pane: &str) -> bool {
+        let Some(text) = read_host_selection(HostSelection::Primary)
+            .or_else(|| read_host_selection(HostSelection::Clipboard))
+        else {
+            return false;
+        };
+        if text.is_empty() {
+            return false;
+        }
+        paste_text_to_pane(pane, &text);
+        true
     }
 
     async fn handle_key(&mut self, key: KeyEvent) -> bool {
@@ -1958,6 +1988,9 @@ impl App {
             KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.exit_git_viewer_to_dashboard();
             }
+            KeyCode::Insert if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.paste_host_selection_to_pane(&pane);
+            }
             KeyCode::PageUp => {
                 if pane_handles_own_scroll(pane_mouse_active) {
                     let _ = tmux::send_keys(&pane, "PPage");
@@ -2160,6 +2193,9 @@ impl App {
             }
             KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.exit_terminal_to_dashboard();
+            }
+            KeyCode::Insert if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.paste_host_selection_to_pane(&pane);
             }
             KeyCode::PageUp => {
                 if pane_handles_own_scroll(pane_mouse_active) {
@@ -3062,6 +3098,55 @@ fn unicode_display_width(s: &str) -> usize {
 
 fn pane_handles_own_scroll(mouse_active: bool) -> bool {
     mouse_active
+}
+
+fn is_middle_button_down(mouse: MouseEvent) -> bool {
+    matches!(mouse.kind, MouseEventKind::Down(MouseButton::Middle))
+}
+
+fn is_middle_button_up(mouse: MouseEvent) -> bool {
+    matches!(mouse.kind, MouseEventKind::Up(MouseButton::Middle))
+}
+
+fn paste_text_to_pane(pane: &str, text: &str) {
+    let seq = format!("\x1b[200~{}\x1b[201~", text);
+    let _ = tmux::send_literal(pane, &seq);
+}
+
+#[derive(Clone, Copy)]
+enum HostSelection {
+    Primary,
+    Clipboard,
+}
+
+fn read_host_selection(selection: HostSelection) -> Option<String> {
+    host_selection_commands(selection)
+        .into_iter()
+        .find_map(|(program, args)| read_host_selection_command(program, args))
+}
+
+fn host_selection_commands(selection: HostSelection) -> Vec<(&'static str, Vec<&'static str>)> {
+    match selection {
+        HostSelection::Primary => vec![
+            ("wl-paste", vec!["--no-newline", "--primary"]),
+            ("xclip", vec!["-selection", "primary", "-o"]),
+            ("xsel", vec!["--primary", "--output"]),
+        ],
+        HostSelection::Clipboard => vec![
+            ("wl-paste", vec!["--no-newline"]),
+            ("xclip", vec!["-selection", "clipboard", "-o"]),
+            ("xsel", vec!["--clipboard", "--output"]),
+            ("pbpaste", vec![]),
+        ],
+    }
+}
+
+fn read_host_selection_command(program: &str, args: Vec<&str>) -> Option<String> {
+    let output = Command::new(program).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
 }
 
 fn pane_page_scroll() -> usize {
