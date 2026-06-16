@@ -138,7 +138,6 @@ cargo install --path . --locked
 Tagged releases using the `v*` convention publish prebuilt tarballs for:
 
 - `x86_64-unknown-linux-gnu`
-- `x86_64-apple-darwin`
 - `aarch64-apple-darwin`
 
 Each archive contains the `flowmux` binary and `README.md`.
