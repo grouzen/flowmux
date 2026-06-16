@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::agents::AgentAdapter;
 use crate::models::{AgentStatus, ContextInfo};
-use claude_hook_server::{ClaudeHookState, HookStateMap};
+use claude_hook_server::HookStateMap;
 
 // ---------------------------------------------------------------------------
 // ClaudeAdapter
@@ -162,14 +162,13 @@ impl ClaudeRuntime {
                             session_id,
                             transcript_path,
                         } = &mut agent.kind
+                            && *flowmux_agent_id == event.flowmux_agent_id
                         {
-                            if *flowmux_agent_id == event.flowmux_agent_id {
-                                if let Some(sid) = event.session_id.clone() {
-                                    *session_id = Some(sid);
-                                }
-                                if event.transcript_path.is_some() {
-                                    *transcript_path = event.transcript_path.clone();
-                                }
+                            if let Some(sid) = event.session_id.clone() {
+                                *session_id = Some(sid);
+                            }
+                            if event.transcript_path.is_some() {
+                                *transcript_path = event.transcript_path.clone();
                             }
                         }
                     }
@@ -197,7 +196,7 @@ impl ClaudeRuntime {
         {
             let mut map = self.hook_state.lock().unwrap();
             map.entry(flowmux_agent_id.clone())
-                .or_insert_with(ClaudeHookState::default);
+                .or_default();
         }
         ClaudeAdapter::new(flowmux_agent_id, self.hook_state.clone())
     }
@@ -224,9 +223,7 @@ impl ClaudeRuntime {
         });
 
         let mut map = self.hook_state.lock().unwrap();
-        let entry = map
-            .entry(id.to_owned())
-            .or_insert_with(ClaudeHookState::default);
+        let entry = map.entry(id.to_owned()).or_default();
 
         if session_id.is_some() {
             entry.session_id = session_id;
@@ -472,19 +469,16 @@ fn extract_flowmux_ports(hooks_root: &Value) -> Vec<u16> {
                 continue;
             };
             for h in inner {
-                if let Some(url) = h.get("url").and_then(Value::as_str) {
-                    if url.contains("127.0.0.1") && url.ends_with(HOOK_URL_PATH) {
-                        if let Some(port_str) = url
-                            .strip_prefix("http://127.0.0.1:")
-                            .and_then(|s| s.strip_suffix(HOOK_URL_PATH))
-                        {
-                            if let Ok(port) = port_str.parse::<u16>() {
-                                if !ports.contains(&port) {
-                                    ports.push(port);
-                                }
-                            }
-                        }
-                    }
+                if let Some(url) = h.get("url").and_then(Value::as_str)
+                    && url.contains("127.0.0.1")
+                    && url.ends_with(HOOK_URL_PATH)
+                    && let Some(port_str) = url
+                        .strip_prefix("http://127.0.0.1:")
+                        .and_then(|s| s.strip_suffix(HOOK_URL_PATH))
+                    && let Ok(port) = port_str.parse::<u16>()
+                    && !ports.contains(&port)
+                {
+                    ports.push(port);
                 }
             }
         }
@@ -497,10 +491,8 @@ fn extract_flowmux_ports(hooks_root: &Value) -> Vec<u16> {
 fn is_port_alive(port: u16) -> bool {
     use std::time::Duration;
     let addr = format!("127.0.0.1:{}", port);
-    match std::net::TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_millis(100)) {
-        Ok(_) => true,
-        Err(_) => false,
-    }
+    std::net::TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_millis(100))
+        .is_ok()
 }
 
 /// Remove hook entries for flowmux instances whose servers are no longer

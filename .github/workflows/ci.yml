@@ -53,6 +53,15 @@ jobs:
       - name: Fetch dependencies
         run: cargo fetch --locked --target ${{ matrix.target }}
 
+      - name: Prefetch Ghostty build inputs
+        run: ./tools/prefetch-libghostty-vt.sh
+
+      - name: Export Ghostty build environment
+        run: |
+          echo "GHOSTTY_SOURCE_DIR=$GITHUB_WORKSPACE/vendor/ghostty-prefetch/ghostty-src" >> "$GITHUB_ENV"
+          echo "GHOSTTY_ZIG_SYSTEM_DIR=$GITHUB_WORKSPACE/vendor/ghostty-prefetch/zig-system" >> "$GITHUB_ENV"
+          echo "LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast" >> "$GITHUB_ENV"
+
       - name: Run tests
         run: cargo test --locked --target ${{ matrix.target }}
 

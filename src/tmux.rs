@@ -87,7 +87,7 @@ pub fn new_window(dir: &str, name: &str) -> Result<usize> {
     let output = Tmux::with_command(
         NewWindow::new()
             .detached()
-            .target_window(&format!("={}", session_name()))
+            .target_window(format!("={}", session_name()))
             .start_directory(dir)
             .window_name(name)
             .print()
@@ -191,7 +191,7 @@ pub fn cursor_position(target: &str) -> Option<(u16, u16)> {
         .output()
         .ok()?;
     let s = String::from_utf8_lossy(&output.stdout);
-    let mut parts = s.trim().split_whitespace();
+    let mut parts = s.split_whitespace();
     let flag: u8 = parts.next()?.parse().ok()?;
     if flag == 0 {
         return None; // cursor explicitly hidden by the running app

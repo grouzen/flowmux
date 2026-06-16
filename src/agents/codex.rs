@@ -299,8 +299,8 @@ async fn run_loop(
         let mut pending = None;
         let mut subscribed_thread_id: Option<String> = None;
 
-        if let Some(thread_id) = cached_thread_id(&cached_session_id) {
-            if send_request(
+        if let Some(thread_id) = cached_thread_id(&cached_session_id)
+            && send_request(
                 &mut writer,
                 &mut request_id,
                 &mut pending,
@@ -310,12 +310,11 @@ async fn run_loop(
             )
             .await
             .is_err()
-            {
-                mark_observer_unavailable(&cached_session_id, &live_cache);
-                sleep(Duration::from_secs(backoff)).await;
-                backoff = (backoff * 2).min(30);
-                continue;
-            }
+        {
+            mark_observer_unavailable(&cached_session_id, &live_cache);
+            sleep(Duration::from_secs(backoff)).await;
+            backoff = (backoff * 2).min(30);
+            continue;
         }
 
         loop {
@@ -412,21 +411,19 @@ async fn run_loop(
                             subscribed_thread_id.as_deref(),
                             current_thread_id.as_deref(),
                         )
+                        && let Some(thread_id) = current_thread_id
+                        && send_request(
+                            &mut writer,
+                            &mut request_id,
+                            &mut pending,
+                            RequestKind::Resume,
+                            Some(&thread_id),
+                            &directory,
+                        )
+                        .await
+                        .is_err()
                     {
-                        if let Some(thread_id) = current_thread_id
-                            && send_request(
-                                &mut writer,
-                                &mut request_id,
-                                &mut pending,
-                                RequestKind::Resume,
-                                Some(&thread_id),
-                                &directory,
-                            )
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
+                        break;
                     }
                 }
             }
@@ -682,21 +679,17 @@ fn handle_notification(
                 }
             }
         }
-        "thread/status/changed" => {
-            if is_current_thread(params, cached_session_id) {
-                live_cache.write().unwrap().status = status_from_value(params.get("status"));
-            }
+        "thread/status/changed" if is_current_thread(params, cached_session_id) => {
+            live_cache.write().unwrap().status = status_from_value(params.get("status"));
         }
-        "thread/settings/updated" => {
-            if is_current_thread(params, cached_session_id) {
-                let model = params
-                    .get("threadSettings")
-                    .and_then(|s| s.get("model"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
-                if model.is_some() {
-                    live_cache.write().unwrap().model_name = model;
-                }
+        "thread/settings/updated" if is_current_thread(params, cached_session_id) => {
+            let model = params
+                .get("threadSettings")
+                .and_then(|s| s.get("model"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            if model.is_some() {
+                live_cache.write().unwrap().model_name = model;
             }
         }
         "thread/tokenUsage/updated" => {
@@ -719,25 +712,21 @@ fn handle_notification(
                 live_cache.write().unwrap().context = Some(ContextInfo { used, total });
             }
         }
-        "turn/started" => {
-            if is_current_thread(params, cached_session_id) {
-                live_cache.write().unwrap().status = AgentStatus::Running;
-            }
+        "turn/started" if is_current_thread(params, cached_session_id) => {
+            live_cache.write().unwrap().status = AgentStatus::Running;
         }
-        "turn/completed" => {
-            if is_current_thread(params, cached_session_id) {
-                let mut cache = live_cache.write().unwrap();
-                cache.status = AgentStatus::Idle;
-                if let Some(turn) = params.get("turn") {
-                    record_turn_duration(
-                        &mut cache,
-                        turn.get("id").and_then(Value::as_str),
-                        turn.get("durationMs").and_then(Value::as_i64),
-                    );
-                }
-                if let Some(path) = cache.rollout_path.clone() {
-                    enrich_from_rollout(&path, &mut cache);
-                }
+        "turn/completed" if is_current_thread(params, cached_session_id) => {
+            let mut cache = live_cache.write().unwrap();
+            cache.status = AgentStatus::Idle;
+            if let Some(turn) = params.get("turn") {
+                record_turn_duration(
+                    &mut cache,
+                    turn.get("id").and_then(Value::as_str),
+                    turn.get("durationMs").and_then(Value::as_i64),
+                );
+            }
+            if let Some(path) = cache.rollout_path.clone() {
+                enrich_from_rollout(&path, &mut cache);
             }
         }
         "item/completed" => {
@@ -758,15 +747,13 @@ fn handle_notification(
         "item/commandExecution/requestApproval"
         | "item/fileChange/requestApproval"
         | "item/permissions/requestApproval"
-        | "item/tool/requestUserInput" => {
-            if is_current_thread(params, cached_session_id) {
-                live_cache.write().unwrap().status = AgentStatus::WaitingForInput;
-            }
+        | "item/tool/requestUserInput"
+            if is_current_thread(params, cached_session_id) =>
+        {
+            live_cache.write().unwrap().status = AgentStatus::WaitingForInput;
         }
-        "thread/closed" => {
-            if is_current_thread(params, cached_session_id) {
-                live_cache.write().unwrap().status = AgentStatus::Stopped;
-            }
+        "thread/closed" if is_current_thread(params, cached_session_id) => {
+            live_cache.write().unwrap().status = AgentStatus::Stopped;
         }
         _ => {}
     }

@@ -575,6 +575,7 @@ fn push_selector_constraints(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_selector_section(
     f: &mut Frame,
     rows: &[Rect],

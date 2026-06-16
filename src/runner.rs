@@ -145,6 +145,7 @@ impl AgentRunner {
     // Create a new agent
     // -----------------------------------------------------------------------
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn create(
         &mut self,
         name: &str,
