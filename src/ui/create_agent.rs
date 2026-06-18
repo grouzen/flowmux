@@ -52,11 +52,7 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
     );
 
     let agent_rows = state.available_types.len().max(1) as u16;
-    let agent_label_row: u16 = if state.available_types.len() > 1 {
-        1
-    } else {
-        0
-    };
+    let agent_label_row: u16 = 1;
     let error_rows: u16 = if state.error.is_some() { 1 } else { 0 };
 
     // blank + title + blank + Name + blank + Directory
@@ -118,9 +114,7 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
         state.worktree_selectors_visible(),
     );
     constraints.push(Constraint::Length(1)); // blank
-    if state.available_types.len() > 1 {
-        constraints.push(Constraint::Length(1)); // "Agent" label
-    }
+    constraints.push(Constraint::Length(1)); // "Agent" label
     for _ in 0..agent_rows {
         constraints.push(Constraint::Length(1));
     }
@@ -356,22 +350,20 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
     // blank (before agent section)
     row += 1;
     let agent_focused = state.focus == CreateField::AgentType;
-    if state.available_types.len() > 1 {
-        let label_style = if agent_focused {
-            Style::default().fg(FG)
-        } else {
-            Style::default().fg(GRAY)
-        };
-        f.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::raw(left_pad()),
-                Span::styled("Agent", label_style),
-            ]))
-            .style(Style::default().bg(BG1)),
-            rows[row],
-        );
-        row += 1;
-    }
+    let label_style = if agent_focused {
+        Style::default().fg(FG)
+    } else {
+        Style::default().fg(GRAY)
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw(left_pad()),
+            Span::styled("Agent", label_style),
+        ]))
+        .style(Style::default().bg(BG1)),
+        rows[row],
+    );
+    row += 1;
 
     render_agent_type_list(f, &rows[row..row + agent_rows as usize], state);
     row += agent_rows as usize;
@@ -784,5 +776,48 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
         y,
         width: width.min(area.width),
         height: height.min(area.height),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal as RatatuiTerminal, backend::TestBackend};
+
+    fn render_buffer(state: &CreateAgentState, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = RatatuiTerminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_create_agent(frame, Rect::new(0, 0, width, height), state))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
+        let mut text = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                text.push_str(buffer.cell((x, y)).unwrap().symbol());
+            }
+            text.push('\n');
+        }
+        text
+    }
+
+    #[test]
+    fn render_create_agent_shows_agent_label_with_single_available_type() {
+        let state = CreateAgentState {
+            name: "agent-1".into(),
+            directory: "/tmp".into(),
+            available_types: vec![AgentType::Codex],
+            selected_type_idx: 0,
+            ..CreateAgentState::default()
+        };
+
+        let buffer = render_buffer(&state, 80, 24);
+        let text = buffer_text(&buffer);
+
+        assert!(text.contains("Agent"));
+        assert!(text.contains("◉ codex"));
     }
 }
