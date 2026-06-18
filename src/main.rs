@@ -138,17 +138,28 @@ async fn main() -> Result<()> {
     }
 
     // Auto-resume any agents whose tmux pane died (e.g. after a tmux server
-    // restart).  Uses AgentRunner::restart so Claude agents are skipped
-    // gracefully (restart returns Err for Claude).
+    // restart).  Snapshot the dead panes before creating replacements: tmux
+    // may reuse low window indexes, and a newly restarted agent can otherwise
+    // make a later agent's old pane target look alive.
+    let restart_indices: Vec<usize> = config
+        .agents
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, agent_config)| (!tmux::is_alive(&agent_config.pane)).then_some(idx))
+        .collect();
+
     let mut config_dirty = false;
-    for agent_config in config.agents.iter_mut() {
-        if !tmux::is_alive(&agent_config.pane)
-            && let Ok((updated_config, _adapter)) = runner.restart(agent_config).await
-        {
-            *agent_config = updated_config;
+    for idx in restart_indices {
+        let Some(agent_config) = config.agents.get(idx).cloned() else {
+            continue;
+        };
+        if let Ok((updated_config, _adapter)) = runner.restart(&agent_config).await {
+            if let Some(config_agent) = config.agents.get_mut(idx) {
+                *config_agent = updated_config;
+            }
             config_dirty = true;
         }
-        // On failure (including Claude agents) the config is left unchanged.
+        // On failure the config is left unchanged.
     }
     if config_dirty {
         let _ = config.save();
