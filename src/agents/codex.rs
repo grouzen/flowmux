@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::net::TcpListener;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -716,6 +717,7 @@ fn handle_notification(
             live_cache.write().unwrap().status = AgentStatus::Running;
         }
         "turn/completed" if is_current_thread(params, cached_session_id) => {
+            let thread_id = cached_thread_id(cached_session_id);
             let mut cache = live_cache.write().unwrap();
             cache.status = AgentStatus::Idle;
             if let Some(turn) = params.get("turn") {
@@ -724,6 +726,11 @@ fn handle_notification(
                     turn.get("id").and_then(Value::as_str),
                     turn.get("durationMs").and_then(Value::as_i64),
                 );
+            }
+            if cache.rollout_path.is_none()
+                && let Some(thread_id) = thread_id
+            {
+                cache.rollout_path = find_rollout_path(&thread_id);
             }
             if let Some(path) = cache.rollout_path.clone() {
                 enrich_from_rollout(&path, &mut cache);
@@ -735,12 +742,17 @@ fn handle_notification(
             }
             let item = params.get("item").unwrap_or(&Value::Null);
             let item_type = item.get("type").and_then(Value::as_str);
-            if let Some(text) = item.get("text").and_then(Value::as_str) {
+            if item_type == Some("agentMessage") || codex_item_role(item) == Some("assistant") {
                 let mut cache = live_cache.write().unwrap();
-                if item_type == Some("agentMessage") {
-                    cache.last_model_response = Some(text.to_owned());
-                } else if cache.first_prompt.is_none() && !text.is_empty() {
-                    cache.first_prompt = Some(text.to_owned());
+                if let Some(text) = codex_item_text(item) {
+                    cache.last_model_response = Some(text);
+                }
+            } else if live_cache.read().unwrap().first_prompt.is_none()
+                && let Some(text) = user_message_item_text(item)
+            {
+                let mut cache = live_cache.write().unwrap();
+                if cache.first_prompt.is_none() {
+                    cache.first_prompt = Some(text);
                 }
             }
         }
@@ -797,19 +809,15 @@ fn update_from_thread(
 
     let mut cache = live_cache.write().unwrap();
     cache.status = status_from_value(thread.get("status"));
-    if cache.first_prompt.is_none() {
-        cache.first_prompt = thread
-            .get("preview")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned)
-            .or_else(|| first_prompt_from_turns(thread));
-    }
     cache.rollout_path = thread
         .get("path")
         .and_then(Value::as_str)
         .map(str::to_owned)
+        .or_else(|| find_rollout_path(id))
         .or_else(|| cache.rollout_path.clone());
+    if cache.first_prompt.is_none() {
+        cache.first_prompt = first_prompt_from_turns(thread);
+    }
 
     if let Some(turns) = thread.get("turns").and_then(Value::as_array) {
         for turn in turns {
@@ -852,14 +860,53 @@ fn first_prompt_from_turns(thread: &Value) -> Option<String> {
                 .into_iter()
                 .flatten()
         })
-        .find(|item| {
-            item.get("type").and_then(Value::as_str) != Some("agentMessage")
-                && item
-                    .get("text")
+        .find_map(user_message_item_text)
+}
+
+fn user_message_item_text(item: &Value) -> Option<String> {
+    (item.get("type").and_then(Value::as_str) == Some("userMessage"))
+        .then(|| codex_item_text(item))
+        .flatten()
+}
+
+fn codex_item_role(item: &Value) -> Option<&str> {
+    item.get("role")
+        .and_then(Value::as_str)
+        .or_else(|| item.get("payload")?.get("role")?.as_str())
+}
+
+fn codex_item_text(item: &Value) -> Option<String> {
+    item.get("text")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+        .map(str::to_owned)
+        .or_else(|| content_text(item.get("content")?))
+        .or_else(|| codex_item_text(item.get("payload")?))
+}
+
+fn content_text(content: &Value) -> Option<String> {
+    if let Some(text) = content.as_str().filter(|text| !text.is_empty()) {
+        return Some(text.to_owned());
+    }
+
+    if let Some(parts) = content.as_array() {
+        let text = parts
+            .iter()
+            .filter_map(|part| {
+                part.get("text")
                     .and_then(Value::as_str)
-                    .is_some_and(|text| !text.is_empty())
-        })
-        .and_then(|item| item.get("text").and_then(Value::as_str))
+                    .filter(|text| !text.is_empty())
+                    .or_else(|| part.as_str().filter(|text| !text.is_empty()))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        return (!text.is_empty()).then_some(text);
+    }
+
+    content
+        .get("text")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
         .map(str::to_owned)
 }
 
@@ -898,6 +945,9 @@ fn enrich_from_rollout(path: &str, cache: &mut LiveCache) {
         };
         let kind = value.get("type").and_then(Value::as_str);
         let payload = value.get("payload").unwrap_or(&Value::Null);
+        if cache.first_prompt.is_none() {
+            cache.first_prompt = first_prompt_from_rollout_record(kind, payload);
+        }
         if kind == Some("event_msg")
             && payload.get("type").and_then(Value::as_str) == Some("task_complete")
         {
@@ -908,6 +958,60 @@ fn enrich_from_rollout(path: &str, cache: &mut LiveCache) {
             );
         }
     }
+}
+
+fn first_prompt_from_rollout_record(kind: Option<&str>, payload: &Value) -> Option<String> {
+    match kind {
+        Some("event_msg")
+            if payload.get("type").and_then(Value::as_str) == Some("user_message") =>
+        {
+            payload
+                .get("message")
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+                .map(str::to_owned)
+        }
+        _ => None,
+    }
+}
+
+fn find_rollout_path(thread_id: &str) -> Option<String> {
+    let sessions_dir = codex_home().join("sessions");
+    let mut stack = vec![sessions_dir];
+
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if rollout_filename_matches_thread_id(&path, thread_id) {
+                return Some(path.to_string_lossy().into_owned());
+            }
+        }
+    }
+
+    None
+}
+
+fn codex_home() -> PathBuf {
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex")))
+        .unwrap_or_else(|| PathBuf::from(".codex"))
+}
+
+fn rollout_filename_matches_thread_id(path: &Path, thread_id: &str) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.starts_with("rollout-")
+                && name
+                    .strip_suffix(".jsonl")
+                    .is_some_and(|stem| stem.ends_with(thread_id))
+        })
 }
 
 fn record_turn_duration(cache: &mut LiveCache, turn_id: Option<&str>, duration_ms: Option<i64>) {
@@ -1173,7 +1277,10 @@ mod tests {
             "turns": [{
                 "id": "turn-1",
                 "durationMs": 1200,
-                "items": [{"type": "agentMessage", "text": "Done"}]
+                "items": [
+                    {"type": "userMessage", "text": "Fix the tests"},
+                    {"type": "agentMessage", "text": "Done"}
+                ]
             }]
         });
 
@@ -1210,6 +1317,62 @@ mod tests {
     }
 
     #[test]
+    fn response_item_user_message_is_not_used_as_first_prompt() {
+        let session = Arc::new(Mutex::new(None));
+        let cache = Arc::new(RwLock::new(LiveCache::default()));
+        let thread = json!({
+            "id": "thread-1",
+            "status": {"type": "idle"},
+            "turns": [{
+                "id": "turn-1",
+                "items": [{
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{
+                            "type": "input_text",
+                            "text": "Implement the parser"
+                        }]
+                    }
+                }]
+            }]
+        });
+
+        update_from_thread(&thread, &session, &cache);
+
+        let cache = cache.read().unwrap();
+        assert_eq!(cache.first_prompt, None);
+    }
+
+    #[test]
+    fn response_item_user_message_does_not_win_before_user_message_item() {
+        let thread = json!({
+            "turns": [{
+                "items": [{
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{
+                            "type": "input_text",
+                            "text": "Synthetic context"
+                        }]
+                    }
+                }, {
+                    "type": "userMessage",
+                    "text": "test hello"
+                }]
+            }]
+        });
+
+        assert_eq!(
+            first_prompt_from_turns(&thread).as_deref(),
+            Some("test hello")
+        );
+    }
+
+    #[test]
     fn new_root_thread_switches_and_resets_session_meta() {
         let session = Arc::new(Mutex::new(Some("thread-1".to_string())));
         let cache = Arc::new(RwLock::new(LiveCache {
@@ -1234,7 +1397,9 @@ mod tests {
                 "parentThreadId": null,
                 "preview": "New prompt",
                 "status": {"type": "active"},
-                "turns": []
+                "turns": [{
+                    "items": [{"type": "userMessage", "text": "New prompt"}]
+                }]
             }
         });
 
@@ -1427,6 +1592,102 @@ mod tests {
     }
 
     #[test]
+    fn live_nested_assistant_item_updates_response_not_first_prompt() {
+        let session = Arc::new(Mutex::new(Some("thread-1".to_string())));
+        let cache = Arc::new(RwLock::new(LiveCache::default()));
+
+        handle_notification(
+            "item/completed",
+            &json!({
+                "threadId": "thread-1",
+                "item": {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{
+                            "type": "output_text",
+                            "text": "New response"
+                        }]
+                    }
+                }
+            }),
+            "/tmp",
+            &session,
+            &cache,
+        );
+
+        let cache = cache.read().unwrap();
+        assert_eq!(cache.first_prompt, None);
+        assert_eq!(cache.last_model_response.as_deref(), Some("New response"));
+    }
+
+    #[test]
+    fn live_response_items_do_not_win_before_user_message_item() {
+        let session = Arc::new(Mutex::new(Some("thread-1".to_string())));
+        let cache = Arc::new(RwLock::new(LiveCache::default()));
+
+        handle_notification(
+            "item/completed",
+            &json!({
+                "threadId": "thread-1",
+                "item": {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "developer",
+                        "content": [{
+                            "type": "input_text",
+                            "text": "Developer instructions"
+                        }]
+                    }
+                }
+            }),
+            "/tmp",
+            &session,
+            &cache,
+        );
+        handle_notification(
+            "item/completed",
+            &json!({
+                "threadId": "thread-1",
+                "item": {
+                    "type": "response_item",
+                    "payload": {
+                        "role": "user",
+                        "content": [{
+                            "type": "input_text",
+                            "text": "Synthetic context with user role"
+                        }]
+                    }
+                }
+            }),
+            "/tmp",
+            &session,
+            &cache,
+        );
+        handle_notification(
+            "item/completed",
+            &json!({
+                "threadId": "thread-1",
+                "item": {
+                    "type": "userMessage",
+                    "text": "Hello test one one two trheeeee"
+                }
+            }),
+            "/tmp",
+            &session,
+            &cache,
+        );
+
+        let cache = cache.read().unwrap();
+        assert_eq!(
+            cache.first_prompt.as_deref(),
+            Some("Hello test one one two trheeeee")
+        );
+    }
+
+    #[test]
     fn rollout_task_complete_tracks_and_deduplicates_work_time() {
         let path = std::env::temp_dir().join(format!(
             "flowmux-codex-duration-{}.jsonl",
@@ -1448,6 +1709,75 @@ mod tests {
         assert_eq!(cache.total_work_ms, 4000);
         assert_eq!(cache.completed_turn_ids.len(), 2);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn rollout_event_msg_user_message_backfills_first_prompt() {
+        let path = std::env::temp_dir().join(format!(
+            "flowmux-codex-first-prompt-event-{}.jsonl",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"Hello test one one two\"}}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-1\",\"duration_ms\":1629}}\n"
+            ),
+        )
+        .unwrap();
+
+        let mut cache = LiveCache::default();
+        enrich_from_rollout(path.to_str().unwrap(), &mut cache);
+
+        assert_eq!(
+            cache.first_prompt.as_deref(),
+            Some("Hello test one one two")
+        );
+        assert_eq!(cache.total_work_ms, 1629);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn rollout_uses_user_message_event_not_response_item_transcript() {
+        let path = std::env::temp_dir().join(format!(
+            "flowmux-codex-first-prompt-agents-bootstrap-{}.jsonl",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Synthetic context\"}]}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Transcript copy of prompt\"}]}}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"test hello\"}}\n"
+            ),
+        )
+        .unwrap();
+
+        let mut cache = LiveCache::default();
+        enrich_from_rollout(path.to_str().unwrap(), &mut cache);
+
+        assert_eq!(cache.first_prompt.as_deref(), Some("test hello"));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn rollout_filename_match_requires_rollout_jsonl_for_thread_id() {
+        assert!(rollout_filename_matches_thread_id(
+            Path::new("rollout-2026-06-19T23-04-40-019ee1b3-3ce0-7281-8116-2e57425c9410.jsonl"),
+            "019ee1b3-3ce0-7281-8116-2e57425c9410"
+        ));
+        assert!(!rollout_filename_matches_thread_id(
+            Path::new("other-019ee1b3-3ce0-7281-8116-2e57425c9410.jsonl"),
+            "019ee1b3-3ce0-7281-8116-2e57425c9410"
+        ));
+        assert!(!rollout_filename_matches_thread_id(
+            Path::new("rollout-2026-06-19T22-49-02-019ee1a4-ea83-7c31-b461-138e19476c23.jsonl"),
+            "019ee1b3-3ce0-7281-8116-2e57425c9410"
+        ));
+        assert!(!rollout_filename_matches_thread_id(
+            Path::new("rollout-2026-06-19T23-04-40-019ee1b3-3ce0-7281-8116-2e57425c9410.txt"),
+            "019ee1b3-3ce0-7281-8116-2e57425c9410"
+        ));
     }
 
     #[test]
@@ -1696,6 +2026,117 @@ mod tests {
         let context = context.unwrap();
         assert_eq!(context.used, 90);
         assert_eq!(context.total, Some(200_000));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn subscribed_observer_updates_first_prompt_from_live_user_item() {
+        let listener = TokioTcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let mut stream = accept_test_websocket(listener).await;
+
+            let initialize: Value =
+                serde_json::from_str(&read_test_client_text(&mut stream).await).unwrap();
+            assert_eq!(
+                initialize.get("method").and_then(Value::as_str),
+                Some("initialize")
+            );
+            write_test_server_text(&mut stream, json!({"id": 1, "result": {}})).await;
+
+            let initialized: Value =
+                serde_json::from_str(&read_test_client_text(&mut stream).await).unwrap();
+            assert_eq!(
+                initialized.get("method").and_then(Value::as_str),
+                Some("initialized")
+            );
+
+            let discover: Value =
+                serde_json::from_str(&read_test_client_text(&mut stream).await).unwrap();
+            assert_eq!(
+                discover.get("method").and_then(Value::as_str),
+                Some("thread/list")
+            );
+            let discover_id = discover.get("id").and_then(Value::as_u64).unwrap();
+            write_test_server_text(
+                &mut stream,
+                json!({
+                    "id": discover_id,
+                    "result": {
+                        "data": [{
+                            "id": "thread-1",
+                            "cwd": "/tmp",
+                            "createdAt": 1,
+                            "parentThreadId": null,
+                            "status": {"type": "idle"},
+                            "turns": []
+                        }]
+                    }
+                }),
+            )
+            .await;
+
+            let resume: Value =
+                serde_json::from_str(&read_test_client_text(&mut stream).await).unwrap();
+            assert_eq!(
+                resume.get("method").and_then(Value::as_str),
+                Some("thread/resume")
+            );
+            let resume_id = resume.get("id").and_then(Value::as_u64).unwrap();
+            write_test_server_text(
+                &mut stream,
+                json!({
+                    "id": resume_id,
+                    "result": {
+                        "model": "gpt-test",
+                        "thread": {
+                            "id": "thread-1",
+                            "status": {"type": "idle"},
+                            "turns": []
+                        }
+                    }
+                }),
+            )
+            .await;
+
+            write_test_server_text(
+                &mut stream,
+                json!({
+                    "method": "item/completed",
+                    "params": {
+                        "threadId": "thread-1",
+                        "turnId": "turn-1",
+                        "item": {
+                            "type": "userMessage",
+                            "text": "Live prompt"
+                        }
+                    }
+                }),
+            )
+            .await;
+
+            assert!(
+                tokio::time::timeout(
+                    Duration::from_millis(900),
+                    read_test_client_text(&mut stream)
+                )
+                .await
+                .is_err(),
+                "observer sent a recurring request after live first prompt"
+            );
+        });
+
+        let adapter = CodexAdapter::new(port, "/tmp".to_string(), None);
+        let mut prompt = None;
+        for _ in 0..50 {
+            prompt = adapter.get_first_prompt().await;
+            if prompt.as_deref() == Some("Live prompt") {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+
+        assert_eq!(prompt.as_deref(), Some("Live prompt"));
         server.await.unwrap();
     }
 
