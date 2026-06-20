@@ -314,6 +314,8 @@ pub struct AgentViewState {
     /// stopped overlay.  Defaults to `true` when the agent has a worktree,
     /// and can be toggled with Space before confirming.
     pub remove_worktree_on_stop: bool,
+    /// Last viewport height used to interpret `view_scroll`.
+    last_viewport_height: Option<usize>,
 }
 
 impl AgentViewState {
@@ -337,6 +339,12 @@ impl AgentViewState {
         self.last_refresh = Some(std::time::SystemTime::now());
         true
     }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct StoredAgentViewScroll {
+    view_scroll: usize,
+    viewport_height: Option<usize>,
 }
 
 // ---------------------------------------------------------------------------
@@ -711,6 +719,7 @@ pub struct App {
     /// Set to `true` whenever state changes and a redraw is needed.
     /// Cleared to `false` by the render loop after each draw.
     pub dirty: bool,
+    agent_view_scroll: Vec<StoredAgentViewScroll>,
     /// Per-card scroll offset for the model response block on the dashboard.
     pub card_scroll: Vec<u16>,
     /// Per-card response viewport height, updated every render frame.
@@ -754,6 +763,7 @@ impl App {
             rx,
             last_dashboard_left_click: None,
             dirty: true, // force initial draw
+            agent_view_scroll: vec![StoredAgentViewScroll::default(); card_count],
             card_scroll: vec![0u16; card_count],
             card_response_heights: vec![0u16; card_count],
             card_response_widths: vec![0u16; card_count],
@@ -886,6 +896,35 @@ impl App {
             .iter()
             .filter(|entry| entry.config.project == self.active_project_name())
             .count()
+    }
+
+    fn persist_current_agent_view_scroll(&mut self) {
+        let AppState::AgentView(idx) = self.state else {
+            return;
+        };
+        if let Some(stored) = self.agent_view_scroll.get_mut(idx) {
+            stored.view_scroll = self.agent_view_state.view_scroll;
+            stored.viewport_height = self.agent_view_state.last_viewport_height;
+        }
+    }
+
+    fn enter_agent_view(&mut self, idx: usize) {
+        self.persist_current_agent_view_scroll();
+        let stored = self.agent_view_scroll.get(idx).copied().unwrap_or_default();
+        self.selected = idx;
+        self.agent_view_state = AgentViewState {
+            view_scroll: stored.view_scroll,
+            last_viewport_height: stored.viewport_height,
+            ..AgentViewState::default()
+        };
+        self.state = AppState::AgentView(idx);
+        self.dirty = true;
+    }
+
+    fn exit_agent_view_to_dashboard(&mut self) {
+        self.persist_current_agent_view_scroll();
+        self.state = AppState::Dashboard;
+        self.dirty = true;
     }
 
     /// Spawn background tasks (crossterm events, dashboard ticker, agent view ticker).
@@ -1123,9 +1162,7 @@ impl App {
     }
 
     fn open_agent_view(&mut self, idx: usize) {
-        self.agent_view_state = AgentViewState::default();
-        self.state = AppState::AgentView(idx);
-        self.dirty = true;
+        self.enter_agent_view(idx);
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent) {
@@ -1668,6 +1705,10 @@ impl App {
         if self.card_scroll.len() < self.agents.len() {
             self.card_scroll.resize(self.agents.len(), 0);
         }
+        if self.agent_view_scroll.len() < self.agents.len() {
+            self.agent_view_scroll
+                .resize(self.agents.len(), StoredAgentViewScroll::default());
+        }
         if self.card_response_heights.len() < self.agents.len() {
             self.card_response_heights.resize(self.agents.len(), 0);
         }
@@ -1721,6 +1762,23 @@ impl App {
                     self.dirty = true;
                 }
             }
+
+            let viewport_height = pane_content_height();
+            if let Some(previous_height) = self.agent_view_state.last_viewport_height
+                && previous_height != viewport_height
+            {
+                let new_scroll = resized_view_scroll(
+                    self.agent_view_state.lines.len(),
+                    self.agent_view_state.view_scroll,
+                    previous_height,
+                    viewport_height,
+                );
+                if new_scroll != self.agent_view_state.view_scroll {
+                    self.agent_view_state.view_scroll = new_scroll;
+                    self.dirty = true;
+                }
+            }
+            self.agent_view_state.last_viewport_height = Some(viewport_height);
 
             // Silently clamp view_scroll to the actual available history so
             // that scrolling down responds immediately after the user reaches
@@ -1822,7 +1880,7 @@ impl App {
                 KeyCode::Char('d') => {
                     let remove_wt = self.agent_view_state.remove_worktree_on_stop;
                     self.remove_agent(idx, remove_wt, true).await;
-                    self.state = AppState::Dashboard;
+                    self.exit_agent_view_to_dashboard();
                 }
                 KeyCode::Char(' ') => {
                     // Toggle the "remove worktree" checkbox (only when agent has one)
@@ -1839,7 +1897,7 @@ impl App {
                 }
                 KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     self.agent_view_state.show_stopped_overlay = false;
-                    self.state = AppState::Dashboard;
+                    self.exit_agent_view_to_dashboard();
                 }
                 _ => {}
             }
@@ -1856,7 +1914,7 @@ impl App {
                 self.dirty = true;
             }
             KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.state = AppState::Dashboard;
+                self.exit_agent_view_to_dashboard();
             }
             KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 let is_git = self.agents.get(idx).is_some_and(|entry| {
@@ -1970,6 +2028,7 @@ impl App {
             return;
         }
 
+        self.persist_current_agent_view_scroll();
         self.git_viewer_state = Some(GitViewerState::new(agent_idx, pane.clone()));
         self.state = AppState::GitViewer(self.git_viewer_state.clone().unwrap());
         self.dirty = true;
@@ -2067,10 +2126,8 @@ impl App {
             let _ = tmux::kill_window(window_target);
         }
 
-        self.agent_view_state = AgentViewState::default();
-        self.state = AppState::AgentView(agent_idx);
+        self.enter_agent_view(agent_idx);
         self.git_viewer_state = None;
-        self.dirty = true;
     }
 
     fn exit_git_viewer_to_dashboard(&mut self) {
@@ -2159,6 +2216,7 @@ impl App {
         if let Some(existing_pane) = self.terminal_panes.get(&agent_idx) {
             if tmux::is_alive(existing_pane) {
                 let pane = existing_pane.clone();
+                self.persist_current_agent_view_scroll();
                 self.terminal_view_state = Some(TerminalViewState::new(agent_idx, pane));
                 self.state = AppState::TerminalView(self.terminal_view_state.clone().unwrap());
                 self.dirty = true;
@@ -2176,6 +2234,7 @@ impl App {
         let pane = format!("{}:{}.0", tmux::session_name(), window_index);
 
         self.terminal_panes.insert(agent_idx, pane.clone());
+        self.persist_current_agent_view_scroll();
         self.terminal_view_state = Some(TerminalViewState::new(agent_idx, pane));
         self.state = AppState::TerminalView(self.terminal_view_state.clone().unwrap());
         self.dirty = true;
@@ -2266,10 +2325,8 @@ impl App {
             _ => return,
         };
 
-        self.agent_view_state = AgentViewState::default();
-        self.state = AppState::AgentView(agent_idx);
+        self.enter_agent_view(agent_idx);
         self.terminal_view_state = None;
-        self.dirty = true;
     }
 
     fn exit_terminal_to_dashboard(&mut self) {
@@ -2553,10 +2610,10 @@ impl App {
                             };
                             self.agents.push(entry);
                             self.adapters.push(adapter);
+                            self.agent_view_scroll
+                                .push(StoredAgentViewScroll::default());
                             let new_idx = self.agents.len() - 1;
-                            self.selected = new_idx;
-                            self.agent_view_state = AgentViewState::default();
-                            self.state = AppState::AgentView(new_idx);
+                            self.enter_agent_view(new_idx);
                         }
                         Err(e) => {
                             self.create_state.error = Some(e.to_string());
@@ -2729,8 +2786,7 @@ impl App {
                     CreateField::CreateWorktree => {
                         // Space handled separately; other chars are no-ops here.
                         if c == ' ' && self.create_state.git_repo_root.is_some() {
-                            self.create_state.create_worktree =
-                                !self.create_state.create_worktree;
+                            self.create_state.create_worktree = !self.create_state.create_worktree;
                             if self.create_state.create_worktree {
                                 self.create_state.refresh_worktree_selector_matches();
                             } else if matches!(
@@ -2909,10 +2965,7 @@ impl App {
             {
                 self.set_active_project_idx(project_idx);
             }
-            self.selected = next;
-            self.state = AppState::AgentView(next);
-            self.agent_view_state = AgentViewState::default();
-            self.dirty = true;
+            self.enter_agent_view(next);
         }
     }
 
@@ -2957,6 +3010,9 @@ impl App {
             self.agents.remove(idx);
             self.adapters.remove(idx);
             self.config.agents.remove(idx);
+            if idx < self.agent_view_scroll.len() {
+                self.agent_view_scroll.remove(idx);
+            }
             let _ = self.config.save();
             // Adjust selected if needed
             if self.selected >= self.agents.len() && !self.agents.is_empty() {
@@ -3213,6 +3269,20 @@ pub(crate) fn pane_visible_line_range(
         let start = end.saturating_sub(viewport_height);
         (start, end)
     }
+}
+
+fn resized_view_scroll(
+    total_lines: usize,
+    view_scroll: usize,
+    old_viewport_height: usize,
+    new_viewport_height: usize,
+) -> usize {
+    if total_lines == 0 || old_viewport_height == new_viewport_height {
+        return view_scroll.min(total_lines.saturating_sub(new_viewport_height));
+    }
+    let (start, _) = pane_visible_line_range(total_lines, view_scroll, old_viewport_height);
+    let end = total_lines.min(start.saturating_add(new_viewport_height));
+    total_lines.saturating_sub(end)
 }
 
 fn clamp_external_pane_scroll(view_scroll: &mut usize, total_lines: usize) {
@@ -3489,8 +3559,11 @@ fn next_create_field(
 mod tests {
     use super::*;
     use crate::agent_discovery::DiscoveredAgents;
+    use crate::agents::AgentAdapter;
     use crate::config::{AgentConfig, AgentKind};
     use crate::global_config::GlobalConfig;
+    use crate::models::ContextInfo;
+    use async_trait::async_trait;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
@@ -3510,6 +3583,39 @@ mod tests {
     impl Drop for TestDir {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    struct NoopAdapter;
+
+    #[async_trait]
+    impl AgentAdapter for NoopAdapter {
+        async fn get_status(&self) -> AgentStatus {
+            AgentStatus::Idle
+        }
+
+        async fn get_context(&self) -> Option<ContextInfo> {
+            None
+        }
+
+        async fn get_first_prompt(&self) -> Option<String> {
+            None
+        }
+
+        async fn get_last_model_response(&self) -> Option<String> {
+            None
+        }
+
+        async fn get_model_name(&self) -> Option<String> {
+            None
+        }
+
+        async fn get_total_work_ms(&self) -> u64 {
+            0
+        }
+
+        fn get_cached_session_id(&self) -> Option<String> {
+            None
         }
     }
 
@@ -3948,6 +4054,166 @@ mod tests {
         assert_eq!(tmux_pane_viewport_size(1, 1), (0, 0));
         assert_eq!(tmux_pane_viewport_size(2, 4), (0, 0));
         assert_eq!(tmux_pane_viewport_size(3, 5), (1, 1));
+    }
+
+    #[test]
+    fn enter_agent_view_restores_saved_scroll_state() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.agents = vec![
+            test_agent("one", "Default", AgentStatus::Idle),
+            test_agent("two", "Default", AgentStatus::Idle),
+        ];
+        app.agent_view_scroll = vec![
+            StoredAgentViewScroll {
+                view_scroll: 7,
+                viewport_height: Some(14),
+            },
+            StoredAgentViewScroll {
+                view_scroll: 3,
+                viewport_height: Some(9),
+            },
+        ];
+
+        app.enter_agent_view(1);
+
+        assert!(matches!(app.state, AppState::AgentView(1)));
+        assert_eq!(app.selected, 1);
+        assert_eq!(app.agent_view_state.view_scroll, 3);
+        assert_eq!(app.agent_view_state.last_viewport_height, Some(9));
+    }
+
+    #[test]
+    fn switch_to_next_by_status_persists_previous_agent_scroll() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.config.projects = vec!["Default".into()];
+        app.agents = vec![
+            test_agent("one", "Default", AgentStatus::Running),
+            test_agent("two", "Default", AgentStatus::Running),
+        ];
+        app.agent_view_scroll = vec![
+            StoredAgentViewScroll {
+                view_scroll: 4,
+                viewport_height: Some(10),
+            },
+            StoredAgentViewScroll {
+                view_scroll: 9,
+                viewport_height: Some(12),
+            },
+        ];
+        app.selected = 0;
+        app.state = AppState::AgentView(0);
+        app.agent_view_state.view_scroll = 6;
+        app.agent_view_state.last_viewport_height = Some(11);
+
+        app.switch_to_next_by_status(AgentStatus::Running);
+
+        assert!(matches!(app.state, AppState::AgentView(1)));
+        assert_eq!(app.agent_view_scroll[0].view_scroll, 6);
+        assert_eq!(app.agent_view_scroll[0].viewport_height, Some(11));
+        assert_eq!(app.agent_view_state.view_scroll, 9);
+        assert_eq!(app.agent_view_state.last_viewport_height, Some(12));
+    }
+
+    #[test]
+    fn exiting_git_viewer_restores_agent_scroll() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.agents = vec![test_agent("one", "Default", AgentStatus::Idle)];
+        app.agent_view_scroll = vec![StoredAgentViewScroll {
+            view_scroll: 8,
+            viewport_height: Some(13),
+        }];
+        app.state = AppState::GitViewer(GitViewerState::new(0, "dummy".into()));
+
+        app.exit_git_viewer_to_agent();
+
+        assert!(matches!(app.state, AppState::AgentView(0)));
+        assert_eq!(app.agent_view_state.view_scroll, 8);
+        assert_eq!(app.agent_view_state.last_viewport_height, Some(13));
+    }
+
+    #[test]
+    fn exiting_terminal_view_restores_agent_scroll() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.agents = vec![test_agent("one", "Default", AgentStatus::Idle)];
+        app.agent_view_scroll = vec![StoredAgentViewScroll {
+            view_scroll: 5,
+            viewport_height: Some(7),
+        }];
+        app.state = AppState::TerminalView(TerminalViewState::new(0, "dummy".into()));
+
+        app.exit_terminal_to_agent();
+
+        assert!(matches!(app.state, AppState::AgentView(0)));
+        assert_eq!(app.agent_view_state.view_scroll, 5);
+        assert_eq!(app.agent_view_state.last_viewport_height, Some(7));
+    }
+
+    #[test]
+    fn remove_agent_keeps_scroll_entries_aligned() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.agents = vec![
+            test_agent("one", "Default", AgentStatus::Idle),
+            test_agent("two", "Default", AgentStatus::Idle),
+            test_agent("three", "Default", AgentStatus::Idle),
+        ];
+        app.adapters = vec![
+            Box::new(NoopAdapter),
+            Box::new(NoopAdapter),
+            Box::new(NoopAdapter),
+        ];
+        app.config.agents = app
+            .agents
+            .iter()
+            .map(|entry| entry.config.clone())
+            .collect();
+        app.agent_view_scroll = vec![
+            StoredAgentViewScroll {
+                view_scroll: 1,
+                viewport_height: Some(5),
+            },
+            StoredAgentViewScroll {
+                view_scroll: 2,
+                viewport_height: Some(6),
+            },
+            StoredAgentViewScroll {
+                view_scroll: 3,
+                viewport_height: Some(7),
+            },
+        ];
+
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(app.remove_agent(1, false, false));
+
+        assert_eq!(app.agents.len(), 2);
+        assert_eq!(app.agent_view_scroll.len(), 2);
+        assert_eq!(app.agent_view_scroll[0].view_scroll, 1);
+        assert_eq!(app.agent_view_scroll[1].view_scroll, 3);
+        assert_eq!(app.agent_view_scroll[1].viewport_height, Some(7));
+    }
+
+    #[test]
+    fn resized_view_scroll_preserves_top_visible_line_when_growing() {
+        let old_range = pane_visible_line_range(20, 4, 5);
+        let new_scroll = resized_view_scroll(20, 4, 5, 8);
+        let new_range = pane_visible_line_range(20, new_scroll, 8);
+
+        assert_eq!(old_range.0, new_range.0);
+    }
+
+    #[test]
+    fn resized_view_scroll_preserves_top_visible_line_when_shrinking() {
+        let old_range = pane_visible_line_range(20, 4, 8);
+        let new_scroll = resized_view_scroll(20, 4, 8, 5);
+        let new_range = pane_visible_line_range(20, new_scroll, 5);
+
+        assert_eq!(old_range.0, new_range.0);
+    }
+
+    #[test]
+    fn resized_view_scroll_clamps_when_anchor_exceeds_available_history() {
+        let new_scroll = resized_view_scroll(6, 5, 3, 8);
+        assert_eq!(new_scroll, 0);
     }
 
     #[test]
