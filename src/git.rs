@@ -57,9 +57,7 @@ pub fn sanitize_branch_name(name: &str) -> String {
     }
 
     // Strip trailing dashes and dots
-    let trimmed = result
-        .trim_end_matches(['-', '.'])
-        .to_string();
+    let trimmed = result.trim_end_matches(['-', '.']).to_string();
     if trimmed.is_empty() {
         "agent".to_string()
     } else {

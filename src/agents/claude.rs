@@ -195,8 +195,7 @@ impl ClaudeRuntime {
     pub(crate) fn make_adapter(&self, flowmux_agent_id: String) -> ClaudeAdapter {
         {
             let mut map = self.hook_state.lock().unwrap();
-            map.entry(flowmux_agent_id.clone())
-                .or_default();
+            map.entry(flowmux_agent_id.clone()).or_default();
         }
         ClaudeAdapter::new(flowmux_agent_id, self.hook_state.clone())
     }
@@ -491,8 +490,7 @@ fn extract_flowmux_ports(hooks_root: &Value) -> Vec<u16> {
 fn is_port_alive(port: u16) -> bool {
     use std::time::Duration;
     let addr = format!("127.0.0.1:{}", port);
-    std::net::TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_millis(100))
-        .is_ok()
+    std::net::TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_millis(100)).is_ok()
 }
 
 /// Remove hook entries for flowmux instances whose servers are no longer
