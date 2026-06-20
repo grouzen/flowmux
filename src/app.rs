@@ -30,6 +30,8 @@ const BLINK_INTERVAL_MS: u128 = 500;
 const PANE_CHROME_HEIGHT: u16 = 4;
 const PANE_BORDER_WIDTH: u16 = 2;
 const MOUSE_WHEEL_SCROLL_LINES: usize = 3;
+const DASHBOARD_DOUBLE_CLICK_WINDOW: std::time::Duration =
+    std::time::Duration::from_millis(400);
 
 impl StatusNotification {
     pub fn reset(&mut self, counts: AgentStatusCounts) {
@@ -705,6 +707,7 @@ pub struct App {
     pub create_project_state: CreateProjectState,
     pub tx: UnboundedSender<Event>,
     pub rx: UnboundedReceiver<Event>,
+    last_dashboard_left_click: Option<(usize, std::time::Instant)>,
     /// Set to `true` whenever state changes and a redraw is needed.
     /// Cleared to `false` by the render loop after each draw.
     pub dirty: bool,
@@ -749,6 +752,7 @@ impl App {
             create_project_state: CreateProjectState::default(),
             tx,
             rx,
+            last_dashboard_left_click: None,
             dirty: true, // force initial draw
             card_scroll: vec![0u16; card_count],
             card_response_heights: vec![0u16; card_count],
@@ -1040,10 +1044,25 @@ impl App {
 
     fn handle_dashboard_mouse(&mut self, mouse: MouseEvent) {
         match mouse.kind {
-            MouseEventKind::Down(_) => {
+            MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(slot) = self.dashboard_slot_at(mouse.column, mouse.row) {
                     if let Some(global_idx) = self.visible_agent_indices().get(slot).copied() {
                         self.selected = global_idx;
+                        let now = std::time::Instant::now();
+                        let is_double_click = self
+                            .last_dashboard_left_click
+                            .map(|(last_idx, last_at)| {
+                                last_idx == global_idx
+                                    && now.duration_since(last_at)
+                                        <= DASHBOARD_DOUBLE_CLICK_WINDOW
+                            })
+                            .unwrap_or(false);
+                        if is_double_click {
+                            self.last_dashboard_left_click = None;
+                            self.open_agent_view(global_idx);
+                            return;
+                        }
+                        self.last_dashboard_left_click = Some((global_idx, now));
                     }
                     self.dirty = true;
                 }
@@ -1092,6 +1111,12 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn open_agent_view(&mut self, idx: usize) {
+        self.agent_view_state = AgentViewState::default();
+        self.state = AppState::AgentView(idx);
+        self.dirty = true;
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent) {
@@ -1462,8 +1487,7 @@ impl App {
                     .and_then(|pos| visible_indices.get(pos))
                     .copied()
                 {
-                    self.agent_view_state = AgentViewState::default();
-                    self.state = AppState::AgentView(idx);
+                    self.open_agent_view(idx);
                 }
             }
             // ---------------------------------------------------------------
@@ -3472,6 +3496,15 @@ mod tests {
         )
     }
 
+    fn dashboard_mouse_event(kind: MouseEventKind) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: 0,
+            row: PROJECT_TABS_HEIGHT,
+            modifiers: KeyModifiers::empty(),
+        }
+    }
+
     #[test]
     fn visible_agent_indices_are_project_scoped() {
         let agents = vec![
@@ -3652,6 +3685,101 @@ mod tests {
         assert_eq!(app.active_project_idx, 2);
         assert_eq!(app.active_project_name(), "other");
         assert!(matches!(app.state, AppState::AgentView(2)));
+    }
+
+    #[test]
+    fn dashboard_single_left_click_selects_without_opening() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.agents = vec![
+            test_agent("left", "Default", AgentStatus::Idle),
+            test_agent("right", "Default", AgentStatus::Idle),
+        ];
+        app.adapters = Vec::new();
+        app.selected = 1;
+
+        app.handle_dashboard_mouse(dashboard_mouse_event(MouseEventKind::Down(
+            MouseButton::Left,
+        )));
+
+        assert_eq!(app.selected, 0);
+        assert!(matches!(app.state, AppState::Dashboard));
+        assert!(app.last_dashboard_left_click.is_some());
+    }
+
+    #[test]
+    fn dashboard_double_left_click_opens_agent_view() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.agents = vec![test_agent("only", "Default", AgentStatus::Idle)];
+        app.adapters = Vec::new();
+
+        let click = dashboard_mouse_event(MouseEventKind::Down(MouseButton::Left));
+        app.handle_dashboard_mouse(click);
+        app.handle_dashboard_mouse(click);
+
+        assert!(matches!(app.state, AppState::AgentView(0)));
+        assert!(app.last_dashboard_left_click.is_none());
+    }
+
+    #[test]
+    fn dashboard_double_click_requires_same_card() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.agents = vec![
+            test_agent("left", "Default", AgentStatus::Idle),
+            test_agent("right", "Default", AgentStatus::Idle),
+        ];
+        app.adapters = Vec::new();
+
+        app.handle_dashboard_mouse(dashboard_mouse_event(MouseEventKind::Down(
+            MouseButton::Left,
+        )));
+        app.handle_dashboard_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 40,
+            row: PROJECT_TABS_HEIGHT,
+            modifiers: KeyModifiers::empty(),
+        });
+
+        assert!(matches!(app.state, AppState::Dashboard));
+        assert_eq!(app.selected, 1);
+        assert_eq!(
+            app.last_dashboard_left_click.map(|(idx, _)| idx),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn dashboard_double_click_times_out() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.agents = vec![test_agent("only", "Default", AgentStatus::Idle)];
+        app.adapters = Vec::new();
+        app.last_dashboard_left_click = Some((
+            0,
+            std::time::Instant::now() - DASHBOARD_DOUBLE_CLICK_WINDOW - std::time::Duration::from_millis(1),
+        ));
+
+        app.handle_dashboard_mouse(dashboard_mouse_event(MouseEventKind::Down(
+            MouseButton::Left,
+        )));
+
+        assert!(matches!(app.state, AppState::Dashboard));
+        assert_eq!(
+            app.last_dashboard_left_click.map(|(idx, _)| idx),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn dashboard_non_left_mouse_does_not_arm_double_click() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.agents = vec![test_agent("only", "Default", AgentStatus::Idle)];
+        app.adapters = Vec::new();
+
+        app.handle_dashboard_mouse(dashboard_mouse_event(MouseEventKind::Down(
+            MouseButton::Right,
+        )));
+
+        assert!(matches!(app.state, AppState::Dashboard));
+        assert!(app.last_dashboard_left_click.is_none());
     }
 
     #[test]
