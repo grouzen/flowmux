@@ -11,6 +11,15 @@ use crate::ui::theme::*;
 
 pub const PROJECT_TABS_HEIGHT: u16 = 1;
 
+pub(crate) fn project_tab_label(idx: usize, project: &str) -> String {
+    let digit = match idx {
+        0..=8 => char::from(b'1' + idx as u8),
+        9 => '0',
+        _ => '?',
+    };
+    format!(" {} {} ", digit, project)
+}
+
 // ---------------------------------------------------------------------------
 // Style helper
 // ---------------------------------------------------------------------------
@@ -628,12 +637,7 @@ fn render_project_tabs(
     spans.push(Span::raw(" "));
 
     for (idx, project) in projects.iter().enumerate() {
-        let digit = match idx {
-            0..=8 => char::from(b'1' + idx as u8),
-            9 => '0',
-            _ => '?',
-        };
-        let label = format!(" {} {} ", digit, project);
+        let label = project_tab_label(idx, project);
         let style = if idx == active_project_idx {
             ds(dimmed).fg(BG1).bg(BLUE).add_modifier(Modifier::BOLD)
         } else {
