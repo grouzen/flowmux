@@ -10,7 +10,7 @@ use crate::host_terminal::HostColors;
 use crate::models::{AgentEntry, AgentMeta, AgentStatus, AgentStatusCounts, AgentType};
 use crate::runner::AgentRunner;
 use crate::tmux;
-use crate::ui::dashboard::{PROJECT_TABS_HEIGHT, grid_layout};
+use crate::ui::dashboard::{PROJECT_TABS_HEIGHT, grid_layout, project_tab_label};
 
 // ---------------------------------------------------------------------------
 // StatusNotification — blink tracking for status bar
@@ -1042,9 +1042,18 @@ impl App {
         if slot < n { Some(slot) } else { None }
     }
 
+    fn dashboard_project_tab_at(&self, col: u16, row: u16) -> Option<usize> {
+        project_tab_at(&self.config.projects, col, row)
+    }
+
     fn handle_dashboard_mouse(&mut self, mouse: MouseEvent) {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(project_idx) = self.dashboard_project_tab_at(mouse.column, mouse.row) {
+                    self.last_dashboard_left_click = None;
+                    self.set_active_project_idx(project_idx);
+                    return;
+                }
                 if let Some(slot) = self.dashboard_slot_at(mouse.column, mouse.row) {
                     if let Some(global_idx) = self.visible_agent_indices().get(slot).copied() {
                         self.selected = global_idx;
@@ -3113,6 +3122,24 @@ fn pane_handles_own_scroll(mouse_active: bool) -> bool {
     mouse_active
 }
 
+fn project_tab_at(projects: &[String], col: u16, row: u16) -> Option<usize> {
+    if row >= PROJECT_TABS_HEIGHT {
+        return None;
+    }
+
+    let mut current_col = 1u16;
+    for (idx, project) in projects.iter().enumerate() {
+        let tab_width = project_tab_label(idx, project).chars().count() as u16;
+        let tab_end = current_col.saturating_add(tab_width);
+        if (current_col..tab_end).contains(&col) {
+            return Some(idx);
+        }
+        current_col = tab_end.saturating_add(1);
+    }
+
+    None
+}
+
 fn is_middle_button_down(mouse: MouseEvent) -> bool {
     matches!(mouse.kind, MouseEventKind::Down(MouseButton::Middle))
 }
@@ -3308,6 +3335,37 @@ mod project_tests {
         assert_eq!(pane_visible_line_range(6, 0, 3), (3, 6));
         assert_eq!(pane_visible_line_range(6, 2, 3), (1, 4));
         assert_eq!(pane_visible_line_range(2, 8, 3), (0, 2));
+    }
+
+    #[test]
+    fn project_tab_hit_testing_matches_rendered_tab_positions() {
+        let projects = vec!["Default".into(), "work".into(), "other".into()];
+
+        assert_eq!(project_tab_at(&projects, 0, 0), None);
+        assert_eq!(project_tab_at(&projects, 1, 0), Some(0));
+        assert_eq!(project_tab_at(&projects, 11, 0), Some(0));
+        assert_eq!(project_tab_at(&projects, 12, 0), None);
+        assert_eq!(project_tab_at(&projects, 13, 0), Some(1));
+        assert_eq!(project_tab_at(&projects, 20, 0), Some(1));
+        assert_eq!(project_tab_at(&projects, 21, 0), None);
+        assert_eq!(project_tab_at(&projects, 22, 0), Some(2));
+        assert_eq!(project_tab_at(&projects, 30, 0), Some(2));
+        assert_eq!(project_tab_at(&projects, 31, 0), None);
+        assert_eq!(project_tab_at(&projects, 5, 1), None);
+    }
+
+    #[test]
+    fn project_tab_hit_testing_supports_tenth_project_zero_label() {
+        let projects = (0..10).map(|idx| format!("p{idx}")).collect::<Vec<_>>();
+        let tab_col = 1
+            + projects
+                .iter()
+                .take(9)
+                .enumerate()
+                .map(|(idx, project)| project_tab_label(idx, project).chars().count() as u16 + 1)
+                .sum::<u16>();
+
+        assert_eq!(project_tab_at(&projects, tab_col, 0), Some(9));
     }
 }
 
@@ -3821,6 +3879,30 @@ mod tests {
 
         assert!(app.notification.waiting_blink.is_some());
         assert_eq!(app.active_project_name(), "work");
+    }
+
+    #[test]
+    fn left_click_on_project_tab_switches_projects_without_selecting_a_card() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.config.projects = vec!["Default".into(), "work".into()];
+        app.agents = vec![
+            test_agent("default-agent", "Default", AgentStatus::Idle),
+            test_agent("work-agent", "work", AgentStatus::Idle),
+        ];
+        app.selected = 0;
+        app.active_project_idx = 0;
+        app.state = AppState::Dashboard;
+
+        app.handle_dashboard_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 13,
+            row: 0,
+            modifiers: KeyModifiers::empty(),
+        });
+
+        assert_eq!(app.active_project_idx, 1);
+        assert_eq!(app.active_project_name(), "work");
+        assert_eq!(app.selected, 1);
     }
 
     #[test]
