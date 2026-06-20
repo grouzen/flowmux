@@ -705,6 +705,7 @@ pub struct App {
     pub state: AppState,
     pub active_project_idx: usize,
     pub selected: usize,
+    dashboard_selected_by_project: std::collections::HashMap<String, usize>,
     pub config: Config,
     pub runner: AgentRunner,
     pub agent_view_state: AgentViewState,
@@ -751,6 +752,7 @@ impl App {
             state: AppState::Dashboard,
             active_project_idx: 0,
             selected: 0,
+            dashboard_selected_by_project: std::collections::HashMap::new(),
             config,
             runner,
             agent_view_state: AgentViewState::default(),
@@ -851,6 +853,27 @@ impl App {
         visible_indices.iter().position(|&idx| idx == self.selected)
     }
 
+    fn remember_project_selection(&mut self, project_name: &str, idx: usize) {
+        if self
+            .agents
+            .get(idx)
+            .is_some_and(|entry| entry.config.project == project_name)
+        {
+            self.dashboard_selected_by_project
+                .insert(project_name.to_string(), idx);
+        }
+    }
+
+    fn remember_active_project_selection(&mut self) {
+        let project_name = self.active_project_name().to_string();
+        self.remember_project_selection(&project_name, self.selected);
+    }
+
+    fn set_dashboard_selected(&mut self, idx: usize) {
+        self.selected = idx;
+        self.remember_active_project_selection();
+    }
+
     fn ensure_project_selection(&mut self) {
         let visible_indices = self.visible_agent_indices();
         if visible_indices.is_empty() {
@@ -859,7 +882,9 @@ impl App {
         }
 
         if !visible_indices.contains(&self.selected) {
-            self.selected = visible_indices[0];
+            self.set_dashboard_selected(visible_indices[0]);
+        } else {
+            self.remember_active_project_selection();
         }
     }
 
@@ -867,7 +892,21 @@ impl App {
         if idx >= self.config.projects.len() {
             return;
         }
+        self.remember_active_project_selection();
         self.active_project_idx = idx;
+        let project_name = self.active_project_name().to_string();
+        if let Some(selected) = self
+            .dashboard_selected_by_project
+            .get(&project_name)
+            .copied()
+            .filter(|&selected| {
+                self.agents
+                    .get(selected)
+                    .is_some_and(|entry| entry.config.project == project_name)
+            })
+        {
+            self.selected = selected;
+        }
         self.ensure_project_selection();
         self.dirty = true;
     }
@@ -912,6 +951,13 @@ impl App {
         self.persist_current_agent_view_scroll();
         let stored = self.agent_view_scroll.get(idx).copied().unwrap_or_default();
         self.selected = idx;
+        let project_name = self
+            .agents
+            .get(idx)
+            .map(|entry| entry.config.project.clone());
+        if let Some(project_name) = project_name {
+            self.remember_project_selection(&project_name, idx);
+        }
         self.agent_view_state = AgentViewState {
             view_scroll: stored.view_scroll,
             last_viewport_height: stored.viewport_height,
@@ -1095,7 +1141,7 @@ impl App {
                 }
                 if let Some(slot) = self.dashboard_slot_at(mouse.column, mouse.row) {
                     if let Some(global_idx) = self.visible_agent_indices().get(slot).copied() {
-                        self.selected = global_idx;
+                        self.set_dashboard_selected(global_idx);
                         let now = std::time::Instant::now();
                         let is_double_click = self
                             .last_dashboard_left_click
@@ -1450,6 +1496,13 @@ impl App {
     /// Swap the selected card with `target`, keeping `selected` tracking the
     /// moved card.  Scroll offsets and cached geometry follow the swap.
     fn move_card(&mut self, target: usize) {
+        for selected in self.dashboard_selected_by_project.values_mut() {
+            if *selected == self.selected {
+                *selected = target;
+            } else if *selected == target {
+                *selected = self.selected;
+            }
+        }
         self.agents.swap(self.selected, target);
         self.adapters.swap(self.selected, target);
         self.config.agents.swap(self.selected, target);
@@ -1459,7 +1512,7 @@ impl App {
             self.card_response_heights.swap(self.selected, target);
             self.card_response_widths.swap(self.selected, target);
         }
-        self.selected = target;
+        self.set_dashboard_selected(target);
         self.dirty = true;
         let _ = self.config.save();
     }
@@ -1582,7 +1635,7 @@ impl App {
                     // Move left within row; at col 0 wrap to last slot of
                     // the previous row (same index arithmetic: selected - 1).
                     if selected_pos % cols > 0 || selected_pos >= cols {
-                        self.selected = visible_indices[selected_pos - 1];
+                        self.set_dashboard_selected(visible_indices[selected_pos - 1]);
                         self.reset_card_scroll();
                     }
                 }
@@ -1592,7 +1645,7 @@ impl App {
                     // Move right within row; at last col wrap to first slot
                     // of the next row, as long as a next card exists.
                     if selected_pos + 1 < visible_indices.len() {
-                        self.selected = visible_indices[selected_pos + 1];
+                        self.set_dashboard_selected(visible_indices[selected_pos + 1]);
                         self.reset_card_scroll();
                     }
                 }
@@ -1601,7 +1654,7 @@ impl App {
                 if let Some(selected_pos) = selected_visible {
                     let (cols, _) = grid_layout(visible_indices.len());
                     if selected_pos >= cols {
-                        self.selected = visible_indices[selected_pos - cols];
+                        self.set_dashboard_selected(visible_indices[selected_pos - cols]);
                         self.reset_card_scroll();
                     }
                 }
@@ -1610,7 +1663,7 @@ impl App {
                 if let Some(selected_pos) = selected_visible {
                     let (cols, _) = grid_layout(visible_indices.len());
                     if selected_pos + cols < visible_indices.len() {
-                        self.selected = visible_indices[selected_pos + cols];
+                        self.set_dashboard_selected(visible_indices[selected_pos + cols]);
                         self.reset_card_scroll();
                     }
                 }
@@ -3010,6 +3063,17 @@ impl App {
             self.agents.remove(idx);
             self.adapters.remove(idx);
             self.config.agents.remove(idx);
+            self.dashboard_selected_by_project
+                .retain(|_, selected| {
+                    if *selected == idx {
+                        false
+                    } else {
+                        if *selected > idx {
+                            *selected -= 1;
+                        }
+                        true
+                    }
+                });
             if idx < self.agent_view_scroll.len() {
                 self.agent_view_scroll.remove(idx);
             }
@@ -3050,6 +3114,7 @@ impl App {
         }
 
         if project_idx < self.config.projects.len() {
+            self.dashboard_selected_by_project.remove(&project_name);
             self.config.projects.remove(project_idx);
             self.config.normalize();
             let next_idx = project_idx.min(self.config.projects.len().saturating_sub(1));
@@ -3988,16 +4053,110 @@ mod tests {
     }
 
     #[test]
+    fn switching_projects_restores_last_selected_agent_for_each_project() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.config.projects = vec!["Default".into(), "work".into()];
+        app.agents = vec![
+            test_agent("default-a", "Default", AgentStatus::Idle),
+            test_agent("default-b", "Default", AgentStatus::Idle),
+            test_agent("work-a", "work", AgentStatus::Idle),
+            test_agent("work-b", "work", AgentStatus::Idle),
+        ];
+        app.set_dashboard_selected(1);
+
+        app.set_active_project_idx(1);
+        assert_eq!(app.selected, 2);
+
+        app.set_dashboard_selected(3);
+        app.set_active_project_idx(0);
+        assert_eq!(app.selected, 1);
+
+        app.set_active_project_idx(1);
+        assert_eq!(app.selected, 3);
+    }
+
+    #[test]
+    fn switching_projects_without_history_falls_back_to_first_visible_card() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.config.projects = vec!["Default".into(), "work".into()];
+        app.agents = vec![
+            test_agent("default-agent", "Default", AgentStatus::Idle),
+            test_agent("work-a", "work", AgentStatus::Idle),
+            test_agent("work-b", "work", AgentStatus::Idle),
+        ];
+        app.selected = 0;
+        app.active_project_idx = 0;
+
+        app.set_active_project_idx(1);
+
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn removing_remembered_agent_falls_back_to_first_visible_card() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.config.projects = vec!["Default".into(), "work".into()];
+        app.agents = vec![
+            test_agent("default-agent", "Default", AgentStatus::Idle),
+            test_agent("work-a", "work", AgentStatus::Idle),
+            test_agent("work-b", "work", AgentStatus::Idle),
+        ];
+        app.config.agents = app.agents.iter().map(|entry| entry.config.clone()).collect();
+        app.adapters = vec![Box::new(NoopAdapter), Box::new(NoopAdapter), Box::new(NoopAdapter)];
+        app.card_scroll = vec![0; app.agents.len()];
+        app.card_response_heights = vec![0; app.agents.len()];
+        app.card_response_widths = vec![0; app.agents.len()];
+        app.active_project_idx = 1;
+        app.set_dashboard_selected(2);
+        app.set_active_project_idx(0);
+
+        futures::executor::block_on(app.remove_agent(2, false, false));
+
+        app.set_active_project_idx(1);
+
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn reordering_cards_preserves_remembered_agent_when_switching_back() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.config.projects = vec!["Default".into(), "work".into()];
+        app.agents = vec![
+            test_agent("default-agent", "Default", AgentStatus::Idle),
+            test_agent("work-a", "work", AgentStatus::Idle),
+            test_agent("work-b", "work", AgentStatus::Idle),
+        ];
+        app.config.agents = app.agents.iter().map(|entry| entry.config.clone()).collect();
+        app.adapters = vec![Box::new(NoopAdapter), Box::new(NoopAdapter), Box::new(NoopAdapter)];
+        app.card_scroll = vec![0; app.agents.len()];
+        app.card_response_heights = vec![0; app.agents.len()];
+        app.card_response_widths = vec![0; app.agents.len()];
+        app.active_project_idx = 1;
+        app.set_dashboard_selected(2);
+
+        app.move_card(1);
+        app.set_active_project_idx(0);
+        app.set_active_project_idx(1);
+
+        assert_eq!(app.selected, 1);
+        assert_eq!(app.agents[app.selected].config.name, "work-b");
+    }
+
+    #[test]
     fn left_click_on_project_tab_switches_projects_without_selecting_a_card() {
         let mut app = test_app_with_global_config(GlobalConfig::default());
         app.config.projects = vec!["Default".into(), "work".into()];
         app.agents = vec![
             test_agent("default-agent", "Default", AgentStatus::Idle),
-            test_agent("work-agent", "work", AgentStatus::Idle),
+            test_agent("work-agent-a", "work", AgentStatus::Idle),
+            test_agent("work-agent-b", "work", AgentStatus::Idle),
         ];
         app.selected = 0;
         app.active_project_idx = 0;
         app.state = AppState::Dashboard;
+        app.set_active_project_idx(1);
+        app.set_dashboard_selected(2);
+        app.set_active_project_idx(0);
 
         app.handle_dashboard_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
@@ -4008,7 +4167,7 @@ mod tests {
 
         assert_eq!(app.active_project_idx, 1);
         assert_eq!(app.active_project_name(), "work");
-        assert_eq!(app.selected, 1);
+        assert_eq!(app.selected, 2);
     }
 
     #[test]
