@@ -30,8 +30,7 @@ const BLINK_INTERVAL_MS: u128 = 500;
 const PANE_CHROME_HEIGHT: u16 = 4;
 const PANE_BORDER_WIDTH: u16 = 2;
 const MOUSE_WHEEL_SCROLL_LINES: usize = 3;
-const DASHBOARD_DOUBLE_CLICK_WINDOW: std::time::Duration =
-    std::time::Duration::from_millis(400);
+const DASHBOARD_DOUBLE_CLICK_WINDOW: std::time::Duration = std::time::Duration::from_millis(400);
 
 impl StatusNotification {
     pub fn reset(&mut self, counts: AgentStatusCounts) {
@@ -1147,8 +1146,7 @@ impl App {
                             .last_dashboard_left_click
                             .map(|(last_idx, last_at)| {
                                 last_idx == global_idx
-                                    && now.duration_since(last_at)
-                                        <= DASHBOARD_DOUBLE_CLICK_WINDOW
+                                    && now.duration_since(last_at) <= DASHBOARD_DOUBLE_CLICK_WINDOW
                             })
                             .unwrap_or(false);
                         if is_double_click {
@@ -3063,17 +3061,16 @@ impl App {
             self.agents.remove(idx);
             self.adapters.remove(idx);
             self.config.agents.remove(idx);
-            self.dashboard_selected_by_project
-                .retain(|_, selected| {
-                    if *selected == idx {
-                        false
-                    } else {
-                        if *selected > idx {
-                            *selected -= 1;
-                        }
-                        true
+            self.dashboard_selected_by_project.retain(|_, selected| {
+                if *selected == idx {
+                    false
+                } else {
+                    if *selected > idx {
+                        *selected -= 1;
                     }
-                });
+                    true
+                }
+            });
             if idx < self.agent_view_scroll.len() {
                 self.agent_view_scroll.remove(idx);
             }
@@ -3492,13 +3489,12 @@ mod project_tests {
     #[test]
     fn project_tab_hit_testing_supports_tenth_project_zero_label() {
         let projects = (0..10).map(|idx| format!("p{idx}")).collect::<Vec<_>>();
-        let tab_col = 1
-            + projects
-                .iter()
-                .take(9)
-                .enumerate()
-                .map(|(idx, project)| project_tab_label(idx, project).chars().count() as u16 + 1)
-                .sum::<u16>();
+        let tab_col = 1 + projects
+            .iter()
+            .take(9)
+            .enumerate()
+            .map(|(idx, project)| project_tab_label(idx, project).chars().count() as u16 + 1)
+            .sum::<u16>();
 
         assert_eq!(project_tab_at(&projects, tab_col, 0), Some(9));
     }
@@ -3970,10 +3966,7 @@ mod tests {
 
         assert!(matches!(app.state, AppState::Dashboard));
         assert_eq!(app.selected, 1);
-        assert_eq!(
-            app.last_dashboard_left_click.map(|(idx, _)| idx),
-            Some(1)
-        );
+        assert_eq!(app.last_dashboard_left_click.map(|(idx, _)| idx), Some(1));
     }
 
     #[test]
@@ -3983,7 +3976,9 @@ mod tests {
         app.adapters = Vec::new();
         app.last_dashboard_left_click = Some((
             0,
-            std::time::Instant::now() - DASHBOARD_DOUBLE_CLICK_WINDOW - std::time::Duration::from_millis(1),
+            std::time::Instant::now()
+                - DASHBOARD_DOUBLE_CLICK_WINDOW
+                - std::time::Duration::from_millis(1),
         ));
 
         app.handle_dashboard_mouse(dashboard_mouse_event(MouseEventKind::Down(
@@ -3991,10 +3986,7 @@ mod tests {
         )));
 
         assert!(matches!(app.state, AppState::Dashboard));
-        assert_eq!(
-            app.last_dashboard_left_click.map(|(idx, _)| idx),
-            Some(0)
-        );
+        assert_eq!(app.last_dashboard_left_click.map(|(idx, _)| idx), Some(0));
     }
 
     #[test]
@@ -4101,8 +4093,16 @@ mod tests {
             test_agent("work-a", "work", AgentStatus::Idle),
             test_agent("work-b", "work", AgentStatus::Idle),
         ];
-        app.config.agents = app.agents.iter().map(|entry| entry.config.clone()).collect();
-        app.adapters = vec![Box::new(NoopAdapter), Box::new(NoopAdapter), Box::new(NoopAdapter)];
+        app.config.agents = app
+            .agents
+            .iter()
+            .map(|entry| entry.config.clone())
+            .collect();
+        app.adapters = vec![
+            Box::new(NoopAdapter),
+            Box::new(NoopAdapter),
+            Box::new(NoopAdapter),
+        ];
         app.card_scroll = vec![0; app.agents.len()];
         app.card_response_heights = vec![0; app.agents.len()];
         app.card_response_widths = vec![0; app.agents.len()];
@@ -4126,8 +4126,16 @@ mod tests {
             test_agent("work-a", "work", AgentStatus::Idle),
             test_agent("work-b", "work", AgentStatus::Idle),
         ];
-        app.config.agents = app.agents.iter().map(|entry| entry.config.clone()).collect();
-        app.adapters = vec![Box::new(NoopAdapter), Box::new(NoopAdapter), Box::new(NoopAdapter)];
+        app.config.agents = app
+            .agents
+            .iter()
+            .map(|entry| entry.config.clone())
+            .collect();
+        app.adapters = vec![
+            Box::new(NoopAdapter),
+            Box::new(NoopAdapter),
+            Box::new(NoopAdapter),
+        ];
         app.card_scroll = vec![0; app.agents.len()];
         app.card_response_heights = vec![0; app.agents.len()];
         app.card_response_widths = vec![0; app.agents.len()];

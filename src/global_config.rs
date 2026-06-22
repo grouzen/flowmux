@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+const DEFAULT_GIT_VIEWER: &str = "git diff";
+
 /// Application-wide (not per-session) configuration stored at
 /// `~/.config/flowmux/config.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -14,7 +16,7 @@ pub struct GlobalConfig {
     pub claude_hook_server_port: u16,
 
     /// Command string for the external git viewer (e.g. "lazygit" or "lazydiff diff").
-    /// When set, Ctrl+V in the agent view launches the viewer in a new tmux pane.
+    /// When unset, Flowmux defaults to `git diff`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_viewer: Option<String>,
 
@@ -88,10 +90,15 @@ impl GlobalConfig {
         Ok(())
     }
 
-    /// Split the `git_viewer` string into (program, args).
-    /// Returns `None` if `git_viewer` is not configured.
+    /// Split the configured git viewer command into (program, args).
+    /// Falls back to `git diff` when the config value is unset or blank.
     pub fn git_viewer_parts(&self) -> Option<(String, Vec<String>)> {
-        let raw = self.git_viewer.as_deref()?.trim();
+        let raw = self
+            .git_viewer
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(DEFAULT_GIT_VIEWER);
         if raw.is_empty() {
             return None;
         }
@@ -99,5 +106,46 @@ impl GlobalConfig {
         let program = parts.next()?;
         let args: Vec<String> = parts.collect();
         Some((program, args))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GlobalConfig;
+
+    #[test]
+    fn git_viewer_parts_defaults_to_git_diff_when_unset() {
+        let config = GlobalConfig::default();
+
+        assert_eq!(
+            config.git_viewer_parts(),
+            Some(("git".to_string(), vec!["diff".to_string()]))
+        );
+    }
+
+    #[test]
+    fn git_viewer_parts_defaults_to_git_diff_when_blank() {
+        let config = GlobalConfig {
+            git_viewer: Some("   ".to_string()),
+            ..GlobalConfig::default()
+        };
+
+        assert_eq!(
+            config.git_viewer_parts(),
+            Some(("git".to_string(), vec!["diff".to_string()]))
+        );
+    }
+
+    #[test]
+    fn git_viewer_parts_uses_explicit_configured_command() {
+        let config = GlobalConfig {
+            git_viewer: Some("lazygit --path".to_string()),
+            ..GlobalConfig::default()
+        };
+
+        assert_eq!(
+            config.git_viewer_parts(),
+            Some(("lazygit".to_string(), vec!["--path".to_string()]))
+        );
     }
 }
