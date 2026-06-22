@@ -2,9 +2,10 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{Block, Clear, Paragraph},
 };
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{CreateAgentState, CreateField, MAX_DIR_VISIBLE, RelativeDirSelector};
 use crate::models::AgentType;
@@ -16,6 +17,8 @@ use crate::ui::theme::*;
 
 /// Left padding spaces (3 chars).
 const LEFT_PAD: usize = 3;
+/// Right padding spaces (3 chars).
+const RIGHT_PAD: usize = 3;
 /// Width of the full label prefix: LEFT_PAD + 10-char padded label name.
 const LABEL_WIDTH: u16 = (LEFT_PAD + 10) as u16; // 13
 
@@ -28,6 +31,11 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
     let modal_width = ((area.width as u32 * 40 / 100) as u16)
         .max(48)
         .min(area.width.saturating_sub(4));
+    let error_lines = state
+        .error
+        .as_deref()
+        .map(|err| wrap_error_lines(err, modal_width))
+        .unwrap_or_default();
 
     let visible_dir_rows = state.dir_matches.len().min(MAX_DIR_VISIBLE) as u16;
     let dir_section_rows: u16 = if state.dir_matches.is_empty() {
@@ -53,7 +61,8 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
 
     let agent_rows = state.available_types.len().max(1) as u16;
     let agent_label_row: u16 = 1;
-    let error_rows: u16 = if state.error.is_some() { 1 } else { 0 };
+    let error_rows = error_lines.len() as u16;
+    let error_gap_rows: u16 = if error_rows > 0 { 1 } else { 0 };
 
     // blank + title + blank + Name + blank + Directory
     // + dir_section + worktree_rows + blank + [agent_label] + agent_rows + blank + [error] + buttons + blank
@@ -70,6 +79,7 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
         + agent_rows
         + 1
         + error_rows
+        + error_gap_rows
         + 1
         + 1;
 
@@ -119,8 +129,9 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
         constraints.push(Constraint::Length(1));
     }
     constraints.push(Constraint::Length(1)); // blank
-    if state.error.is_some() {
-        constraints.push(Constraint::Length(1));
+    if error_rows > 0 {
+        constraints.push(Constraint::Length(error_rows));
+        constraints.push(Constraint::Length(1)); // blank after error
     }
     constraints.push(Constraint::Length(1)); // buttons
     constraints.push(Constraint::Min(0)); // trailing padding
@@ -372,16 +383,13 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
     row += 1;
 
     // Error row
-    if let Some(err) = &state.error {
+    if !error_lines.is_empty() {
         f.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::raw(left_pad()),
-                Span::styled(format!("{} ", ICON_ERR), Style::default().fg(RED)),
-                Span::styled(err.as_str(), Style::default().fg(RED)),
-            ]))
+            Paragraph::new(Text::from(error_lines))
             .style(Style::default().bg(BG1)),
             rows[row],
         );
+        row += 1;
         row += 1;
     }
 
@@ -478,12 +486,10 @@ fn render_field_row(
     placeholder: &str,
     focused: bool,
 ) {
-    // Reserve RIGHT_PAD chars on the right to prevent overflow
-    const RIGHT_PAD: u16 = 3;
     let val_width = area
         .width
         .saturating_sub(LABEL_WIDTH)
-        .saturating_sub(RIGHT_PAD);
+        .saturating_sub(RIGHT_PAD as u16);
     let displayed = truncate_left(value, val_width as usize);
     let label_text = format!("{}{:<10}", left_pad(), label);
 
@@ -756,6 +762,73 @@ fn label_pad() -> &'static str {
     "             " // 13 spaces
 }
 
+fn wrap_error_lines(error: &str, modal_width: u16) -> Vec<Line<'static>> {
+    let icon_prefix = format!("{}{} ", left_pad(), ICON_ERR);
+    let icon_prefix_width = UnicodeWidthStr::width(icon_prefix.as_str());
+    let indent = " ".repeat(icon_prefix_width);
+    let content_width = usize::from(modal_width)
+        .saturating_sub(icon_prefix_width)
+        .saturating_sub(RIGHT_PAD)
+        .max(1);
+    let wrapped = wrap_text_lines(error, content_width);
+
+    wrapped
+        .into_iter()
+        .enumerate()
+        .map(|(idx, text)| {
+            if idx == 0 {
+                Line::from(vec![
+                    Span::raw(left_pad()),
+                    Span::styled(format!("{} ", ICON_ERR), Style::default().fg(RED)),
+                    Span::styled(text, Style::default().fg(RED)),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::raw(indent.clone()),
+                    Span::styled(text, Style::default().fg(RED)),
+                ])
+            }
+        })
+        .collect()
+}
+
+fn wrap_text_lines(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    for raw_line in text.split('\n') {
+        if raw_line.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+
+        let mut current = String::new();
+        let mut current_width = 0;
+
+        for ch in raw_line.chars() {
+            let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if !current.is_empty() && current_width + ch_width > width {
+                lines.push(current);
+                current = String::new();
+                current_width = 0;
+            }
+            current.push(ch);
+            current_width += ch_width;
+        }
+
+        if current.is_empty() {
+            lines.push(String::new());
+        } else {
+            lines.push(current);
+        }
+    }
+
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+
+    lines
+}
+
 fn truncate_left(s: &str, max: usize) -> String {
     if max == 0 {
         return String::new();
@@ -819,5 +892,82 @@ mod tests {
 
         assert!(text.contains("Agent"));
         assert!(text.contains("◉ codex"));
+    }
+
+    #[test]
+    fn render_create_agent_wraps_long_errors_and_keeps_buttons_below() {
+        let state = CreateAgentState {
+            name: "agent-1".into(),
+            directory: "/tmp".into(),
+            error: Some(
+                "Directory ./target/debug/generated-artifacts cannot be both copied and symlinked"
+                    .into(),
+            ),
+            ..CreateAgentState::default()
+        };
+
+        let buffer = render_buffer(&state, 80, 24);
+        let text = buffer_text(&buffer);
+        let lines: Vec<&str> = text.lines().collect();
+        let first_error_row = lines
+            .iter()
+            .position(|line| line.contains(ICON_ERR) && line.contains("Directory"))
+            .unwrap();
+        let second_error_row = lines
+            .iter()
+            .position(|line| line.contains("symlinked"))
+            .unwrap();
+        let buttons_row = lines
+            .iter()
+            .position(|line| line.contains("Launch") && line.contains("Cancel"))
+            .unwrap();
+        let spacer_row = lines
+            .get(second_error_row + 1)
+            .copied()
+            .unwrap_or_default();
+
+        assert!(second_error_row > first_error_row);
+        assert!(spacer_row.trim().is_empty());
+        assert!(buttons_row > second_error_row + 1);
+        assert!(lines.iter().any(|line| line.contains("both copied and symlinked")));
+    }
+
+    #[test]
+    fn render_create_agent_keeps_short_error_on_single_row() {
+        let state = CreateAgentState {
+            name: "agent-1".into(),
+            directory: "/tmp".into(),
+            error: Some("Project name is required".into()),
+            ..CreateAgentState::default()
+        };
+
+        let buffer = render_buffer(&state, 80, 24);
+        let text = buffer_text(&buffer);
+        let lines: Vec<&str> = text.lines().collect();
+        let error_rows = lines
+            .iter()
+            .filter(|line| line.contains("Project name is required"))
+            .count();
+
+        assert_eq!(error_rows, 1);
+    }
+
+    #[test]
+    fn render_create_agent_without_error_keeps_buttons_on_baseline_row() {
+        let state = CreateAgentState {
+            name: "agent-1".into(),
+            directory: "/tmp".into(),
+            ..CreateAgentState::default()
+        };
+
+        let buffer = render_buffer(&state, 80, 24);
+        let text = buffer_text(&buffer);
+        let lines: Vec<&str> = text.lines().collect();
+        let buttons_row = lines
+            .iter()
+            .position(|line| line.contains("Launch") && line.contains("Cancel"))
+            .unwrap();
+
+        assert_eq!(buttons_row, 16);
     }
 }
