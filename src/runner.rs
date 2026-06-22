@@ -160,36 +160,17 @@ impl AgentRunner {
         // --------------- Git worktree setup --------------------------------
         // If worktree creation is requested and we have a git repo root, set
         // up the worktree now and use its path as the effective working dir.
-        let (effective_dir, stored_repo_root) = if create_worktree {
-            if let Some(repo_root) = git_repo_root {
-                let branch = git::sanitize_branch_name(name);
-                let repo_root_path = std::path::Path::new(repo_root);
-                let wt_path = self
-                    .worktrees_base
-                    .join(git::repo_id(repo_root_path))
-                    .join(&branch);
-
-                let use_existing = git::branch_exists(repo_root_path, &branch);
-                git::create_worktree(repo_root_path, &wt_path, &branch, use_existing)?;
-                let materialization = WorktreeMaterialization {
-                    copy_directories,
-                    symlink_directories,
-                };
-                materialize_worktree_directories(
-                    repo_root_path,
-                    Path::new(dir),
-                    &wt_path,
-                    &materialization,
-                )?;
-
-                let wt_str = wt_path.to_string_lossy().to_string();
-                (wt_str, Some(repo_root.to_owned()))
-            } else {
-                (dir.to_owned(), None)
-            }
-        } else {
-            (dir.to_owned(), None)
-        };
+        let (effective_dir, stored_repo_root) = prepare_worktree_directory(
+            name,
+            dir,
+            create_worktree,
+            git_repo_root,
+            &self.worktrees_base,
+            WorktreeMaterialization {
+                copy_directories,
+                symlink_directories,
+            },
+        )?;
         // -------------------------------------------------------------------
 
         match agent_type {
@@ -345,6 +326,49 @@ impl AgentRunner {
     }
 }
 
+fn prepare_worktree_directory(
+    name: &str,
+    dir: &str,
+    create_worktree: bool,
+    git_repo_root: Option<&str>,
+    worktrees_base: &Path,
+    materialization: WorktreeMaterialization,
+) -> Result<(String, Option<String>)> {
+    if !create_worktree {
+        return Ok((dir.to_owned(), None));
+    }
+
+    let Some(repo_root) = git_repo_root else {
+        return Ok((dir.to_owned(), None));
+    };
+
+    let branch = git::sanitize_branch_name(name);
+    let repo_root_path = Path::new(repo_root);
+    let wt_path = worktrees_base
+        .join(git::repo_id(repo_root_path))
+        .join(&branch);
+    let use_existing = git::branch_exists(repo_root_path, &branch);
+
+    git::create_worktree(repo_root_path, &wt_path, &branch, use_existing)?;
+
+    if let Err(error) =
+        materialize_worktree_directories(repo_root_path, Path::new(dir), &wt_path, &materialization)
+    {
+        return match git::remove_worktree(repo_root_path, &wt_path, &branch, !use_existing) {
+            Ok(()) => Err(error),
+            Err(cleanup_error) => Err(error.context(format!(
+                "failed to roll back git worktree {:?}: {}",
+                wt_path, cleanup_error
+            ))),
+        };
+    }
+
+    Ok((
+        wt_path.to_string_lossy().to_string(),
+        Some(repo_root.to_owned()),
+    ))
+}
+
 fn materialize_worktree_directories(
     repo_root: &Path,
     selected_dir: &Path,
@@ -457,6 +481,7 @@ fn create_symlink(source: &Path, destination: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     struct TestDir {
         path: PathBuf,
@@ -475,6 +500,54 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.path);
         }
+    }
+
+    fn run_git(repo_root: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .current_dir(repo_root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn git_stdout(repo_root: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .current_dir(repo_root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    fn init_test_repo(temp: &TestDir) -> PathBuf {
+        let repo_root = temp.path.join("repo");
+        std::fs::create_dir_all(&repo_root).unwrap();
+        run_git(&repo_root, &["init"]);
+        run_git(&repo_root, &["config", "user.name", "Flowmux Tests"]);
+        run_git(&repo_root, &["config", "user.email", "flowmux@example.com"]);
+        std::fs::write(repo_root.join("README.md"), "seed\n").unwrap();
+        run_git(&repo_root, &["add", "README.md"]);
+        run_git(&repo_root, &["commit", "-m", "init"]);
+        repo_root
+    }
+
+    fn git_worktree_list_contains(repo_root: &Path, path: &Path) -> bool {
+        let path_str = path.to_string_lossy().to_string();
+        git_stdout(repo_root, &["worktree", "list"])
+            .lines()
+            .any(|line| line.starts_with(&path_str))
     }
 
     #[test]
@@ -575,5 +648,68 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("does not exist"));
+    }
+
+    #[test]
+    fn prepare_worktree_directory_rolls_back_new_branch_on_materialization_failure() {
+        let temp = TestDir::new("rollback-new-branch");
+        let repo_root = init_test_repo(&temp);
+        let selected_dir = repo_root.join("subproj");
+        let worktrees_base = temp.path.join("worktrees");
+
+        std::fs::create_dir_all(&selected_dir).unwrap();
+
+        let err = prepare_worktree_directory(
+            "agent rollback",
+            selected_dir.to_str().unwrap(),
+            true,
+            Some(repo_root.to_str().unwrap()),
+            &worktrees_base,
+            WorktreeMaterialization {
+                copy_directories: vec!["missing".into()],
+                symlink_directories: vec![],
+            },
+        )
+        .unwrap_err();
+
+        let branch = git::sanitize_branch_name("agent rollback");
+        let worktree_path = worktrees_base.join(git::repo_id(&repo_root)).join(&branch);
+
+        assert!(err.to_string().contains("does not exist"));
+        assert!(!worktree_path.exists());
+        assert!(!git_worktree_list_contains(&repo_root, &worktree_path));
+        assert!(!git::branch_exists(&repo_root, &branch));
+    }
+
+    #[test]
+    fn prepare_worktree_directory_preserves_existing_branch_on_materialization_failure() {
+        let temp = TestDir::new("rollback-existing-branch");
+        let repo_root = init_test_repo(&temp);
+        let selected_dir = repo_root.join("subproj");
+        let worktrees_base = temp.path.join("worktrees");
+        let branch = git::sanitize_branch_name("existing branch");
+
+        std::fs::create_dir_all(&selected_dir).unwrap();
+        run_git(&repo_root, &["branch", &branch]);
+
+        let err = prepare_worktree_directory(
+            "existing branch",
+            selected_dir.to_str().unwrap(),
+            true,
+            Some(repo_root.to_str().unwrap()),
+            &worktrees_base,
+            WorktreeMaterialization {
+                copy_directories: vec!["missing".into()],
+                symlink_directories: vec![],
+            },
+        )
+        .unwrap_err();
+
+        let worktree_path = worktrees_base.join(git::repo_id(&repo_root)).join(&branch);
+
+        assert!(err.to_string().contains("does not exist"));
+        assert!(!worktree_path.exists());
+        assert!(!git_worktree_list_contains(&repo_root, &worktree_path));
+        assert!(git::branch_exists(&repo_root, &branch));
     }
 }
