@@ -168,12 +168,8 @@ impl AgentAdapter for CodexAdapter {
 async fn launch_server(dir: &str, name: &str, port: u16) -> Result<(usize, String)> {
     let window_index = tmux::new_window(dir, name)?;
     let pane = format!("{}:{}.0", tmux::session_name(), window_index);
-    let log_path = format!("/tmp/flowmux-codex-{port}.log");
     let pid_path = server_pid_path(port);
-    let command = format!(
-        "codex app-server --listen ws://127.0.0.1:{port} >{log_path} 2>&1 & \
-         FLOWMUX_CODEX_SERVER_PID=$!; printf '%s\\n' \"$FLOWMUX_CODEX_SERVER_PID\" >{pid_path}\n"
-    );
+    let command = launch_server_command(port, &pid_path);
     tmux::send_keys(&pane, &command)?;
 
     let client = reqwest::Client::builder()
@@ -187,8 +183,15 @@ async fn launch_server(dir: &str, name: &str, port: u16) -> Result<(usize, Strin
     }
 
     Err(anyhow!(
-        "codex app-server did not become available; see {log_path}"
+        "codex app-server did not become available in pane {pane}"
     ))
+}
+
+fn launch_server_command(port: u16, pid_path: &str) -> String {
+    format!(
+        "codex app-server --listen ws://127.0.0.1:{port} >/dev/null 2>&1 & \
+         FLOWMUX_CODEX_SERVER_PID=$!; printf '%s\\n' \"$FLOWMUX_CODEX_SERVER_PID\" >{pid_path}\n"
+    )
 }
 
 async fn app_server_ready(client: &reqwest::Client, port: u16) -> bool {
@@ -1786,6 +1789,14 @@ mod tests {
         record_turn_duration(&mut cache, Some("turn-1"), Some(1500));
         record_turn_duration(&mut cache, Some("turn-1"), Some(1500));
         assert_eq!(cache.total_work_ms, 1500);
+    }
+
+    #[test]
+    fn launch_server_command_discards_output_without_tmp_log() {
+        let command = launch_server_command(16123, "/tmp/flowmux-codex-16123.pid");
+
+        assert!(command.contains(">/dev/null 2>&1 &"));
+        assert!(!command.contains(".log"));
     }
 
     #[test]
