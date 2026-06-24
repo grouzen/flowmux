@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
 };
@@ -21,6 +21,8 @@ pub fn render_terminal_view(
     host_colors: HostColors,
     blink_running: bool,
     blink_waiting: bool,
+    copy_notice: Option<(&str, Color)>,
+    selection: Option<crate::ghostty::render::SelectionRange>,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -36,13 +38,8 @@ pub fn render_terminal_view(
     let status_area = chunks[2];
 
     let viewport_height = content_area.height.saturating_sub(2) as usize;
-    let (start, end) =
-        crate::app::pane_visible_line_range(state.lines.len(), state.view_scroll, viewport_height);
-    let visible_text = if state.lines.is_empty() {
-        String::new()
-    } else {
-        state.lines[start..end].join("\r\n")
-    };
+    let visible_text =
+        crate::app::pane_visible_text(&state.lines, state.view_scroll, viewport_height);
     let cursor_position = if state.view_scroll == 0 {
         state.cursor
     } else {
@@ -56,6 +53,7 @@ pub fn render_terminal_view(
         cursor_position,
         host_colors.fg,
         host_colors.bg,
+        selection,
     );
 
     let dir_str = super::dashboard::shellify_dir(&agent_entry.config.directory);
@@ -129,6 +127,11 @@ pub fn render_terminal_view(
     );
     agent_status_spans.push(Span::raw(" "));
 
+    let copy_notice_width = copy_notice
+        .as_ref()
+        .map(|(text, _)| text.len() as u16)
+        .unwrap_or(0);
+
     if state.prefix_active {
         let prefix_text = " PREFIX ";
         let prefix_width = prefix_text.len() as u16;
@@ -138,6 +141,7 @@ pub fn render_terminal_view(
                 Constraint::Length(nav_width),
                 Constraint::Min(0),
                 Constraint::Length(prefix_width),
+                Constraint::Length(copy_notice_width),
                 Constraint::Length(status_width),
                 Constraint::Length(brand_width),
             ])
@@ -153,20 +157,45 @@ pub fn render_terminal_view(
             )])),
             chunks[2],
         );
-        f.render_widget(Paragraph::new(Line::from(agent_status_spans)), chunks[3]);
-        f.render_widget(Paragraph::new(brand), chunks[4]);
+        if let Some((text, color)) = copy_notice {
+            f.render_widget(
+                Paragraph::new(Line::from(vec![Span::styled(
+                    text,
+                    Style::default()
+                        .fg(ratatui::style::Color::Black)
+                        .bg(color)
+                        .add_modifier(Modifier::BOLD),
+                )])),
+                chunks[3],
+            );
+        }
+        f.render_widget(Paragraph::new(Line::from(agent_status_spans)), chunks[4]);
+        f.render_widget(Paragraph::new(brand), chunks[5]);
     } else {
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
                 Constraint::Length(nav_width),
                 Constraint::Min(0),
+                Constraint::Length(copy_notice_width),
                 Constraint::Length(status_width),
                 Constraint::Length(brand_width),
             ])
             .split(status_area);
         f.render_widget(Paragraph::new(Line::from(nav_spans)), chunks[0]);
-        f.render_widget(Paragraph::new(Line::from(agent_status_spans)), chunks[2]);
-        f.render_widget(Paragraph::new(brand), chunks[3]);
+        if let Some((text, color)) = copy_notice {
+            f.render_widget(
+                Paragraph::new(Line::from(vec![Span::styled(
+                    text,
+                    Style::default()
+                        .fg(ratatui::style::Color::Black)
+                        .bg(color)
+                        .add_modifier(Modifier::BOLD),
+                )])),
+                chunks[2],
+            );
+        }
+        f.render_widget(Paragraph::new(Line::from(agent_status_spans)), chunks[3]);
+        f.render_widget(Paragraph::new(brand), chunks[4]);
     }
 }

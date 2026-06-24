@@ -385,8 +385,7 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
     // Error row
     if !error_lines.is_empty() {
         f.render_widget(
-            Paragraph::new(Text::from(error_lines))
-            .style(Style::default().bg(BG1)),
+            Paragraph::new(Text::from(error_lines)).style(Style::default().bg(BG1)),
             rows[row],
         );
         row += 1;
@@ -921,15 +920,16 @@ mod tests {
             .iter()
             .position(|line| line.contains("Launch") && line.contains("Cancel"))
             .unwrap();
-        let spacer_row = lines
-            .get(second_error_row + 1)
-            .copied()
-            .unwrap_or_default();
+        let spacer_row = lines.get(second_error_row + 1).copied().unwrap_or_default();
 
         assert!(second_error_row > first_error_row);
         assert!(spacer_row.trim().is_empty());
         assert!(buttons_row > second_error_row + 1);
-        assert!(lines.iter().any(|line| line.contains("both copied and symlinked")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("both copied and symlinked"))
+        );
     }
 
     #[test]

@@ -215,6 +215,8 @@ async fn main() -> Result<()> {
                 let state = app.state.clone();
                 let blink_running = app.notification.should_render_blink_running();
                 let blink_waiting = app.notification.should_render_blink_waiting();
+                let copy_notice = app.copy_feedback_badge();
+                let selection = app.current_copy_selection_range();
                 terminal.draw(|f| {
                     let area = f.area();
                     match &state {
@@ -248,6 +250,10 @@ async fn main() -> Result<()> {
                                     app.host_colors,
                                     blink_running,
                                     blink_waiting,
+                                    copy_notice
+                                        .as_ref()
+                                        .map(|(text, color)| (text.as_str(), *color)),
+                                    selection,
                                 );
                             }
                         }
@@ -370,6 +376,10 @@ async fn main() -> Result<()> {
                                     app.host_colors,
                                     blink_running,
                                     blink_waiting,
+                                    copy_notice
+                                        .as_ref()
+                                        .map(|(text, color)| (text.as_str(), *color)),
+                                    selection,
                                 );
                             }
                         }
@@ -384,6 +394,10 @@ async fn main() -> Result<()> {
                                     app.host_colors,
                                     blink_running,
                                     blink_waiting,
+                                    copy_notice
+                                        .as_ref()
+                                        .map(|(text, color)| (text.as_str(), *color)),
+                                    selection,
                                 );
                             }
                         }
