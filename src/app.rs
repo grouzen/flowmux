@@ -925,9 +925,9 @@ impl App {
             return true;
         }
 
-        let command_ok = write_text_to_system_clipboard(&text);
+        let command_ok = write_text_to_system_clipboards(&text);
         let osc_ok = write_text_via_osc52(&text);
-        let success = command_ok || osc_ok;
+        let success = copy_backend_succeeded(command_ok, osc_ok);
         self.set_copy_feedback(
             if success {
                 format!("copied {} chars", text.chars().count())
@@ -3587,20 +3587,35 @@ fn read_host_selection_command(program: &str, args: Vec<&str>) -> Option<String>
     String::from_utf8(output.stdout).ok()
 }
 
-fn write_text_to_system_clipboard(text: &str) -> bool {
-    clipboard_write_commands()
+fn write_text_to_system_clipboards(text: &str) -> bool {
+    let clipboard_ok = write_text_to_system_selection(HostSelection::Clipboard, text);
+    let primary_ok = write_text_to_system_selection(HostSelection::Primary, text);
+    system_clipboards_succeeded(clipboard_ok, primary_ok)
+}
+
+fn write_text_to_system_selection(selection: HostSelection, text: &str) -> bool {
+    host_selection_write_commands(selection)
         .into_iter()
         .any(|(program, args)| write_text_with_command(program, args, text))
 }
 
-fn clipboard_write_commands() -> Vec<(&'static str, Vec<&'static str>)> {
-    vec![
-        ("wl-copy", vec![]),
-        ("xclip", vec!["-selection", "clipboard", "-in"]),
-        ("xsel", vec!["--clipboard", "--input"]),
-        ("pbcopy", vec![]),
-        ("clip.exe", vec![]),
-    ]
+fn host_selection_write_commands(
+    selection: HostSelection,
+) -> Vec<(&'static str, Vec<&'static str>)> {
+    match selection {
+        HostSelection::Primary => vec![
+            ("wl-copy", vec!["--primary"]),
+            ("xclip", vec!["-selection", "primary", "-in"]),
+            ("xsel", vec!["--primary", "--input"]),
+        ],
+        HostSelection::Clipboard => vec![
+            ("wl-copy", vec![]),
+            ("xclip", vec!["-selection", "clipboard", "-in"]),
+            ("xsel", vec!["--clipboard", "--input"]),
+            ("pbcopy", vec![]),
+            ("clip.exe", vec![]),
+        ],
+    }
 }
 
 fn write_text_with_command(program: &str, args: Vec<&str>, text: &str) -> bool {
@@ -3640,6 +3655,14 @@ fn write_text_via_osc52(text: &str) -> bool {
 
     let mut stdout = std::io::stdout();
     stdout.write_all(seq.as_bytes()).is_ok() && stdout.flush().is_ok()
+}
+
+fn system_clipboards_succeeded(clipboard_ok: bool, primary_ok: bool) -> bool {
+    clipboard_ok || primary_ok
+}
+
+fn copy_backend_succeeded(system_ok: bool, osc_ok: bool) -> bool {
+    system_ok || osc_ok
 }
 
 fn pane_page_scroll() -> usize {
@@ -3850,6 +3873,39 @@ mod project_tests {
             mouse_event_to_sgr(scroll_down, false).as_deref(),
             Some("\x1b[<69;4;5M")
         );
+    }
+
+    #[test]
+    fn system_clipboard_write_commands_include_clipboard_and_primary_targets() {
+        assert_eq!(
+            host_selection_write_commands(HostSelection::Clipboard),
+            vec![
+                ("wl-copy", vec![]),
+                ("xclip", vec!["-selection", "clipboard", "-in"]),
+                ("xsel", vec!["--clipboard", "--input"]),
+                ("pbcopy", vec![]),
+                ("clip.exe", vec![]),
+            ]
+        );
+        assert_eq!(
+            host_selection_write_commands(HostSelection::Primary),
+            vec![
+                ("wl-copy", vec!["--primary"]),
+                ("xclip", vec!["-selection", "primary", "-in"]),
+                ("xsel", vec!["--primary", "--input"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn copy_success_accepts_any_system_selection_or_osc52_backend() {
+        assert!(system_clipboards_succeeded(true, false));
+        assert!(system_clipboards_succeeded(false, true));
+        assert!(!system_clipboards_succeeded(false, false));
+
+        assert!(copy_backend_succeeded(true, false));
+        assert!(copy_backend_succeeded(false, true));
+        assert!(!copy_backend_succeeded(false, false));
     }
 
     #[test]
