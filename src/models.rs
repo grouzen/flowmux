@@ -42,11 +42,17 @@ pub struct ContextInfo {
     pub total: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelResponseEntry {
+    pub text: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct AgentMeta {
     pub status: AgentStatus,
     pub context: Option<ContextInfo>,
     pub first_prompt: Option<String>,
+    pub model_response_history: Vec<ModelResponseEntry>,
     pub last_model_response: Option<String>,
     pub model_name: Option<String>,
     pub total_work_ms: u64,
@@ -59,6 +65,7 @@ impl Default for AgentMeta {
             status: AgentStatus::Unknown,
             context: None,
             first_prompt: None,
+            model_response_history: Vec::new(),
             last_model_response: None,
             model_name: None,
             total_work_ms: 0,

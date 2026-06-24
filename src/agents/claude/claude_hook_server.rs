@@ -10,7 +10,7 @@ use axum::{Json, Router};
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::models::AgentStatus;
+use crate::models::{AgentStatus, ModelResponseEntry};
 
 // ---------------------------------------------------------------------------
 // Shared state types
@@ -20,6 +20,7 @@ use crate::models::AgentStatus;
 pub struct ClaudeHookState {
     pub status: AgentStatus,
     pub first_prompt: Option<String>,
+    pub model_response_history: Vec<ModelResponseEntry>,
     pub last_model_response: Option<String>,
     pub model_name: Option<String>,
     pub session_id: Option<String>,
@@ -34,6 +35,7 @@ impl Default for ClaudeHookState {
         Self {
             status: AgentStatus::Idle,
             first_prompt: None,
+            model_response_history: Vec::new(),
             last_model_response: None,
             model_name: None,
             session_id: None,
@@ -197,19 +199,27 @@ async fn hook_handler(
                 // fresh) over the transcript-parsed text.  Fall back to the
                 // transcript value so that tool-use-only turns (no text in
                 // the payload) don't erase the previous response.
-                if last_assistant_message.is_some() {
-                    entry.last_model_response = last_assistant_message;
-                } else if let Some(ref info) = parsed
-                    && info.last_response_text.is_some()
-                {
-                    entry.last_model_response = info.last_response_text.clone();
-                }
                 if let Some(info) = parsed {
+                    entry.model_response_history = info.response_history.clone();
+                    entry.last_model_response = info
+                        .response_history
+                        .last()
+                        .map(|response| response.text.clone());
                     entry.context_used = Some(info.context_used);
                     if info.model_name.is_some() {
                         entry.model_name = info.model_name;
                     }
                     entry.total_work_ms = info.total_work_ms;
+                } else if let Some(message) = last_assistant_message
+                    && entry
+                        .model_response_history
+                        .last()
+                        .is_none_or(|response| response.text != message)
+                {
+                    entry.model_response_history.push(ModelResponseEntry {
+                        text: message.clone(),
+                    });
+                    entry.last_model_response = Some(message);
                 }
                 if transcript_path_override.is_some() {
                     entry.transcript_path = transcript_path_override;
@@ -342,8 +352,8 @@ pub fn spawn_hook_server(
 pub struct TranscriptInfo {
     /// Total input-context tokens from the last assistant turn.
     pub context_used: u64,
-    /// Plain text of the last assistant response (first Text block).
-    pub last_response_text: Option<String>,
+    /// Plain text of all assistant responses in chronological order.
+    pub response_history: Vec<ModelResponseEntry>,
     /// Model name reported by the last assistant message.
     pub model_name: Option<String>,
     /// Sum of all `TurnDuration` system-entry `durationMs` values — equivalent
@@ -365,7 +375,8 @@ pub fn parse_transcript(transcript_path: &str) -> Option<TranscriptInfo> {
 
     let mut first_prompt: Option<String> = None;
     let mut last_context_used: Option<u64> = None;
-    let mut last_response_text: Option<String> = None;
+    let mut response_history: Vec<ModelResponseEntry> = Vec::new();
+    let mut current_response_text: Option<String> = None;
     let mut last_model_name: Option<String> = None;
 
     let mut turn_duration_sum_ms: u64 = 0;
@@ -417,18 +428,23 @@ pub fn parse_transcript(transcript_path: &str) -> Option<TranscriptInfo> {
                     other => other,
                 };
 
-                if text.is_some() {
+                if let Some(text) = text {
                     if let (Some(u_ts), Some(a_ts)) =
                         (current_turn_user_ts, current_turn_last_assistant_ts)
                     {
                         let delta = a_ts.saturating_sub(u_ts).max(0) as u64;
                         ts_total_work_ms += delta;
                     }
+                    if let Some(response_text) = current_response_text.take() {
+                        response_history.push(ModelResponseEntry {
+                            text: response_text,
+                        });
+                    }
                     current_turn_user_ts = parse_ts_ms(&u.envelope.timestamp);
                     current_turn_last_assistant_ts = None;
 
                     if first_prompt.is_none() {
-                        first_prompt = text;
+                        first_prompt = Some(text);
                     }
                 }
             }
@@ -448,8 +464,16 @@ pub fn parse_transcript(transcript_path: &str) -> Option<TranscriptInfo> {
                 });
 
                 last_context_used = Some(context_used);
-                if response_text.is_some() {
-                    last_response_text = response_text;
+                if let Some(response_text) = response_text {
+                    match current_response_text.as_mut() {
+                        Some(existing) => {
+                            if !existing.is_empty() {
+                                existing.push_str("\n\n");
+                            }
+                            existing.push_str(&response_text);
+                        }
+                        None => current_response_text = Some(response_text),
+                    }
                 }
                 last_model_name = a.message.model.clone();
 
@@ -472,6 +496,11 @@ pub fn parse_transcript(transcript_path: &str) -> Option<TranscriptInfo> {
         let delta = a_ts.saturating_sub(u_ts).max(0) as u64;
         ts_total_work_ms += delta;
     }
+    if let Some(response_text) = current_response_text.take() {
+        response_history.push(ModelResponseEntry {
+            text: response_text,
+        });
+    }
 
     let total_work_ms = if turn_duration_sum_ms > 0 {
         turn_duration_sum_ms
@@ -481,7 +510,7 @@ pub fn parse_transcript(transcript_path: &str) -> Option<TranscriptInfo> {
 
     last_context_used.map(|context_used| TranscriptInfo {
         context_used,
-        last_response_text,
+        response_history,
         model_name: last_model_name,
         total_work_ms,
         first_prompt,

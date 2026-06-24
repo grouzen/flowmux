@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::agents::AgentAdapter;
-use crate::models::{AgentStatus, ContextInfo};
+use crate::models::{AgentStatus, ContextInfo, ModelResponseEntry};
 use claude_hook_server::HookStateMap;
 
 // ---------------------------------------------------------------------------
@@ -57,8 +57,12 @@ impl ClaudeAdapter {
             if entry.model_name.is_none() && info.model_name.is_some() {
                 entry.model_name = info.model_name;
             }
-            if entry.last_model_response.is_none() && info.last_response_text.is_some() {
-                entry.last_model_response = info.last_response_text;
+            if entry.model_response_history.is_empty() && !info.response_history.is_empty() {
+                entry.model_response_history = info.response_history.clone();
+                entry.last_model_response = info
+                    .response_history
+                    .last()
+                    .map(|response| response.text.clone());
             }
             if entry.first_prompt.is_none() && info.first_prompt.is_some() {
                 entry.first_prompt = info.first_prompt;
@@ -95,6 +99,14 @@ impl AgentAdapter for ClaudeAdapter {
         self.maybe_reparse_transcript();
         let map = self.hook_state.lock().unwrap();
         map.get(&self.flowmux_agent_id)?.first_prompt.clone()
+    }
+
+    async fn get_model_response_history(&self) -> Vec<ModelResponseEntry> {
+        self.maybe_reparse_transcript();
+        let map = self.hook_state.lock().unwrap();
+        map.get(&self.flowmux_agent_id)
+            .map(|entry| entry.model_response_history.clone())
+            .unwrap_or_default()
     }
 
     async fn get_last_model_response(&self) -> Option<String> {
@@ -231,7 +243,11 @@ impl ClaudeRuntime {
             entry.transcript_path = Some(path.clone());
             if let Some(info) = claude_hook_server::parse_transcript(path) {
                 entry.context_used = Some(info.context_used);
-                entry.last_model_response = info.last_response_text;
+                entry.model_response_history = info.response_history.clone();
+                entry.last_model_response = info
+                    .response_history
+                    .last()
+                    .map(|response| response.text.clone());
                 if info.model_name.is_some() {
                     entry.model_name = info.model_name;
                 }

@@ -177,6 +177,7 @@ async fn main() -> Result<()> {
             status: adapter.get_status().await,
             context: adapter.get_context().await,
             first_prompt: adapter.get_first_prompt().await,
+            model_response_history: adapter.get_model_response_history().await,
             last_model_response: adapter.get_last_model_response().await,
             model_name: adapter.get_model_name().await,
             total_work_ms: adapter.get_total_work_ms().await,

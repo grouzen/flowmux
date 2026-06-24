@@ -2,11 +2,11 @@ use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Padding, Paragraph},
+    text::{Line, Span, Text},
+    widgets::{Block, BorderType, Borders, Padding, Paragraph, Wrap},
 };
 
-use crate::models::{AgentEntry, AgentStatus, AgentStatusCounts};
+use crate::models::{AgentEntry, AgentStatus, AgentStatusCounts, ModelResponseEntry};
 use crate::ui::theme::*;
 
 pub const PROJECT_TABS_HEIGHT: u16 = 1;
@@ -30,6 +30,40 @@ fn ds(dimmed: bool) -> Style {
         Style::default().add_modifier(Modifier::DIM)
     } else {
         Style::default()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ResponseHistoryMetrics {
+    pub total_lines: u16,
+    pub latest_response_start_line: u16,
+}
+
+pub(crate) fn response_history_metrics(
+    history: &[ModelResponseEntry],
+    width: u16,
+) -> ResponseHistoryMetrics {
+    if width == 0 || history.is_empty() {
+        return ResponseHistoryMetrics::default();
+    }
+
+    let mut total_lines = 0u16;
+    let mut latest_response_start_line = 0u16;
+
+    for (idx, response) in history.iter().enumerate() {
+        if idx > 0 {
+            total_lines = total_lines.saturating_add(1);
+        }
+        if idx + 1 == history.len() {
+            latest_response_start_line = total_lines;
+        }
+        let md_text = tui_markdown::from_str(&response.text);
+        total_lines = total_lines.saturating_add(wrapped_line_count(&md_text, width));
+    }
+
+    ResponseHistoryMetrics {
+        total_lines,
+        latest_response_start_line,
     }
 }
 
@@ -517,44 +551,120 @@ fn render_card(
     };
 
     // Render response content
-    match &entry.meta.last_model_response {
-        Some(response) if !response.is_empty() => {
-            let md_text = tui_markdown::from_str(response);
-            let scroll_offset = if is_selected { response_scroll } else { 0 };
-            let para = Paragraph::new(md_text)
-                .wrap(ratatui::widgets::Wrap { trim: false })
-                .scroll((scroll_offset, 0));
-            f.render_widget(para, content_area);
+    if !entry.meta.model_response_history.is_empty() {
+        let history_text =
+            build_response_history_text(&entry.meta.model_response_history, content_area.width, dimmed);
+        let scroll_offset = response_scroll;
+        let para = Paragraph::new(history_text)
+            .wrap(Wrap { trim: false })
+            .scroll((scroll_offset, 0));
+        f.render_widget(para, content_area);
 
-            // Scroll hint on selected card
-            if is_selected && scroll_offset > 0 {
-                let hint_area = Rect {
-                    height: 1,
-                    ..content_area
-                };
-                let hint = Paragraph::new("▲ PgUp")
-                    .style(ds(dimmed).fg(GRAY))
-                    .alignment(Alignment::Right);
-                f.render_widget(hint, hint_area);
-            }
-        }
-        _ => {
-            let hint_top = content_area.height.saturating_sub(1) / 2;
+        if is_selected && scroll_offset > 0 {
             let hint_area = Rect {
-                y: content_area.y + hint_top,
                 height: 1,
                 ..content_area
             };
-            let hint = Paragraph::new(Span::styled(
-                "No response yet",
-                ds(dimmed).fg(GRAY).add_modifier(Modifier::ITALIC),
-            ))
-            .alignment(Alignment::Center);
+            let hint = Paragraph::new("▲ PgUp")
+                .style(ds(dimmed).fg(GRAY))
+                .alignment(Alignment::Right);
             f.render_widget(hint, hint_area);
         }
+    } else {
+        let hint_top = content_area.height.saturating_sub(1) / 2;
+        let hint_area = Rect {
+            y: content_area.y + hint_top,
+            height: 1,
+            ..content_area
+        };
+        let hint = Paragraph::new(Span::styled(
+            "No response yet",
+            ds(dimmed).fg(GRAY).add_modifier(Modifier::ITALIC),
+        ))
+        .alignment(Alignment::Center);
+        f.render_widget(hint, hint_area);
     }
 
     (content_area.height, content_area.width)
+}
+
+fn build_response_history_text(
+    history: &[ModelResponseEntry],
+    width: u16,
+    dimmed: bool,
+) -> Text<'static> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    for (idx, response) in history.iter().enumerate() {
+        if idx > 0 {
+            lines.push(build_response_separator(idx + 1, width, dimmed));
+        }
+
+        let mut md_text = tui_markdown::from_str(&response.text);
+        if dimmed {
+            for line in &mut md_text.lines {
+                for span in &mut line.spans {
+                    span.style = span.style.add_modifier(Modifier::DIM);
+                }
+            }
+        }
+        lines.extend(md_text.lines.into_iter().map(owned_line));
+    }
+
+    Text::from(lines)
+}
+
+fn build_response_separator(index: usize, width: u16, dimmed: bool) -> Line<'static> {
+    let label = format!(" Response {} ", index);
+    let label_width = unicode_display_width(&label);
+    let width = width.max(1) as usize;
+    let separator = if label_width >= width {
+        "─".repeat(width)
+    } else {
+        let left = (width - label_width) / 2;
+        let right = width - label_width - left;
+        format!("{}{}{}", "─".repeat(left), label, "─".repeat(right))
+    };
+
+    Line::from(Span::styled(
+        separator,
+        ds(dimmed).fg(BG2).add_modifier(Modifier::BOLD),
+    ))
+}
+
+fn wrapped_line_count(text: &Text, width: u16) -> u16 {
+    if width == 0 {
+        return 0;
+    }
+    let mut count = 0u16;
+    for line in text.iter() {
+        let line_width: usize = line
+            .spans
+            .iter()
+            .map(|span| unicode_display_width(span.content.as_ref()))
+            .sum();
+        let rows = if line_width == 0 {
+            1
+        } else {
+            ((line_width as u16).saturating_sub(1) / width) + 1
+        };
+        count = count.saturating_add(rows);
+    }
+    count
+}
+
+fn owned_line(line: Line<'_>) -> Line<'static> {
+    Line::from(
+        line.spans
+            .into_iter()
+            .map(|span| Span::styled(span.content.into_owned(), span.style))
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn unicode_display_width(s: &str) -> usize {
+    use unicode_width::UnicodeWidthStr;
+    UnicodeWidthStr::width(s)
 }
 
 // ---------------------------------------------------------------------------

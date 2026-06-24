@@ -1,4 +1,4 @@
-use crate::models::{AgentStatus, ContextInfo};
+use crate::models::{AgentStatus, ContextInfo, ModelResponseEntry};
 use async_trait::async_trait;
 
 #[async_trait]
@@ -11,6 +11,7 @@ pub trait AgentAdapter: Send + Sync {
     async fn get_status(&self) -> AgentStatus;
     async fn get_context(&self) -> Option<ContextInfo>;
     async fn get_first_prompt(&self) -> Option<String>;
+    async fn get_model_response_history(&self) -> Vec<ModelResponseEntry>;
     async fn get_last_model_response(&self) -> Option<String>;
     /// Returns the model identifier for the most recent assistant message (e.g. "claude-sonnet-4-5").
     async fn get_model_name(&self) -> Option<String>;

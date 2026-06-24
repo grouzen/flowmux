@@ -10,7 +10,10 @@ use crate::host_terminal::HostColors;
 use crate::models::{AgentEntry, AgentMeta, AgentStatus, AgentStatusCounts, AgentType};
 use crate::runner::AgentRunner;
 use crate::tmux;
-use crate::ui::dashboard::{PROJECT_TABS_HEIGHT, grid_layout, project_tab_label};
+use crate::ui::dashboard::{
+    PROJECT_TABS_HEIGHT, ResponseHistoryMetrics, grid_layout, project_tab_label,
+    response_history_metrics,
+};
 
 // ---------------------------------------------------------------------------
 // StatusNotification — blink tracking for status bar
@@ -723,6 +726,8 @@ pub struct App {
     agent_view_scroll: Vec<StoredAgentViewScroll>,
     /// Per-card scroll offset for the model response block on the dashboard.
     pub card_scroll: Vec<u16>,
+    /// Tracks whether a card's dashboard response scroll was manually adjusted.
+    pub card_scroll_touched: Vec<bool>,
     /// Per-card response viewport height, updated every render frame.
     /// Used to cap scroll so content doesn't scroll past the last line.
     pub card_response_heights: Vec<u16>,
@@ -767,6 +772,7 @@ impl App {
             dirty: true, // force initial draw
             agent_view_scroll: vec![StoredAgentViewScroll::default(); card_count],
             card_scroll: vec![0u16; card_count],
+            card_scroll_touched: vec![false; card_count],
             card_response_heights: vec![0u16; card_count],
             card_response_widths: vec![0u16; card_count],
             host_colors,
@@ -1166,6 +1172,9 @@ impl App {
                     && let Some(global_idx) = self.visible_agent_indices().get(slot).copied()
                     && let Some(s) = self.card_scroll.get_mut(global_idx)
                 {
+                    if let Some(touched) = self.card_scroll_touched.get_mut(global_idx) {
+                        *touched = true;
+                    }
                     *s = s.saturating_sub(1);
                     self.dirty = true;
                 }
@@ -1187,17 +1196,11 @@ impl App {
                         .copied()
                         .unwrap_or(80)
                         .max(1);
-                    let max_scroll = self
-                        .agents
-                        .get(global_idx)
-                        .and_then(|e| e.meta.last_model_response.as_deref())
-                        .map(|r| {
-                            let text = tui_markdown::from_str(r);
-                            let total = wrapped_line_count(&text, content_w);
-                            total.saturating_sub(viewport_h)
-                        })
-                        .unwrap_or(0);
+                    let max_scroll = self.card_max_scroll(global_idx, viewport_h, content_w);
                     if let Some(s) = self.card_scroll.get_mut(global_idx) {
+                        if let Some(touched) = self.card_scroll_touched.get_mut(global_idx) {
+                            *touched = true;
+                        }
                         *s = s.saturating_add(1).min(max_scroll);
                         self.dirty = true;
                     }
@@ -1508,6 +1511,9 @@ impl App {
         self.config.agents.swap(self.selected, target);
         self.card_scroll.swap(self.selected, target);
         let max_idx = self.selected.max(target);
+        if self.card_scroll_touched.len() > max_idx {
+            self.card_scroll_touched.swap(self.selected, target);
+        }
         if self.card_response_heights.len() > max_idx {
             self.card_response_heights.swap(self.selected, target);
             self.card_response_widths.swap(self.selected, target);
@@ -1669,35 +1675,32 @@ impl App {
                 }
             }
             KeyCode::PageDown => {
+                let viewport_h = self
+                    .card_response_heights
+                    .get(self.selected)
+                    .copied()
+                    .unwrap_or(1)
+                    .max(1);
+                let content_w = self
+                    .card_response_widths
+                    .get(self.selected)
+                    .copied()
+                    .unwrap_or(80)
+                    .max(1);
+                let max_scroll = self.card_max_scroll(self.selected, viewport_h, content_w);
                 if let Some(s) = self.card_scroll.get_mut(self.selected) {
-                    let viewport_h = self
-                        .card_response_heights
-                        .get(self.selected)
-                        .copied()
-                        .unwrap_or(1)
-                        .max(1);
-                    let content_w = self
-                        .card_response_widths
-                        .get(self.selected)
-                        .copied()
-                        .unwrap_or(80)
-                        .max(1);
-                    let max_scroll = self
-                        .agents
-                        .get(self.selected)
-                        .and_then(|e| e.meta.last_model_response.as_deref())
-                        .map(|r| {
-                            let text = tui_markdown::from_str(r);
-                            let total = wrapped_line_count(&text, content_w);
-                            total.saturating_sub(viewport_h)
-                        })
-                        .unwrap_or(0);
+                    if let Some(touched) = self.card_scroll_touched.get_mut(self.selected) {
+                        *touched = true;
+                    }
                     *s = s.saturating_add(5).min(max_scroll);
                     self.dirty = true;
                 }
             }
             KeyCode::PageUp => {
                 if let Some(s) = self.card_scroll.get_mut(self.selected) {
+                    if let Some(touched) = self.card_scroll_touched.get_mut(self.selected) {
+                        *touched = true;
+                    }
                     *s = s.saturating_sub(5);
                     self.dirty = true;
                 }
@@ -1708,10 +1711,56 @@ impl App {
     }
 
     fn reset_card_scroll(&mut self) {
+        let viewport_h = self
+            .card_response_heights
+            .get(self.selected)
+            .copied()
+            .unwrap_or(0)
+            .max(1);
+        let content_w = self
+            .card_response_widths
+            .get(self.selected)
+            .copied()
+            .unwrap_or(80)
+            .max(1);
+        let max_scroll = self.card_max_scroll(self.selected, viewport_h, content_w);
+        let use_default = self
+            .card_scroll_touched
+            .get(self.selected)
+            .copied()
+            .map(|touched| !touched)
+            .unwrap_or(true);
+        let new_scroll = if use_default {
+            self.card_default_scroll(self.selected, viewport_h, content_w)
+        } else {
+            self.card_scroll
+                .get(self.selected)
+                .copied()
+                .unwrap_or(0)
+                .min(max_scroll)
+        };
         if let Some(s) = self.card_scroll.get_mut(self.selected) {
-            *s = 0;
+            *s = new_scroll;
         }
         self.dirty = true;
+    }
+
+    fn card_response_metrics(&self, idx: usize, content_w: u16) -> ResponseHistoryMetrics {
+        self.agents
+            .get(idx)
+            .map(|entry| response_history_metrics(&entry.meta.model_response_history, content_w))
+            .unwrap_or_default()
+    }
+
+    fn card_max_scroll(&self, idx: usize, viewport_h: u16, content_w: u16) -> u16 {
+        let metrics = self.card_response_metrics(idx, content_w);
+        metrics.total_lines.saturating_sub(viewport_h)
+    }
+
+    fn card_default_scroll(&self, idx: usize, viewport_h: u16, content_w: u16) -> u16 {
+        let metrics = self.card_response_metrics(idx, content_w);
+        let max_scroll = metrics.total_lines.saturating_sub(viewport_h);
+        metrics.latest_response_start_line.min(max_scroll)
     }
 
     // -----------------------------------------------------------------------
@@ -1722,10 +1771,28 @@ impl App {
         let len = self.adapters.len();
         let mut config_dirty = false;
 
+        if self.card_scroll.len() < self.agents.len() {
+            self.card_scroll.resize(self.agents.len(), 0);
+        }
+        if self.card_scroll_touched.len() < self.agents.len() {
+            self.card_scroll_touched.resize(self.agents.len(), false);
+        }
+        if self.agent_view_scroll.len() < self.agents.len() {
+            self.agent_view_scroll
+                .resize(self.agents.len(), StoredAgentViewScroll::default());
+        }
+        if self.card_response_heights.len() < self.agents.len() {
+            self.card_response_heights.resize(self.agents.len(), 0);
+        }
+        if self.card_response_widths.len() < self.agents.len() {
+            self.card_response_widths.resize(self.agents.len(), 0);
+        }
+
         for i in 0..len {
             let status = self.adapters[i].get_status().await;
             let context = self.adapters[i].get_context().await;
             let first_prompt = self.adapters[i].get_first_prompt().await;
+            let model_response_history = self.adapters[i].get_model_response_history().await;
             let last_model_response = self.adapters[i].get_last_model_response().await;
             let model_name = self.adapters[i].get_model_name().await;
             let total_work_ms = self.adapters[i].get_total_work_ms().await;
@@ -1748,26 +1815,30 @@ impl App {
                 entry.meta.status = status;
                 entry.meta.context = context;
                 entry.meta.first_prompt = first_prompt;
+                entry.meta.model_response_history = model_response_history;
                 entry.meta.last_model_response = last_model_response;
                 entry.meta.model_name = model_name;
                 entry.meta.total_work_ms = total_work_ms;
+                let viewport_h = self.card_response_heights.get(i).copied().unwrap_or(0).max(1);
+                let content_w = self.card_response_widths.get(i).copied().unwrap_or(80).max(1);
+                let max_scroll = self.card_max_scroll(i, viewport_h, content_w);
+                let use_default = self
+                    .card_scroll_touched
+                    .get(i)
+                    .copied()
+                    .map(|touched| !touched)
+                    .unwrap_or(true);
+                let new_scroll = if use_default {
+                    self.card_default_scroll(i, viewport_h, content_w)
+                } else {
+                    self.card_scroll.get(i).copied().unwrap_or(0).min(max_scroll)
+                };
+                if let Some(scroll) = self.card_scroll.get_mut(i) {
+                    *scroll = new_scroll;
+                }
             }
         }
 
-        // Ensure card_scroll has an entry for every agent (agents may be added at runtime).
-        if self.card_scroll.len() < self.agents.len() {
-            self.card_scroll.resize(self.agents.len(), 0);
-        }
-        if self.agent_view_scroll.len() < self.agents.len() {
-            self.agent_view_scroll
-                .resize(self.agents.len(), StoredAgentViewScroll::default());
-        }
-        if self.card_response_heights.len() < self.agents.len() {
-            self.card_response_heights.resize(self.agents.len(), 0);
-        }
-        if self.card_response_widths.len() < self.agents.len() {
-            self.card_response_widths.resize(self.agents.len(), 0);
-        }
         if config_dirty {
             let _ = self.config.save();
         }
@@ -3063,6 +3134,12 @@ impl App {
             self.agents.remove(idx);
             self.adapters.remove(idx);
             self.config.agents.remove(idx);
+            if idx < self.card_scroll.len() {
+                self.card_scroll.remove(idx);
+            }
+            if idx < self.card_scroll_touched.len() {
+                self.card_scroll_touched.remove(idx);
+            }
             self.dashboard_selected_by_project
                 .retain(|_, selected| {
                     if *selected == idx {
@@ -3208,36 +3285,6 @@ fn matching_agent_indices(agents: &[AgentEntry], status: &AgentStatus) -> Vec<us
 // ---------------------------------------------------------------------------
 // Key → tmux string conversion
 // ---------------------------------------------------------------------------
-
-/// Count the number of visual (wrapped) lines a `Text` will occupy in a
-/// widget of the given `width`.  This is a lightweight approximation: it
-/// sums the display-column widths of each `Line`'s spans and divides by
-/// `width`, rounding up.  Empty logical lines count as one visual line.
-fn wrapped_line_count(text: &ratatui::text::Text, width: u16) -> u16 {
-    if width == 0 {
-        return 0;
-    }
-    let mut count: u16 = 0;
-    for line in text.iter() {
-        let line_width: usize = line
-            .spans
-            .iter()
-            .map(|s| unicode_display_width(s.content.as_ref()))
-            .sum();
-        let rows = if line_width == 0 {
-            1
-        } else {
-            ((line_width as u16).saturating_sub(1) / width) + 1
-        };
-        count = count.saturating_add(rows);
-    }
-    count
-}
-
-fn unicode_display_width(s: &str) -> usize {
-    use unicode_width::UnicodeWidthStr;
-    UnicodeWidthStr::width(s)
-}
 
 fn pane_handles_own_scroll(mouse_active: bool) -> bool {
     mouse_active
@@ -3627,7 +3674,7 @@ mod tests {
     use crate::agents::AgentAdapter;
     use crate::config::{AgentConfig, AgentKind};
     use crate::global_config::GlobalConfig;
-    use crate::models::ContextInfo;
+    use crate::models::{ContextInfo, ModelResponseEntry};
     use async_trait::async_trait;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -3653,6 +3700,10 @@ mod tests {
 
     struct NoopAdapter;
 
+    struct HistoryAdapter {
+        history: Vec<ModelResponseEntry>,
+    }
+
     #[async_trait]
     impl AgentAdapter for NoopAdapter {
         async fn get_status(&self) -> AgentStatus {
@@ -3667,8 +3718,47 @@ mod tests {
             None
         }
 
+        async fn get_model_response_history(&self) -> Vec<ModelResponseEntry> {
+            Vec::new()
+        }
+
         async fn get_last_model_response(&self) -> Option<String> {
             None
+        }
+
+        async fn get_model_name(&self) -> Option<String> {
+            None
+        }
+
+        async fn get_total_work_ms(&self) -> u64 {
+            0
+        }
+
+        fn get_cached_session_id(&self) -> Option<String> {
+            None
+        }
+    }
+
+    #[async_trait]
+    impl AgentAdapter for HistoryAdapter {
+        async fn get_status(&self) -> AgentStatus {
+            AgentStatus::Idle
+        }
+
+        async fn get_context(&self) -> Option<ContextInfo> {
+            None
+        }
+
+        async fn get_first_prompt(&self) -> Option<String> {
+            None
+        }
+
+        async fn get_model_response_history(&self) -> Vec<ModelResponseEntry> {
+            self.history.clone()
+        }
+
+        async fn get_last_model_response(&self) -> Option<String> {
+            self.history.last().map(|entry| entry.text.clone())
         }
 
         async fn get_model_name(&self) -> Option<String> {
@@ -4373,6 +4463,113 @@ mod tests {
     fn resized_view_scroll_clamps_when_anchor_exceeds_available_history() {
         let new_scroll = resized_view_scroll(6, 5, 3, 8);
         assert_eq!(new_scroll, 0);
+    }
+
+    #[test]
+    fn reset_card_scroll_anchors_selected_card_to_latest_response_start() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.agents = vec![test_agent("agent-a", "Default", AgentStatus::Idle)];
+        app.selected = 0;
+        app.card_scroll = vec![0];
+        app.card_scroll_touched = vec![false];
+        app.card_response_heights = vec![2];
+        app.card_response_widths = vec![24];
+        app.agents[0].meta.model_response_history = vec![
+            ModelResponseEntry {
+                text: "first response".into(),
+            },
+            ModelResponseEntry {
+                text: "latest response\nwith two lines".into(),
+            },
+        ];
+
+        app.reset_card_scroll();
+
+        assert_eq!(app.card_scroll[0], 2);
+    }
+
+    #[test]
+    fn reset_card_scroll_preserves_manual_progress() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.agents = vec![test_agent("agent-a", "Default", AgentStatus::Idle)];
+        app.selected = 0;
+        app.card_scroll = vec![1];
+        app.card_scroll_touched = vec![true];
+        app.card_response_heights = vec![2];
+        app.card_response_widths = vec![24];
+        app.agents[0].meta.model_response_history = vec![
+            ModelResponseEntry {
+                text: "first response".into(),
+            },
+            ModelResponseEntry {
+                text: "latest response\nwith two lines".into(),
+            },
+        ];
+
+        app.reset_card_scroll();
+
+        assert_eq!(app.card_scroll[0], 1);
+    }
+
+    #[test]
+    fn remove_agent_keeps_card_scroll_state_aligned() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.agents = vec![
+            test_agent("one", "Default", AgentStatus::Idle),
+            test_agent("two", "Default", AgentStatus::Idle),
+            test_agent("three", "Default", AgentStatus::Idle),
+        ];
+        app.adapters = vec![
+            Box::new(NoopAdapter),
+            Box::new(NoopAdapter),
+            Box::new(NoopAdapter),
+        ];
+        app.config.agents = app
+            .agents
+            .iter()
+            .map(|entry| entry.config.clone())
+            .collect();
+        app.card_scroll = vec![1, 2, 3];
+        app.card_scroll_touched = vec![false, true, false];
+
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(app.remove_agent(1, false, false));
+
+        assert_eq!(app.card_scroll, vec![1, 3]);
+        assert_eq!(app.card_scroll_touched, vec![false, false]);
+    }
+
+    #[test]
+    fn dashboard_tick_keeps_manual_scroll_but_reanchors_untouched_cards() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.agents = vec![test_agent("agent-a", "Default", AgentStatus::Idle)];
+        app.config.agents = app.agents.iter().map(|entry| entry.config.clone()).collect();
+        app.card_response_heights = vec![2];
+        app.card_response_widths = vec![24];
+
+        app.adapters = vec![Box::new(HistoryAdapter {
+            history: vec![
+                ModelResponseEntry {
+                    text: "first response".into(),
+                },
+                ModelResponseEntry {
+                    text: "latest response\nwith two lines".into(),
+                },
+            ],
+        })];
+
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(app.handle_dashboard_tick());
+        assert_eq!(app.card_scroll, vec![2]);
+
+        app.card_scroll = vec![1];
+        app.card_scroll_touched = vec![true];
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(app.handle_dashboard_tick());
+        assert_eq!(app.card_scroll, vec![1]);
     }
 
     #[test]

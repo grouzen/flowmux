@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
 use crate::agents::AgentAdapter;
-use crate::models::{AgentStatus, ContextInfo};
+use crate::models::{AgentStatus, ContextInfo, ModelResponseEntry};
 use crate::tmux;
 
 // ---------------------------------------------------------------------------
@@ -20,6 +20,8 @@ use crate::tmux;
 struct LiveCache {
     /// Current agent status derived from `session.status` events.
     status: AgentStatus,
+    /// Full session message history.
+    all_messages: Option<Vec<Value>>,
     /// Newest ~5 messages, refreshed on `message.updated` / `message.part.updated`.
     recent_messages: Option<Vec<Value>>,
     /// The very first user prompt in the session. Set once, never cleared.
@@ -42,6 +44,7 @@ impl LiveCache {
     fn new() -> Self {
         Self {
             status: AgentStatus::Unknown,
+            all_messages: None,
             recent_messages: None,
             first_prompt: None,
             provider_limits: HashMap::new(),
@@ -494,12 +497,13 @@ async fn fetch_and_store_tail(
 
     let need_first_prompt = try_first_prompt && live_cache.read().unwrap().first_prompt.is_none();
     let need_work_init = !live_cache.read().unwrap().work_time_initialized;
-    // If the session is long (tail is full), do a one-time full fetch for both
-    // first_prompt and total_work_ms initialisation.
-    let is_long_session = msgs.len() >= RECENT_LIMIT;
+    let need_full_history = {
+        let cache = live_cache.read().unwrap();
+        cache.all_messages.is_none() || msgs.len() >= RECENT_LIMIT
+    };
 
     let first_prompt_value: Option<String> = if need_first_prompt {
-        if is_long_session {
+        if need_full_history {
             // Session is longer than RECENT_LIMIT — the first user message may
             // not be in the tail at all, so always do a one-time full fetch.
             fetch_first_prompt(port, client, session_id).await
@@ -515,7 +519,7 @@ async fn fetch_and_store_tail(
 
     // Compute total work time. For long sessions initialise from a full fetch;
     // for short sessions (or after init) use the tail incrementally.
-    let full_msgs_for_work: Option<Vec<Value>> = if need_work_init && is_long_session {
+    let full_messages: Option<Vec<Value>> = if need_full_history || need_work_init {
         let url = format!("http://127.0.0.1:{}/session/{}/message", port, session_id);
         match client.get(&url).send().await {
             Ok(r) => r.json::<Vec<Value>>().await.ok(),
@@ -529,7 +533,7 @@ async fn fetch_and_store_tail(
 
     if need_work_init {
         // Seed total_work_ms from either the full fetch or the short tail.
-        let source = full_msgs_for_work.as_deref().unwrap_or(&msgs);
+        let source = full_messages.as_deref().unwrap_or(&msgs);
         let (sum, max_created) = assistant_work_sum(source);
         cache.total_work_ms = sum;
         cache.last_counted_assistant_created = max_created;
@@ -545,6 +549,7 @@ async fn fetch_and_store_tail(
     }
 
     cache.recent_messages = Some(msgs.clone());
+    cache.all_messages = Some(full_messages.unwrap_or(msgs.clone()));
     if let Some(fp) = first_prompt_value {
         cache.first_prompt = Some(fp);
     }
@@ -680,6 +685,55 @@ fn msg_time_created(msg: &Value) -> u64 {
 
 fn msg_tokens(msg: &Value) -> Option<&Value> {
     msg.get("info")?.get("tokens")
+}
+
+fn response_history_from_messages(messages: &[Value]) -> Vec<ModelResponseEntry> {
+    let mut history = Vec::new();
+    let mut preamble_parts: Vec<String> = Vec::new();
+    let mut current_parts: Vec<String> = Vec::new();
+    let mut seen_user = false;
+
+    for message in messages {
+        match msg_role(message) {
+            Some("user") => {
+                if !current_parts.is_empty() {
+                    history.push(ModelResponseEntry {
+                        text: current_parts.join("\n\n"),
+                    });
+                    current_parts.clear();
+                }
+                seen_user = true;
+            }
+            Some("assistant") => {
+                let Some(text) = all_text_parts(message) else {
+                    continue;
+                };
+                if seen_user {
+                    current_parts.push(text);
+                } else {
+                    preamble_parts.push(text);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if !current_parts.is_empty() {
+        history.push(ModelResponseEntry {
+            text: current_parts.join("\n\n"),
+        });
+    }
+
+    if !preamble_parts.is_empty() {
+        history.insert(
+            0,
+            ModelResponseEntry {
+                text: preamble_parts.join("\n\n"),
+            },
+        );
+    }
+
+    history
 }
 
 // ---------------------------------------------------------------------------
@@ -824,48 +878,19 @@ impl AgentAdapter for OpenCodeAdapter {
         self.live_cache.read().unwrap().first_prompt.clone()
     }
 
-    async fn get_last_model_response(&self) -> Option<String> {
-        let mut messages = self.live_cache.read().unwrap().recent_messages.clone()?;
-        // Sort oldest-first by creation timestamp so positional ordering is reliable.
+    async fn get_model_response_history(&self) -> Vec<ModelResponseEntry> {
+        let Some(mut messages) = self.live_cache.read().unwrap().all_messages.clone() else {
+            return Vec::new();
+        };
         messages.sort_by_key(msg_time_created);
+        response_history_from_messages(&messages)
+    }
 
-        // Collect the start index of each response turn (the index just after
-        // each user message).
-        let turn_starts: Vec<usize> = messages
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| msg_role(m) == Some("user"))
-            .map(|(i, _)| i + 1)
-            .collect();
-
-        // Walk turns newest-to-oldest; return the first one that contains text.
-        // If the agent is mid-run and the latest turn has no text yet, this
-        // naturally falls back to the previous completed response.
-        for &start in turn_starts.iter().rev() {
-            let parts: Vec<String> = messages[start..]
-                .iter()
-                .filter(|m| msg_role(m) == Some("assistant"))
-                .filter_map(all_text_parts)
-                .collect();
-            if !parts.is_empty() {
-                return Some(parts.join("\n\n"));
-            }
-        }
-
-        // Fallback: assistant text before the first user message.
-        // If there are no user messages in the tail at all, search all tail
-        // messages (unwrap_or(0) would produce an empty slice otherwise).
-        let first_turn_start = turn_starts.first().copied().unwrap_or(messages.len());
-        let parts: Vec<String> = messages[..first_turn_start]
-            .iter()
-            .filter(|m| msg_role(m) == Some("assistant"))
-            .filter_map(all_text_parts)
-            .collect();
-        if !parts.is_empty() {
-            Some(parts.join("\n\n"))
-        } else {
-            None
-        }
+    async fn get_last_model_response(&self) -> Option<String> {
+        self.get_model_response_history()
+            .await
+            .last()
+            .map(|response| response.text.clone())
     }
 
     fn get_cached_session_id(&self) -> Option<String> {

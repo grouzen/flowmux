@@ -13,7 +13,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::time::{interval, sleep};
 
 use crate::agents::AgentAdapter;
-use crate::models::{AgentStatus, ContextInfo};
+use crate::models::{AgentStatus, ContextInfo, ModelResponseEntry};
 use crate::tmux;
 
 const DISCOVERY_INTERVAL: Duration = Duration::from_millis(750);
@@ -35,6 +35,7 @@ struct PendingRequest {
 struct LiveCache {
     status: AgentStatus,
     first_prompt: Option<String>,
+    model_response_history: Vec<ModelResponseEntry>,
     last_model_response: Option<String>,
     model_name: Option<String>,
     context: Option<ContextInfo>,
@@ -42,6 +43,7 @@ struct LiveCache {
     completed_turn_ids: HashSet<String>,
     rollout_path: Option<String>,
     rollout_offset: u64,
+    awaiting_assistant_response: bool,
 }
 
 impl Default for LiveCache {
@@ -49,6 +51,7 @@ impl Default for LiveCache {
         Self {
             status: AgentStatus::Idle,
             first_prompt: None,
+            model_response_history: Vec::new(),
             last_model_response: None,
             model_name: None,
             context: None,
@@ -56,6 +59,7 @@ impl Default for LiveCache {
             completed_turn_ids: HashSet::new(),
             rollout_path: None,
             rollout_offset: 0,
+            awaiting_assistant_response: false,
         }
     }
 }
@@ -146,6 +150,10 @@ impl AgentAdapter for CodexAdapter {
 
     async fn get_first_prompt(&self) -> Option<String> {
         self.live_cache.read().unwrap().first_prompt.clone()
+    }
+
+    async fn get_model_response_history(&self) -> Vec<ModelResponseEntry> {
+        self.live_cache.read().unwrap().model_response_history.clone()
     }
 
     async fn get_last_model_response(&self) -> Option<String> {
@@ -745,7 +753,16 @@ fn handle_notification(
             if item_type == Some("agentMessage") || codex_item_role(item) == Some("assistant") {
                 let mut cache = live_cache.write().unwrap();
                 if let Some(text) = codex_item_text(item) {
-                    cache.last_model_response = Some(text);
+                    cache.last_model_response = Some(text.clone());
+                    if cache.awaiting_assistant_response || cache.model_response_history.is_empty() {
+                        cache.model_response_history.push(ModelResponseEntry { text });
+                    } else if let Some(last_response) = cache.model_response_history.last_mut() {
+                        if !last_response.text.is_empty() {
+                            last_response.text.push_str("\n\n");
+                        }
+                        last_response.text.push_str(&text);
+                    }
+                    cache.awaiting_assistant_response = false;
                 }
             } else if live_cache.read().unwrap().first_prompt.is_none()
                 && let Some(text) = user_message_item_text(item)
@@ -754,6 +771,9 @@ fn handle_notification(
                 if cache.first_prompt.is_none() {
                     cache.first_prompt = Some(text);
                 }
+                cache.awaiting_assistant_response = true;
+            } else if user_message_item_text(item).is_some() {
+                live_cache.write().unwrap().awaiting_assistant_response = true;
             }
         }
         "item/commandExecution/requestApproval"
@@ -789,12 +809,14 @@ fn reset_session_cache(live_cache: &Arc<RwLock<LiveCache>>) {
     let mut cache = live_cache.write().unwrap();
     cache.status = AgentStatus::Idle;
     cache.first_prompt = None;
+    cache.model_response_history.clear();
     cache.last_model_response = None;
     cache.context = None;
     cache.total_work_ms = 0;
     cache.completed_turn_ids.clear();
     cache.rollout_path = None;
     cache.rollout_offset = 0;
+    cache.awaiting_assistant_response = false;
 }
 
 fn update_from_thread(
@@ -820,6 +842,16 @@ fn update_from_thread(
     }
 
     if let Some(turns) = thread.get("turns").and_then(Value::as_array) {
+        cache.model_response_history = model_response_history_from_turns(turns);
+        cache.last_model_response = cache
+            .model_response_history
+            .last()
+            .map(|response| response.text.clone())
+            .or_else(|| cache.last_model_response.clone());
+        cache.awaiting_assistant_response = turns
+            .last()
+            .and_then(turn_pending_assistant_response)
+            .unwrap_or(false);
         for turn in turns {
             record_turn_duration(
                 &mut cache,
@@ -827,20 +859,6 @@ fn update_from_thread(
                 turn.get("durationMs").and_then(Value::as_i64),
             );
         }
-        cache.last_model_response = turns
-            .iter()
-            .rev()
-            .flat_map(|turn| {
-                turn.get("items")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .rev()
-            })
-            .find(|item| item.get("type").and_then(Value::as_str) == Some("agentMessage"))
-            .and_then(|item| item.get("text").and_then(Value::as_str))
-            .map(str::to_owned)
-            .or_else(|| cache.last_model_response.clone());
     }
 
     if let Some(path) = cache.rollout_path.clone() {
@@ -861,6 +879,43 @@ fn first_prompt_from_turns(thread: &Value) -> Option<String> {
                 .flatten()
         })
         .find_map(user_message_item_text)
+}
+
+fn model_response_history_from_turns(turns: &[Value]) -> Vec<ModelResponseEntry> {
+    turns
+        .iter()
+        .filter_map(turn_response_text)
+        .map(|text| ModelResponseEntry { text })
+        .collect()
+}
+
+fn turn_response_text(turn: &Value) -> Option<String> {
+    let parts: Vec<String> = turn
+        .get("items")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("agentMessage"))
+        .filter_map(codex_item_text)
+        .collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
+}
+
+fn turn_pending_assistant_response(turn: &Value) -> Option<bool> {
+    let items = turn.get("items").and_then(Value::as_array)?;
+    let has_user = items.iter().any(|item| user_message_item_text(item).is_some());
+    if !has_user {
+        return Some(false);
+    }
+    let has_assistant = items.iter().any(|item| {
+        item.get("type").and_then(Value::as_str) == Some("agentMessage")
+            || codex_item_role(item) == Some("assistant")
+    });
+    Some(!has_assistant)
 }
 
 fn user_message_item_text(item: &Value) -> Option<String> {
@@ -1388,6 +1443,7 @@ mod tests {
             completed_turn_ids: HashSet::from([String::from("turn-old")]),
             rollout_path: Some("/tmp/old-rollout.jsonl".to_string()),
             rollout_offset: 99,
+            ..LiveCache::default()
         }));
 
         let params = json!({
@@ -1434,6 +1490,7 @@ mod tests {
             completed_turn_ids: HashSet::from([String::from("turn-old")]),
             rollout_path: None,
             rollout_offset: 0,
+            ..LiveCache::default()
         }));
 
         handle_notification(
@@ -1554,6 +1611,7 @@ mod tests {
             completed_turn_ids: HashSet::new(),
             rollout_path: None,
             rollout_offset: 0,
+            ..LiveCache::default()
         }));
 
         handle_notification(
