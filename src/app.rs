@@ -1,5 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use std::process::Command;
+use ratatui::layout::Rect;
+use std::io::Write;
+use std::process::{Command, Stdio};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::time::{Duration, interval};
 
@@ -31,6 +33,41 @@ const PANE_CHROME_HEIGHT: u16 = 4;
 const PANE_BORDER_WIDTH: u16 = 2;
 const MOUSE_WHEEL_SCROLL_LINES: usize = 3;
 const DASHBOARD_DOUBLE_CLICK_WINDOW: std::time::Duration = std::time::Duration::from_millis(400);
+const COPY_FEEDBACK_DURATION: std::time::Duration = std::time::Duration::from_secs(2);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PaneCellPoint {
+    col: u16,
+    row: u16,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PendingPaneClick {
+    mouse: MouseEvent,
+    anchor: PaneCellPoint,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ActiveCopySelection {
+    anchor: PaneCellPoint,
+    focus: PaneCellPoint,
+}
+
+impl ActiveCopySelection {
+    fn range(self) -> crate::ghostty::render::SelectionRange {
+        crate::ghostty::render::SelectionRange::new(
+            (self.anchor.col, self.anchor.row),
+            (self.focus.col, self.focus.row),
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CopyFeedback {
+    message: String,
+    success: bool,
+    expires_at: std::time::Instant,
+}
 
 impl StatusNotification {
     pub fn reset(&mut self, counts: AgentStatusCounts) {
@@ -716,6 +753,9 @@ pub struct App {
     pub tx: UnboundedSender<Event>,
     pub rx: UnboundedReceiver<Event>,
     last_dashboard_left_click: Option<(usize, std::time::Instant)>,
+    pending_pane_click: Option<PendingPaneClick>,
+    active_copy_selection: Option<ActiveCopySelection>,
+    copy_feedback: Option<CopyFeedback>,
     /// Set to `true` whenever state changes and a redraw is needed.
     /// Cleared to `false` by the render loop after each draw.
     pub dirty: bool,
@@ -763,6 +803,9 @@ impl App {
             tx,
             rx,
             last_dashboard_left_click: None,
+            pending_pane_click: None,
+            active_copy_selection: None,
+            copy_feedback: None,
             dirty: true, // force initial draw
             agent_view_scroll: vec![StoredAgentViewScroll::default(); card_count],
             card_scroll: vec![0u16; card_count],
@@ -782,6 +825,175 @@ impl App {
             .get(self.active_project_idx)
             .map(String::as_str)
             .unwrap_or(DEFAULT_PROJECT_NAME)
+    }
+
+    fn clear_pane_copy_interaction(&mut self) {
+        self.pending_pane_click = None;
+        self.active_copy_selection = None;
+    }
+
+    fn expire_copy_feedback(&mut self) {
+        if self
+            .copy_feedback
+            .as_ref()
+            .is_some_and(|feedback| std::time::Instant::now() >= feedback.expires_at)
+        {
+            self.copy_feedback = None;
+            self.dirty = true;
+        }
+    }
+
+    fn set_copy_feedback(&mut self, message: impl Into<String>, success: bool) {
+        self.copy_feedback = Some(CopyFeedback {
+            message: message.into(),
+            success,
+            expires_at: std::time::Instant::now() + COPY_FEEDBACK_DURATION,
+        });
+        self.dirty = true;
+    }
+
+    pub(crate) fn copy_feedback_badge(&self) -> Option<(String, ratatui::style::Color)> {
+        self.copy_feedback.as_ref().and_then(|feedback| {
+            (std::time::Instant::now() < feedback.expires_at).then(|| {
+                let color = if feedback.success {
+                    crate::ui::theme::GREEN
+                } else {
+                    crate::ui::theme::RED
+                };
+                (format!(" {} ", feedback.message), color)
+            })
+        })
+    }
+
+    pub(crate) fn current_copy_selection_range(
+        &self,
+    ) -> Option<crate::ghostty::render::SelectionRange> {
+        self.active_copy_selection.map(ActiveCopySelection::range)
+    }
+
+    fn begin_pending_pane_click(&mut self, mouse: MouseEvent) -> bool {
+        let Some(anchor) = mouse_to_pane_cell(mouse, false) else {
+            return false;
+        };
+        self.pending_pane_click = Some(PendingPaneClick { mouse, anchor });
+        self.active_copy_selection = None;
+        true
+    }
+
+    fn update_copy_selection_drag(&mut self, mouse: MouseEvent) -> bool {
+        let Some(focus) = mouse_to_pane_cell(mouse, true) else {
+            self.clear_pane_copy_interaction();
+            return false;
+        };
+
+        if let Some(selection) = self.active_copy_selection.as_mut() {
+            selection.focus = focus;
+            self.dirty = true;
+            return true;
+        }
+
+        let Some(pending) = self.pending_pane_click.take() else {
+            return false;
+        };
+
+        if pending.anchor == focus {
+            self.pending_pane_click = Some(pending);
+            return false;
+        }
+
+        self.active_copy_selection = Some(ActiveCopySelection {
+            anchor: pending.anchor,
+            focus,
+        });
+        self.dirty = true;
+        true
+    }
+
+    fn copy_active_selection(&mut self) -> bool {
+        let Some(selection) = self.active_copy_selection.take() else {
+            return false;
+        };
+        self.pending_pane_click = None;
+
+        let Some(text) = self.current_pane_selection_text(selection.range()) else {
+            self.set_copy_feedback("copy failed", false);
+            return true;
+        };
+
+        if text.is_empty() {
+            self.set_copy_feedback("copy empty", false);
+            return true;
+        }
+
+        let command_ok = write_text_to_system_clipboard(&text);
+        let osc_ok = write_text_via_osc52(&text);
+        let success = command_ok || osc_ok;
+        self.set_copy_feedback(
+            if success {
+                format!("copied {} chars", text.chars().count())
+            } else {
+                "copy failed".to_string()
+            },
+            success,
+        );
+        true
+    }
+
+    fn replay_pending_pane_click(
+        &mut self,
+        mouse_up: MouseEvent,
+        pane: &str,
+        show_overlay: bool,
+        mouse_active: bool,
+    ) -> bool {
+        let Some(pending) = self.pending_pane_click.take() else {
+            return false;
+        };
+        if mouse_to_pane_cell(mouse_up, false).is_none() {
+            return true;
+        }
+        self.forward_mouse_to_pane(pending.mouse, pane, show_overlay, mouse_active);
+        self.forward_mouse_to_pane(mouse_up, pane, show_overlay, mouse_active);
+        true
+    }
+
+    fn current_pane_selection_text(
+        &self,
+        selection: crate::ghostty::render::SelectionRange,
+    ) -> Option<String> {
+        let (term_cols, term_rows) = crossterm::terminal::size().ok()?;
+        let inner = pane_inner_rect(term_cols, term_rows);
+        if inner.width == 0 || inner.height == 0 {
+            return None;
+        }
+
+        let viewport_height = inner.height as usize;
+        let visible_text = match &self.state {
+            AppState::AgentView(_) => {
+                if self.agent_view_state.show_stopped_overlay {
+                    return None;
+                }
+                pane_visible_text(
+                    &self.agent_view_state.lines,
+                    self.agent_view_state.view_scroll,
+                    viewport_height,
+                )
+            }
+            AppState::GitViewer(gv) => {
+                pane_visible_text(&gv.lines, gv.view_scroll, viewport_height)
+            }
+            AppState::TerminalView(tv) => {
+                pane_visible_text(&tv.lines, tv.view_scroll, viewport_height)
+            }
+            _ => return None,
+        };
+
+        let grid = crate::ghostty::render::pane_text_grid(
+            visible_text.as_bytes(),
+            inner.width,
+            inner.height,
+        );
+        Some(grid.extract(selection))
     }
 
     fn load_create_state_worktree_presets(&mut self) {
@@ -948,6 +1160,7 @@ impl App {
 
     fn enter_agent_view(&mut self, idx: usize) {
         self.persist_current_agent_view_scroll();
+        self.clear_pane_copy_interaction();
         let stored = self.agent_view_scroll.get(idx).copied().unwrap_or_default();
         self.selected = idx;
         let project_name = self
@@ -968,6 +1181,7 @@ impl App {
 
     fn exit_agent_view_to_dashboard(&mut self) {
         self.persist_current_agent_view_scroll();
+        self.clear_pane_copy_interaction();
         self.state = AppState::Dashboard;
         self.dirty = true;
     }
@@ -1044,6 +1258,7 @@ impl App {
 
     /// Returns false when the app should quit.
     pub async fn handle_event(&mut self, event: Event) -> bool {
+        self.expire_copy_feedback();
         match event {
             Event::Key(key) => {
                 self.dirty = true;
@@ -1250,13 +1465,16 @@ impl App {
                             self.dirty = true;
                             return;
                         }
-                        MouseEventKind::Down(_) => {
-                            if let AppState::GitViewer(ref mut gv) = self.state {
-                                gv.view_scroll = 0;
-                            }
-                        }
                         _ => {}
                     }
+                }
+                if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left))
+                    && self.pending_pane_click.is_some()
+                    && self.active_copy_selection.is_none()
+                    && !pane_handles_own_scroll(mouse_active)
+                    && let AppState::GitViewer(ref mut gv) = self.state
+                {
+                    gv.view_scroll = 0;
                 }
                 self.handle_pane_mouse_generic(mouse, &pane, mouse_active, false);
             }
@@ -1290,13 +1508,16 @@ impl App {
                             self.dirty = true;
                             return;
                         }
-                        MouseEventKind::Down(_) => {
-                            if let AppState::TerminalView(ref mut tv) = self.state {
-                                tv.view_scroll = 0;
-                            }
-                        }
                         _ => {}
                     }
+                }
+                if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left))
+                    && self.pending_pane_click.is_some()
+                    && self.active_copy_selection.is_none()
+                    && !pane_handles_own_scroll(mouse_active)
+                    && let AppState::TerminalView(ref mut tv) = self.state
+                {
+                    tv.view_scroll = 0;
                 }
                 self.handle_pane_mouse_generic(mouse, &pane, mouse_active, false);
             }
@@ -1377,6 +1598,42 @@ impl App {
         mouse_active: bool,
         show_overlay: bool,
     ) {
+        if self.pending_pane_click.is_some() || self.active_copy_selection.is_some() {
+            match mouse.kind {
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                    self.clear_pane_copy_interaction();
+                }
+                _ => {}
+            }
+        }
+
+        if !show_overlay {
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) if is_unmodified_left_button(mouse) => {
+                    if self.begin_pending_pane_click(mouse) {
+                        return;
+                    }
+                }
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    if self.pending_pane_click.is_some() || self.active_copy_selection.is_some() {
+                        self.update_copy_selection_drag(mouse);
+                        return;
+                    }
+                }
+                MouseEventKind::Up(MouseButton::Left) => {
+                    if self.active_copy_selection.is_some() {
+                        self.copy_active_selection();
+                        return;
+                    }
+                    if self.pending_pane_click.is_some() {
+                        self.replay_pending_pane_click(mouse, pane, show_overlay, mouse_active);
+                        return;
+                    }
+                }
+                _ => {}
+            }
+        }
+
         match mouse.kind {
             MouseEventKind::ScrollUp => {
                 if pane_handles_own_scroll(mouse_active) {
@@ -1903,6 +2160,12 @@ impl App {
     // -----------------------------------------------------------------------
 
     async fn handle_agent_view_key(&mut self, key: KeyEvent, idx: usize) -> bool {
+        if matches!(key.code, KeyCode::Esc) && self.active_copy_selection.is_some() {
+            self.clear_pane_copy_interaction();
+            self.dirty = true;
+            return true;
+        }
+
         // --- Prefix pass-through ---
         // When prefix_active is true, the next keypress is forwarded directly
         // to the tmux pane and then prefix mode is disarmed.  This allows the
@@ -2080,12 +2343,19 @@ impl App {
         }
 
         self.persist_current_agent_view_scroll();
+        self.clear_pane_copy_interaction();
         self.git_viewer_state = Some(GitViewerState::new(agent_idx, pane.clone()));
         self.state = AppState::GitViewer(self.git_viewer_state.clone().unwrap());
         self.dirty = true;
     }
 
     fn handle_git_viewer_key(&mut self, key: KeyEvent) -> bool {
+        if matches!(key.code, KeyCode::Esc) && self.active_copy_selection.is_some() {
+            self.clear_pane_copy_interaction();
+            self.dirty = true;
+            return true;
+        }
+
         let pane = match &self.state {
             AppState::GitViewer(gv) => gv.pane.clone(),
             _ => return true,
@@ -2194,6 +2464,7 @@ impl App {
             let _ = tmux::kill_window(window_target);
         }
 
+        self.clear_pane_copy_interaction();
         self.state = AppState::Dashboard;
         self.git_viewer_state = None;
         self.dirty = true;
@@ -2268,6 +2539,7 @@ impl App {
             if tmux::is_alive(existing_pane) {
                 let pane = existing_pane.clone();
                 self.persist_current_agent_view_scroll();
+                self.clear_pane_copy_interaction();
                 self.terminal_view_state = Some(TerminalViewState::new(agent_idx, pane));
                 self.state = AppState::TerminalView(self.terminal_view_state.clone().unwrap());
                 self.dirty = true;
@@ -2286,12 +2558,19 @@ impl App {
 
         self.terminal_panes.insert(agent_idx, pane.clone());
         self.persist_current_agent_view_scroll();
+        self.clear_pane_copy_interaction();
         self.terminal_view_state = Some(TerminalViewState::new(agent_idx, pane));
         self.state = AppState::TerminalView(self.terminal_view_state.clone().unwrap());
         self.dirty = true;
     }
 
     fn handle_terminal_view_key(&mut self, key: KeyEvent) -> bool {
+        if matches!(key.code, KeyCode::Esc) && self.active_copy_selection.is_some() {
+            self.clear_pane_copy_interaction();
+            self.dirty = true;
+            return true;
+        }
+
         let pane = match &self.state {
             AppState::TerminalView(tv) => tv.pane.clone(),
             _ => return true,
@@ -2381,6 +2660,7 @@ impl App {
     }
 
     fn exit_terminal_to_dashboard(&mut self) {
+        self.clear_pane_copy_interaction();
         self.state = AppState::Dashboard;
         self.terminal_view_state = None;
         self.dirty = true;
@@ -3307,6 +3587,61 @@ fn read_host_selection_command(program: &str, args: Vec<&str>) -> Option<String>
     String::from_utf8(output.stdout).ok()
 }
 
+fn write_text_to_system_clipboard(text: &str) -> bool {
+    clipboard_write_commands()
+        .into_iter()
+        .any(|(program, args)| write_text_with_command(program, args, text))
+}
+
+fn clipboard_write_commands() -> Vec<(&'static str, Vec<&'static str>)> {
+    vec![
+        ("wl-copy", vec![]),
+        ("xclip", vec!["-selection", "clipboard", "-in"]),
+        ("xsel", vec!["--clipboard", "--input"]),
+        ("pbcopy", vec![]),
+        ("clip.exe", vec![]),
+    ]
+}
+
+fn write_text_with_command(program: &str, args: Vec<&str>, text: &str) -> bool {
+    let mut child = match Command::new(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return false,
+    };
+
+    if let Some(stdin) = child.stdin.as_mut()
+        && stdin.write_all(text.as_bytes()).is_err()
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        return false;
+    }
+
+    child.wait().map(|status| status.success()).unwrap_or(false)
+}
+
+fn write_text_via_osc52(text: &str) -> bool {
+    let encoded = {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(text.as_bytes())
+    };
+
+    let seq = if std::env::var_os("TMUX").is_some() {
+        format!("\x1bPtmux;\x1b\x1b]52;c;{}\x07\x1b\\", encoded)
+    } else {
+        format!("\x1b]52;c;{}\x07", encoded)
+    };
+
+    let mut stdout = std::io::stdout();
+    stdout.write_all(seq.as_bytes()).is_ok() && stdout.flush().is_ok()
+}
+
 fn pane_page_scroll() -> usize {
     pane_content_height().max(1)
 }
@@ -3333,6 +3668,19 @@ pub(crate) fn pane_visible_line_range(
     }
 }
 
+pub(crate) fn pane_visible_text(
+    lines: &[String],
+    view_scroll: usize,
+    viewport_height: usize,
+) -> String {
+    let (start, end) = pane_visible_line_range(lines.len(), view_scroll, viewport_height);
+    if lines.is_empty() {
+        String::new()
+    } else {
+        lines[start..end].join("\r\n")
+    }
+}
+
 fn resized_view_scroll(
     total_lines: usize,
     view_scroll: usize,
@@ -3352,6 +3700,48 @@ fn clamp_external_pane_scroll(view_scroll: &mut usize, total_lines: usize) {
     if *view_scroll > max_scroll {
         *view_scroll = max_scroll;
     }
+}
+
+fn pane_inner_rect(term_cols: u16, term_rows: u16) -> Rect {
+    Rect::new(
+        1,
+        2,
+        term_cols.saturating_sub(PANE_BORDER_WIDTH),
+        term_rows.saturating_sub(PANE_CHROME_HEIGHT),
+    )
+}
+
+fn mouse_to_pane_cell(mouse: MouseEvent, clamp: bool) -> Option<PaneCellPoint> {
+    let (term_cols, term_rows) = crossterm::terminal::size().ok()?;
+    let inner = pane_inner_rect(term_cols, term_rows);
+    if inner.width == 0 || inner.height == 0 {
+        return None;
+    }
+
+    let col = if clamp {
+        mouse.column.clamp(inner.x, inner.x + inner.width - 1)
+    } else if mouse.column >= inner.x && mouse.column < inner.x + inner.width {
+        mouse.column
+    } else {
+        return None;
+    };
+
+    let row = if clamp {
+        mouse.row.clamp(inner.y, inner.y + inner.height - 1)
+    } else if mouse.row >= inner.y && mouse.row < inner.y + inner.height {
+        mouse.row
+    } else {
+        return None;
+    };
+
+    Some(PaneCellPoint {
+        col: col.saturating_sub(inner.x),
+        row: row.saturating_sub(inner.y),
+    })
+}
+
+fn is_unmodified_left_button(mouse: MouseEvent) -> bool {
+    mouse.modifiers.is_empty()
 }
 
 fn mouse_event_to_sgr(mouse: MouseEvent, show_overlay: bool) -> Option<String> {

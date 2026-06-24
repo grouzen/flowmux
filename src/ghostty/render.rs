@@ -1,6 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, BorderType, Borders};
 
 use super::{
@@ -9,6 +9,116 @@ use super::{
 };
 
 use crate::ui::theme::GRAY;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectionRange {
+    pub start_col: u16,
+    pub end_col: u16,
+    pub start_row: u16,
+    pub end_row: u16,
+}
+
+impl SelectionRange {
+    pub fn new(anchor: (u16, u16), focus: (u16, u16)) -> Self {
+        let ((start_col, start_row), (end_col, end_row)) =
+            if (anchor.1, anchor.0) <= (focus.1, focus.0) {
+                (anchor, focus)
+            } else {
+                (focus, anchor)
+            };
+
+        Self {
+            start_col,
+            end_col,
+            start_row,
+            end_row,
+        }
+    }
+
+    pub fn contains(self, col: u16, row: u16) -> bool {
+        if row < self.start_row || row > self.end_row {
+            return false;
+        }
+
+        if self.start_row == self.end_row {
+            return row == self.start_row && col >= self.start_col && col <= self.end_col;
+        }
+
+        if row == self.start_row {
+            return col >= self.start_col;
+        }
+        if row == self.end_row {
+            return col <= self.end_col;
+        }
+
+        true
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaneTextGrid {
+    width: u16,
+    height: u16,
+    cells: Vec<String>,
+}
+
+impl PaneTextGrid {
+    fn new(width: u16, height: u16) -> Self {
+        let len = width as usize * height as usize;
+        Self {
+            width,
+            height,
+            cells: vec![String::from(" "); len],
+        }
+    }
+
+    fn index(&self, col: u16, row: u16) -> Option<usize> {
+        if col >= self.width || row >= self.height {
+            return None;
+        }
+        Some(row as usize * self.width as usize + col as usize)
+    }
+
+    fn set(&mut self, col: u16, row: u16, symbol: &str) {
+        if let Some(idx) = self.index(col, row) {
+            self.cells[idx].clear();
+            self.cells[idx].push_str(symbol);
+        }
+    }
+
+    pub fn extract(&self, selection: SelectionRange) -> String {
+        let mut lines = Vec::new();
+        let last_row = self.height.saturating_sub(1);
+        let last_col = self.width.saturating_sub(1);
+
+        for row in selection.start_row..=selection.end_row.min(last_row) {
+            let start_col = if row == selection.start_row {
+                selection.start_col
+            } else {
+                0
+            };
+            let end_col = if row == selection.end_row {
+                selection.end_col
+            } else {
+                last_col
+            };
+
+            let mut line = String::new();
+            for col in start_col..=end_col.min(last_col) {
+                if let Some(idx) = self.index(col, row) {
+                    line.push_str(&self.cells[idx]);
+                }
+            }
+
+            while line.ends_with(' ') {
+                line.pop();
+            }
+            lines.push(line);
+        }
+
+        lines.join("\n")
+    }
+}
 
 /// Count visible columns in an ANSI line, skipping escape sequences and
 /// accounting for UTF-8 character widths.
@@ -118,6 +228,7 @@ pub fn render_pane_content(
     cursor: Option<(u16, u16)>,
     host_fg: Option<(u8, u8, u8)>,
     host_bg: Option<(u8, u8, u8)>,
+    selection: Option<SelectionRange>,
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -204,6 +315,10 @@ pub fn render_pane_content(
                 cell.reset();
                 cell.set_symbol(symbol);
                 cell.set_style(style);
+                if selection.is_some_and(|range| range.contains(x, y)) {
+                    cell.set_bg(Color::Rgb(69, 133, 136));
+                    cell.set_fg(Color::Rgb(40, 40, 40));
+                }
                 x += 1;
             }
             while x < inner.width {
@@ -228,6 +343,74 @@ pub fn render_pane_content(
     {
         frame.set_cursor_position((inner.x + cx, inner.y + cy));
     }
+}
+
+pub fn pane_text_grid(ansi_bytes: &[u8], width: u16, height: u16) -> PaneTextGrid {
+    let mut grid = PaneTextGrid::new(width, height);
+    if width == 0 || height == 0 {
+        return grid;
+    }
+
+    let mut terminal = match Terminal::new(TerminalOptions {
+        cols: width,
+        rows: height,
+        max_scrollback: 0,
+    }) {
+        Ok(t) => t,
+        Err(_) => return grid,
+    };
+
+    let replay_bytes = prepare_captured_ansi_for_replay(ansi_bytes, width);
+    terminal.vt_write(&replay_bytes);
+
+    let mut render_state = match RenderState::new() {
+        Ok(rs) => rs,
+        Err(_) => return grid,
+    };
+    let snapshot = match render_state.update(&terminal) {
+        Ok(snapshot) => snapshot,
+        Err(_) => return grid,
+    };
+
+    let mut row_iterator = match RowIterator::new() {
+        Ok(it) => it,
+        Err(_) => return grid,
+    };
+    let mut cell_iterator = match CellIterator::new() {
+        Ok(rc) => rc,
+        Err(_) => return grid,
+    };
+
+    let mut rows = match row_iterator.update(&snapshot) {
+        Ok(r) => r,
+        Err(_) => return grid,
+    };
+    let mut symbol_scratch = String::new();
+    let mut y = 0u16;
+    while y < height && rows.next().is_some() {
+        let mut cells = match cell_iterator.update(&rows) {
+            Ok(c) => c,
+            Err(_) => break,
+        };
+        let mut x = 0u16;
+        while x < width && cells.next().is_some() {
+            let wide = cells
+                .raw_cell()
+                .and_then(|raw_cell| raw_cell.wide())
+                .unwrap_or(CellWide::Narrow);
+            let symbol =
+                ghostty_buffer_symbol_into(&cells, wide, &mut symbol_scratch).unwrap_or(" ");
+            grid.set(x, y, symbol);
+            x += 1;
+        }
+        while x < width {
+            grid.set(x, y, " ");
+            x += 1;
+        }
+        y += 1;
+    }
+
+    grid
 }
 
 #[cfg(test)]
@@ -258,6 +441,7 @@ mod tests {
                     None,
                     host_fg,
                     host_bg,
+                    None,
                 );
             })
             .unwrap();
@@ -283,6 +467,7 @@ mod tests {
                         None,
                         host_fg,
                         host_bg,
+                        None,
                     );
                 })
                 .unwrap();
@@ -356,6 +541,24 @@ mod tests {
         let input = b"";
         let output = prepare_captured_ansi_for_replay(input, 5);
         assert_eq!(output, b"     ");
+    }
+
+    #[test]
+    fn selection_range_spans_rows_in_stream_order() {
+        let range = SelectionRange::new((3, 2), (1, 0));
+        assert!(range.contains(1, 0));
+        assert!(range.contains(4, 0));
+        assert!(range.contains(0, 1));
+        assert!(range.contains(2, 2));
+        assert!(!range.contains(0, 0));
+        assert!(!range.contains(4, 2));
+    }
+
+    #[test]
+    fn pane_text_grid_extracts_selection_and_trims_trailing_spaces() {
+        let grid = pane_text_grid(b"alpha\r\nbeta ", 5, 2);
+        let selection = SelectionRange::new((1, 0), (3, 1));
+        assert_eq!(grid.extract(selection), "lpha\nbeta");
     }
 
     #[test]
@@ -474,6 +677,7 @@ mod tests {
                     frame,
                     Rect::new(0, 0, 6, 5),
                     Some((0, 1)),
+                    None,
                     None,
                     None,
                 );
