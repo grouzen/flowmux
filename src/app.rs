@@ -968,25 +968,56 @@ impl App {
         }
 
         let viewport_height = inner.height as usize;
-        let visible_text = match &self.state {
-            AppState::AgentView(_) => {
+        let (visible_text, live_pane) = match &self.state {
+            AppState::AgentView(idx) => {
                 if self.agent_view_state.show_stopped_overlay {
                     return None;
                 }
-                pane_visible_text(
-                    &self.agent_view_state.lines,
-                    self.agent_view_state.view_scroll,
-                    viewport_height,
+                (
+                    pane_visible_text(
+                        &self.agent_view_state.lines,
+                        self.agent_view_state.view_scroll,
+                        viewport_height,
+                    ),
+                    if self.agent_view_state.view_scroll == 0 {
+                        self.agents
+                            .get(*idx)
+                            .map(|entry| entry.config.pane.as_str())
+                    } else {
+                        None
+                    },
                 )
             }
-            AppState::GitViewer(gv) => {
-                pane_visible_text(&gv.lines, gv.view_scroll, viewport_height)
-            }
-            AppState::TerminalView(tv) => {
-                pane_visible_text(&tv.lines, tv.view_scroll, viewport_height)
-            }
+            AppState::GitViewer(gv) => (
+                pane_visible_text(&gv.lines, gv.view_scroll, viewport_height),
+                if gv.view_scroll == 0 {
+                    Some(gv.pane.as_str())
+                } else {
+                    None
+                },
+            ),
+            AppState::TerminalView(tv) => (
+                pane_visible_text(&tv.lines, tv.view_scroll, viewport_height),
+                if tv.view_scroll == 0 {
+                    Some(tv.pane.as_str())
+                } else {
+                    None
+                },
+            ),
             _ => return None,
         };
+
+        if let Some(pane) = live_pane
+            && let Ok(joined_text) = tmux::capture_pane_joined(pane)
+        {
+            let joined_text = joined_text.trim_end_matches('\n');
+            let grid = crate::ghostty::render::pane_text_grid_for_copy(
+                joined_text.as_bytes(),
+                inner.width,
+                inner.height,
+            );
+            return Some(grid.extract_wrap_aware(selection));
+        }
 
         let grid = crate::ghostty::render::pane_text_grid(
             visible_text.as_bytes(),
