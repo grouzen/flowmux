@@ -96,12 +96,7 @@ cargo install --path . --locked
 
 ### GitHub Releases
 
-Tagged releases using the `v*` convention publish prebuilt tarballs for:
-
-- `x86_64-unknown-linux-gnu`
-- `aarch64-apple-darwin`
-
-Each archive contains the `flowmux` binary and `README.md`.
+Pre-compiled binaries for Linux and macOS are available on the [Releases page](https://github.com/grouzen/flowmux/releases).
 
 ## Usage
 
