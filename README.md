@@ -1,133 +1,94 @@
 # Flowmux
 
-A terminal-native AI agent multiplexer to orchestrate CLI agents for 10x engineers.
+Flowmux is a terminal-native AI agent multiplexer for running, tracking, and switching between multiple CLI agents from one keyboard-first dashboard.
 
-Install Flowmux to keep your trusty steed's  harness under the solid roof! :horse:
+It is built for people who want fast hotkeys, a clean grid view of active work, tmux-backed persistence, and real terminal sessions instead of wrapped agent UIs.
+
+![](/docs/demo/screencast.gif)
 
 ## Table of Contents
 
-- [Behold](#behold)
-- [Why](#why)
+- [Quick Start](#quick-start)
+- [Core Concepts](#core-concepts)
+- [Typical Workflow](#typical-workflow)
+- [Features](#features)
 - [Installation](#installation)
 - [Usage](#usage)
 - [Configuration](#configuration)
 - [Supported Agents](#supported-agents)
-- [Plan](#plan)
 - [Architecture](#architecture)
 - [Contributing](#contributing)
 
-## Behold
+## Quick Start
 
-![](/docs/demo/screencast.gif)
+### Prerequisites
 
-## 🤔 Why
+- `tmux`
+- At least one supported agent CLI: `opencode`, `claude`, or `codex`
+- [Rust 1.90+](https://rustup.rs/), [Zig 0.15.x](https://ziglang.org/), and `git` if building from source
 
-- Opinionated agent manager done my way, because I couldn't find one that's built the way I need.
-- Not laser-focused on software development only!
-- Pure grid layout, no left panel bullshit!
-- Keyboard-driven navigation and interaction with sane amount of mouse support.
-- Auto-detection of installed agent CLIs; Claude hooks are installed on first run.
-- Focus on quick navigation through active agent sessions and history.
-- Survives tmux restarts.
-- Single binary, no stupid js runtimes!
+### Launch
 
-## ✨ Features
+Run Flowmux in the repository or workspace where you want agents to work:
 
-### Multi-Agent Orchestration
+```bash
+flowmux
+```
 
-- Run multiple CLI agents concurrently in isolated tmux panes
-- Grid-based dashboard showing all agents at a glance
-- Separate named project dashboards with tab-based switching and per-project agent grouping
-- Real-time status tracking: running, waiting for input, stopped
-- Context usage monitoring and model name display
-- Last model response preview rendered as markdown
+On first launch, Flowmux opens a tmux-backed dashboard where you can create agents, group them by project, and jump between running, waiting, and idle work without leaving the terminal.
 
-### Quick Navigation
+## Core Concepts
 
-- Jump to next running agent (`Ctrl+q`), waiting agent (`Ctrl+o`), or idle agent (`Ctrl+p`)
-- Vim-style navigation (`h/j/k/l`) with arrow key support
-- Mouse support: click to select, scroll to browse responses
-- Reorder agent cards on the fly (`Ctrl+arrows`)
+**Projects.** Projects are top-level dashboards. They let you separate work by repo, task, or stream and switch between them quickly.
 
-### Survives Restarts
+**Agents.** Each agent runs in its own tmux pane, with its own working directory and optional git worktree.
 
-- Auto-resumes dead agent panes on startup (e.g., after tmux restart)
-- Configuration persists across sessions
+**Dashboard.** The dashboard is the overview screen: a grid of agents with status, model information, and the latest response preview.
 
-### Git Worktree Integration
+**Agent View.** Agent view shows the live terminal for one agent. Keys are forwarded to the pane, so you interact with the real CLI session.
 
-- Automatically create isolated git worktrees per agent
-- Each agent works on its own branch without conflicts
-- Optional worktree cleanup when removing agents
-- Perfect for parallel feature development
+**Persistence.** Flowmux stores session state and can reconnect to agents after tmux restarts, so long-running work is easier to resume.
 
-### In-App Notifications
+## Typical Workflow
 
-- Visual indicators when agent status changes
-- Blinking status bar highlights running→waiting transitions
-- Instant awareness without constant monitoring
+1. Start `flowmux` in the repo where work should happen.
+2. Create a project if you want to separate this work from other dashboards.
+3. Add one or more agents and optionally give them isolated git worktrees.
+4. Monitor the grid to see which agents are running, waiting for input, or idle.
+5. Use hotkeys to jump straight to the next running or waiting agent when attention is needed.
+6. Open agent view when you want to read the full terminal, respond, inspect git state, or use a dedicated terminal in that working directory.
+7. Reopen Flowmux later and continue from the saved session state.
 
-### Configurable Git Viewer
+## Features
 
-- Launch your favorite git UI (lazygit, tig, etc) with `Ctrl+v`
-- Configured via `git_viewer` in `~/.config/flowmux/config.toml`
-- Opens in the agent's working directory
+- Keyboard-first dashboard for managing multiple CLI agents from one terminal UI
+- Fast navigation between running, waiting, and idle agents
+- Project-based organization with per-agent working directories and optional git worktrees
+- Live agent terminals, plus quick access to a git viewer and a persistent shell in the agent directory
+- tmux-backed persistence with automatic session restoration after restarts
+- Response previews, model display, and status tracking in the grid view
 
-### Persistent Terminal
+## Installation
 
-- Dedicated terminal per agent (`Ctrl+t`) in the agent's working directory
-- Persists across agent view sessions
-- Useful for quick commands, git operations, or file editing
+### From Source
 
-### Prefix Mode
-
-- `Ctrl+b` arms prefix mode: next key forwarded directly to the agent
-- Bypass flowmux's keybindings when you need to send intercepted keys
-- Works in agent view, git viewer, and terminal view
-
-## 📦 Installation
-
-### 📝 From source
-
-Requires [Rust 1.90+](https://rustup.rs/), [Zig 0.15.x](https://ziglang.org/), and `git`.
-
-`libghostty-vt-sys` statically builds the exact Ghostty revision pinned by the
-current `libghostty-vt` Git dependency. A default first build needs network
-access so Zig can fetch Ghostty's build dependencies.
-
-Build with:
+Build the release binary with:
 
 ```bash
 cargo build --release --locked
 ```
 
-The binary will be at `target/release/flowmux`.
+The binary will be available at `target/release/flowmux`.
 
-If you need an offline or reproducible local build, use the wrapper that
-reuses prefetched Ghostty inputs when present, otherwise fetches them, points
-Cargo at those local copies, and performs a locked release build:
+`libghostty-vt-sys` statically builds the pinned Ghostty revision used by `libghostty-vt`. A default first build needs network access so Zig can fetch Ghostty build dependencies.
+
+If you want a wrapper that reuses prefetched Ghostty inputs when present, use:
 
 ```bash
 ./tools/build-release-prefetched-libghostty-vt.sh
 ```
 
-That script defaults `LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast`. If you need the
-underlying manual flow or want to override paths, the equivalent commands are:
-
-```bash
-./tools/prefetch-libghostty-vt.sh
-export GHOSTTY_SOURCE_DIR="$PWD/vendor/ghostty-prefetch/ghostty-src"
-export GHOSTTY_ZIG_SYSTEM_DIR="$PWD/vendor/ghostty-prefetch/zig-system"
-export LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast
-cargo build --release --locked
-```
-
-`GHOSTTY_SOURCE_DIR` points at a checked-out Ghostty tree.
-`GHOSTTY_ZIG_SYSTEM_DIR` points at a prefetched Zig `--system` package
-directory. `LIBGHOSTTY_VT_SYS_OPTIMIZE` overrides the Ghostty build mode when
-you need something other than the crate's default.
-
-Or install directly:
+You can also install directly from the repo:
 
 ```bash
 cargo install --path . --locked
@@ -135,21 +96,11 @@ cargo install --path . --locked
 
 ### GitHub Releases
 
-Tagged releases using the `v*` convention publish prebuilt tarballs for:
+Pre-compiled binaries for Linux and macOS are available on the [Releases page](https://github.com/grouzen/flowmux/releases).
 
-- `x86_64-unknown-linux-gnu`
-- `aarch64-apple-darwin`
+## Usage
 
-Each archive contains the `flowmux` binary and `README.md`.
-
-## 🚀 Usage
-
-### Prerequisites
-
-- **tmux** must be installed and available in `$PATH`
-- At least one supported agent CLI (`opencode`, `claude`, or `codex`)
-
-### Launch
+### Common Commands
 
 ```bash
 # Launch with default tmux session name "flowmux"
@@ -170,76 +121,32 @@ flowmux --enabled-agents opencode,claude,codex
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--tmux-session` | `flowmux` | Name of the tmux session to use |
-| `--git-worktrees-location` | `~/.local/share/flowmux/worktrees` | Base directory for git worktrees created by flowmux |
-| `--enabled-agents` | *(all discovered)* | Comma-separated list of agent types to enable (e.g., `opencode,claude,codex`). Overrides `enabled_agents` in global config |
+| `--git-worktrees-location` | `~/.local/share/flowmux/worktrees` | Base directory for git worktrees created by Flowmux |
+| `--enabled-agents` | *(all discovered)* | Comma-separated list of agent types to enable; overrides `enabled_agents` in global config |
 
-### Keybindings
-
-#### Dashboard
+### Essential Keybindings
 
 | Key | Action |
 |-----|--------|
-| `q` | Quit |
 | `n` | Create new agent |
 | `p` | Create new project |
-| `d` | Delete selected agent |
-| `Ctrl+d` | Remove active project |
-| `Tab`, `0-9` | Select project |
 | `Enter` | Open agent view |
-| `h` / `←` | Navigate left |
-| `l` / `→` | Navigate right |
-| `k` / `↑` | Navigate up |
-| `j` / `↓` | Navigate down |
-| `Ctrl+h` / `Ctrl+←` | Move card left |
-| `Ctrl+l` / `Ctrl+→` | Move card right |
-| `Ctrl+k` / `Ctrl+↑` | Move card up |
-| `Ctrl+j` / `Ctrl+↓` | Move card down |
-| `PageUp` | Scroll response up |
-| `PageDown` | Scroll response down |
-| Mouse click | Select agent |
-| Mouse scroll | Scroll response |
-
-#### Agent View
-
-| Key | Action |
-|-----|--------|
 | `Ctrl+g` | Return to dashboard |
-| `Ctrl+b` | Arm prefix mode (next key forwarded to pane) |
-| `Ctrl+v` | Open git viewer (if `git_viewer` configured and in git repo) |
-| `Ctrl+t` | Open persistent terminal in agent's working directory |
 | `Ctrl+q` | Jump to next running agent |
 | `Ctrl+o` | Jump to next waiting agent |
 | `Ctrl+p` | Jump to next idle agent |
-| `PageUp` / `PageDown` | Scroll pane |
-| Mouse scroll | Scroll pane |
+| `Ctrl+v` | Open configured git viewer |
+| `Ctrl+t` | Open persistent terminal in the agent directory |
+| `Ctrl+b` | Arm prefix mode so the next key is sent directly to the pane |
+| `h/j/k/l` or arrows | Move selection |
 
-All other keys are forwarded to the agent's tmux pane.
+All other keys in agent, git viewer, and terminal views are forwarded to the active tmux pane.
 
-#### Git Viewer
-
-| Key | Action |
-|-----|--------|
-| `Ctrl+b` | Arm prefix mode (next key forwarded to pane) |
-| `Ctrl+v` | Close git viewer, return to agent view |
-| `Ctrl+g` | Close git viewer, return to dashboard |
-
-All other keys are forwarded to the git viewer's tmux pane.
-
-#### Terminal View
-
-| Key | Action |
-|-----|--------|
-| `Ctrl+b` | Arm prefix mode (next key forwarded to pane) |
-| `Ctrl+t` | Close terminal, return to agent view |
-| `Ctrl+g` | Close terminal, return to dashboard |
-
-All other keys are forwarded to the terminal's tmux pane.
-
-## ⚙️ Configuration
+## Configuration
 
 ### Global Configuration
 
-Located at `~/.config/flowmux/config.toml`:
+Global config lives at `~/.config/flowmux/config.toml`.
 
 ```toml
 # Base port for Claude Code hook server (default: 15100)
@@ -256,7 +163,7 @@ enabled_agents = ["opencode", "claude", "codex"]
 
 ### Per-Session Configuration
 
-Automatically managed at `~/.config/flowmux/sessions/<session>.toml`. Contains the ordered project list plus the agents with their pane targets, directories, project membership, and session IDs. You typically don't need to edit this manually.
+Per-session state is managed automatically under `~/.config/flowmux/sessions/<session>.toml`. It stores the ordered project list and each agent's pane target, directory, project membership, and session metadata.
 
 Example:
 
@@ -272,53 +179,33 @@ agent_type = "opencode"
 port = 9000
 ```
 
-## 🤖 Supported Agents
+## Supported Agents
 
 - OpenCode
 - Claude Code
 - Codex
 
-## 🗺️ Plan
+Flowmux auto-detects installed agent CLIs and enables discovered agents by default unless `enabled_agents` is set in global config.
 
-- [x] Improve agent status detection
-- [x] Quick switching through: running, waiting (idle), last responded agents
-- [x] Git awareness: branch names, worktrees, diff views
-- [x] Per-project dashboards
-- [ ] Support more agents: Pi, etc.
-- [ ] Session history
-- [ ] Filtering (with fuzzysearch): by name, agent type, working directory, etc.
-- [ ] Split-screen mode to watch several running agents
+## Architecture
 
-## 📝 Architecture
+See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for technical details.
 
-See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed technical documentation.
+Core stack:
 
-### Tech Stack
+- Rust with Ratatui
+- Tokio
+- tmux
+- `libghostty-vt`
+- `git2`
 
-- **Rust** with Ratatui TUI framework
-- **Tokio** async runtime
-- **tmux** for process isolation and pane management
-- **libghostty-vt** crate for faithful terminal emulation
-- **git2** for repository detection and worktree management
+## Contributing
 
-### Tech Notes
-
-- Built in Rust ❤️ btw!
-- Consumes around 100MB of memory and does not burn your CPU!
-- Depends on tmux, so you must install it!
-- The code is garbage because I vibe coded it!
-
-
-## 🤝 Contributing
-
-Contributions are welcome! Please ensure your changes build successfully:
+Before opening a PR, run:
 
 ```bash
 cargo build --locked
+cargo test
 ```
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes using [Conventional Commits](https://www.conventionalcommits.org/) (`git commit -m 'feat: add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+Follow Conventional Commit-style subjects such as `feat(ui): improve dashboard navigation`.
