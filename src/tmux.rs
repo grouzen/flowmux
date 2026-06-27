@@ -148,15 +148,44 @@ pub fn send_literal(target: &str, data: &str) -> Result<()> {
 ///   3. When tmux copy-mode is active, we capture the copy-mode screen (`-M`)
 ///      so pane scrolling is reflected in the rendered viewport.
 pub fn capture_pane(target: &str) -> Result<String> {
-    let mut cmd = Command::new("tmux");
-    cmd.args(["capture-pane", "-t", target, "-p", "-e"]);
-    if pane_in_mode(target) {
-        cmd.arg("-M");
-    }
+    let mut cmd = capture_pane_command(target, false, None, pane_in_mode(target));
     let output = cmd
         .output()
         .with_context(|| format!("failed to capture pane {}", target))?;
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Capture the current visible viewport with tmux's joined-line mode.
+///
+/// `-J` asks tmux to join soft-wrapped rows back into their original logical
+/// lines. This is used only for copy extraction; rendering still uses physical
+/// rows so it matches the terminal screen exactly.
+pub fn capture_pane_joined(target: &str) -> Result<String> {
+    let mut cmd = capture_pane_command(target, true, None, pane_in_mode(target));
+    let output = cmd
+        .output()
+        .with_context(|| format!("failed to capture joined pane {}", target))?;
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn capture_pane_command(
+    target: &str,
+    joined: bool,
+    history_lines: Option<usize>,
+    in_mode: bool,
+) -> Command {
+    let mut cmd = Command::new("tmux");
+    cmd.args(["capture-pane", "-t", target, "-p", "-e"]);
+    if joined {
+        cmd.arg("-J");
+    }
+    if let Some(lines_back) = history_lines {
+        cmd.args(["-S", &format!("-{}", lines_back)]);
+    }
+    if in_mode {
+        cmd.arg("-M");
+    }
+    cmd
 }
 
 /// Resize a tmux window to the given dimensions.
@@ -280,18 +309,17 @@ pub fn is_alive(target: &str) -> bool {
 /// `view_scroll > 0` the tick captures history instead of just the visible
 /// viewport, and the renderer slices the appropriate window out of the buffer.
 pub fn capture_pane_history(target: &str, lines_back: usize) -> Result<String> {
-    let output = Command::new("tmux")
-        .args([
-            "capture-pane",
-            "-t",
-            target,
-            "-p",
-            "-e",
-            "-S",
-            &format!("-{}", lines_back),
-        ])
+    let output = capture_pane_command(target, false, Some(lines_back), false)
         .output()
         .with_context(|| format!("failed to capture pane history {}", target))?;
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[allow(dead_code)]
+pub fn capture_pane_history_joined(target: &str, lines_back: usize) -> Result<String> {
+    let output = capture_pane_command(target, true, Some(lines_back), false)
+        .output()
+        .with_context(|| format!("failed to capture joined pane history {}", target))?;
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
@@ -302,4 +330,43 @@ pub fn kill_window(target: &str) -> Result<()> {
         .status()
         .with_context(|| format!("failed to kill window {}", target))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn command_args(cmd: &Command) -> Vec<String> {
+        cmd.get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn joined_capture_command_includes_join_flag() {
+        let cmd = capture_pane_command("flowmux:1.0", true, None, true);
+        assert_eq!(cmd.get_program().to_string_lossy(), "tmux");
+        assert_eq!(
+            command_args(&cmd),
+            vec!["capture-pane", "-t", "flowmux:1.0", "-p", "-e", "-J", "-M"]
+        );
+    }
+
+    #[test]
+    fn joined_history_capture_command_includes_join_and_history_flags() {
+        let cmd = capture_pane_command("flowmux:1.0", true, Some(42), false);
+        assert_eq!(
+            command_args(&cmd),
+            vec![
+                "capture-pane",
+                "-t",
+                "flowmux:1.0",
+                "-p",
+                "-e",
+                "-J",
+                "-S",
+                "-42"
+            ]
+        );
+    }
 }

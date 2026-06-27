@@ -60,6 +60,7 @@ pub struct PaneTextGrid {
     width: u16,
     height: u16,
     cells: Vec<String>,
+    row_continuations: Vec<bool>,
 }
 
 impl PaneTextGrid {
@@ -69,6 +70,7 @@ impl PaneTextGrid {
             width,
             height,
             cells: vec![String::from(" "); len],
+            row_continuations: vec![false; height as usize],
         }
     }
 
@@ -117,6 +119,48 @@ impl PaneTextGrid {
         }
 
         lines.join("\n")
+    }
+
+    pub fn extract_wrap_aware(&self, selection: SelectionRange) -> String {
+        let mut text = String::new();
+        let last_row = self.height.saturating_sub(1);
+        let last_col = self.width.saturating_sub(1);
+
+        for row in selection.start_row..=selection.end_row.min(last_row) {
+            if row > selection.start_row
+                && !self
+                    .row_continuations
+                    .get(row as usize)
+                    .copied()
+                    .unwrap_or(false)
+            {
+                text.push('\n');
+            }
+
+            let start_col = if row == selection.start_row {
+                selection.start_col
+            } else {
+                0
+            };
+            let end_col = if row == selection.end_row {
+                selection.end_col
+            } else {
+                last_col
+            };
+
+            let line_start = text.len();
+            for col in start_col..=end_col.min(last_col) {
+                if let Some(idx) = self.index(col, row) {
+                    text.push_str(&self.cells[idx]);
+                }
+            }
+
+            while text[line_start..].ends_with(' ') {
+                text.pop();
+            }
+        }
+
+        text
     }
 }
 
@@ -216,6 +260,61 @@ fn prepare_captured_ansi_for_replay(input: &[u8], width: u16) -> Vec<u8> {
         if cols < width {
             output.extend(std::iter::repeat_n(b' ', width - cols));
         }
+    }
+
+    output
+}
+
+fn logical_row_continuations(input: &[u8], width: u16, height: u16) -> Vec<bool> {
+    if width == 0 || height == 0 {
+        return Vec::new();
+    }
+
+    let width = width as usize;
+    let mut rows = Vec::new();
+    for line in input.split(|&b| b == b'\n') {
+        let line = if line.last() == Some(&b'\r') {
+            &line[..line.len() - 1]
+        } else {
+            line
+        };
+        let cols = count_visible_columns(line);
+        let row_count = cols.max(1).div_ceil(width);
+        for visual_row in 0..row_count {
+            rows.push(visual_row > 0);
+        }
+    }
+
+    let height = height as usize;
+    let start = rows.len().saturating_sub(height);
+    let mut visible = rows[start..].to_vec();
+    visible.resize(height, false);
+    visible
+}
+
+fn prepare_logical_ansi_for_replay(input: &[u8], width: u16, height: u16) -> Vec<u8> {
+    if width == 0 || height == 0 {
+        return Vec::new();
+    }
+
+    let width = width as usize;
+    let mut output = Vec::with_capacity(input.len() + input.len() / 10);
+    let mut row = 0usize;
+
+    for (line_idx, line) in input.split(|&b| b == b'\n').enumerate() {
+        if line_idx > 0 {
+            output.extend_from_slice(format!("\x1b[{};1H", row + 1).as_bytes());
+        }
+
+        let line = if line.last() == Some(&b'\r') {
+            &line[..line.len() - 1]
+        } else {
+            line
+        };
+
+        output.extend_from_slice(line);
+        let cols = count_visible_columns(line);
+        row += cols.max(1).div_ceil(width);
     }
 
     output
@@ -346,9 +445,25 @@ pub fn render_pane_content(
 }
 
 pub fn pane_text_grid(ansi_bytes: &[u8], width: u16, height: u16) -> PaneTextGrid {
+    pane_text_grid_with_replay(ansi_bytes, width, height, false)
+}
+
+pub fn pane_text_grid_for_copy(ansi_bytes: &[u8], width: u16, height: u16) -> PaneTextGrid {
+    pane_text_grid_with_replay(ansi_bytes, width, height, true)
+}
+
+fn pane_text_grid_with_replay(
+    ansi_bytes: &[u8],
+    width: u16,
+    height: u16,
+    logical_replay: bool,
+) -> PaneTextGrid {
     let mut grid = PaneTextGrid::new(width, height);
     if width == 0 || height == 0 {
         return grid;
+    }
+    if logical_replay {
+        grid.row_continuations = logical_row_continuations(ansi_bytes, width, height);
     }
 
     let mut terminal = match Terminal::new(TerminalOptions {
@@ -360,7 +475,11 @@ pub fn pane_text_grid(ansi_bytes: &[u8], width: u16, height: u16) -> PaneTextGri
         Err(_) => return grid,
     };
 
-    let replay_bytes = prepare_captured_ansi_for_replay(ansi_bytes, width);
+    let replay_bytes = if logical_replay {
+        prepare_logical_ansi_for_replay(ansi_bytes, width, height)
+    } else {
+        prepare_captured_ansi_for_replay(ansi_bytes, width)
+    };
     terminal.vt_write(&replay_bytes);
 
     let mut render_state = match RenderState::new() {
@@ -559,6 +678,34 @@ mod tests {
         let grid = pane_text_grid(b"alpha\r\nbeta ", 5, 2);
         let selection = SelectionRange::new((1, 0), (3, 1));
         assert_eq!(grid.extract(selection), "lpha\nbeta");
+    }
+
+    #[test]
+    fn pane_text_grid_for_copy_joins_soft_wrapped_rows() {
+        let grid = pane_text_grid_for_copy(b"abcdef", 3, 2);
+        let selection = SelectionRange::new((0, 0), (2, 1));
+        assert_eq!(grid.extract_wrap_aware(selection), "abcdef");
+    }
+
+    #[test]
+    fn pane_text_grid_for_copy_preserves_hard_line_breaks() {
+        let grid = pane_text_grid_for_copy(b"abc\ndef", 3, 2);
+        let selection = SelectionRange::new((0, 0), (2, 1));
+        assert_eq!(grid.extract_wrap_aware(selection), "abc\ndef");
+    }
+
+    #[test]
+    fn pane_text_grid_for_copy_preserves_full_width_hard_line_breaks() {
+        let grid = pane_text_grid_for_copy(b"1234\nabcd", 4, 2);
+        let selection = SelectionRange::new((0, 0), (3, 1));
+        assert_eq!(grid.extract_wrap_aware(selection), "1234\nabcd");
+    }
+
+    #[test]
+    fn pane_text_grid_for_copy_joins_partial_soft_wrapped_selection() {
+        let grid = pane_text_grid_for_copy(b"abcdef", 4, 2);
+        let selection = SelectionRange::new((2, 0), (1, 1));
+        assert_eq!(grid.extract_wrap_aware(selection), "cdef");
     }
 
     #[test]
