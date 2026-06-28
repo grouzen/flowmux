@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="docs/brand/enso/variants/flowmux-enso-logo-edgy-prompt.png" alt="Flowmux" width="720">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/flowmux-logo-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/brand/flowmux-logo.png">
+    <img src="docs/brand/flowmux-logo.png" alt="Flowmux" width="720">
+  </picture>
 </p>
 
 # Flowmux
