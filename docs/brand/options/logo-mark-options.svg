@@ -1,0 +1,226 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 2400" role="img" aria-labelledby="title desc">
+  <title id="title">Flowmux logo and mark options</title>
+  <desc id="desc">Ten vector logo concepts for Flowmux, each showing a standalone mark and matching wordmark lockup.</desc>
+  <defs>
+    <linearGradient id="aqua-pink" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#65e4ff"/>
+      <stop offset="0.55" stop-color="#4df1ad"/>
+      <stop offset="1" stop-color="#ff5db8"/>
+    </linearGradient>
+    <linearGradient id="blue-green" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#38bdf8"/>
+      <stop offset="1" stop-color="#22c55e"/>
+    </linearGradient>
+    <linearGradient id="violet-cyan" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#06b6d4"/>
+    </linearGradient>
+    <linearGradient id="amber-rose" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f59e0b"/>
+      <stop offset="1" stop-color="#f43f5e"/>
+    </linearGradient>
+    <linearGradient id="lime-blue" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#a3e635"/>
+      <stop offset="1" stop-color="#2563eb"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#020617" flood-opacity="0.16"/>
+    </filter>
+    <style>
+      .card { fill: #ffffff; stroke: #dbe4ee; stroke-width: 2; }
+      .shell { fill: #0b1020; }
+      .ink { fill: #111827; }
+      .muted { stroke: #d7e0ea; }
+      .grid { stroke: #263241; stroke-width: 8; stroke-linecap: round; opacity: 0.9; }
+      .label { fill: #64748b; font: 600 24px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: 0; }
+      .word { fill: #111827; font: 760 76px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: 0; }
+      .caption { fill: #64748b; font: 500 20px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: 0; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="2400" fill="#f8fafc"/>
+  <text x="80" y="92" class="ink" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="48" font-weight="760">Flowmux logo and mark options</text>
+  <text x="80" y="132" class="caption">Editable SVG concepts: each card pairs a standalone mark with a matching logo lockup.</text>
+
+  <g transform="translate(80 180)">
+    <rect class="card" width="690" height="380" rx="24"/>
+    <text x="28" y="48" class="label">01 / Pane Flow F</text>
+    <g transform="translate(48 88)" filter="url(#shadow)">
+      <rect width="172" height="172" rx="38" class="shell"/>
+      <path d="M34 54H138M86 58V140M38 103H138" class="grid"/>
+      <path d="M54 132V57H115C135 57 151 73 151 93C151 113 135 129 115 129H84M54 93H110" fill="none" stroke="url(#aqua-pink)" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="54" cy="57" r="12" fill="#65e4ff"/>
+      <circle cx="110" cy="93" r="10" fill="#4df1ad"/>
+      <circle cx="115" cy="129" r="12" fill="#ff5db8"/>
+    </g>
+    <text x="258" y="178" class="word">Flowmux</text>
+    <path d="M262 216H552" stroke="#d7e0ea" stroke-width="7" stroke-linecap="round"/>
+    <path d="M262 216H410" stroke="url(#aqua-pink)" stroke-width="7" stroke-linecap="round"/>
+    <text x="258" y="268" class="caption">Terminal panes and F-shaped routing</text>
+  </g>
+
+  <g transform="translate(830 180)">
+    <rect class="card" width="690" height="380" rx="24"/>
+    <text x="28" y="48" class="label">02 / Mux Switch</text>
+    <g transform="translate(48 88)" filter="url(#shadow)">
+      <rect width="172" height="172" rx="38" fill="#07111f"/>
+      <path d="M44 48H94C126 48 142 68 142 86C142 104 126 124 94 124H44" fill="none" stroke="url(#blue-green)" stroke-width="18" stroke-linecap="round"/>
+      <path d="M44 86H128M44 124H94" fill="none" stroke="#38bdf8" stroke-width="18" stroke-linecap="round"/>
+      <path d="M90 48L130 86L90 124" fill="none" stroke="#22c55e" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="44" cy="48" r="11" fill="#38bdf8"/>
+      <circle cx="44" cy="86" r="11" fill="#38bdf8"/>
+      <circle cx="44" cy="124" r="11" fill="#38bdf8"/>
+      <circle cx="128" cy="86" r="13" fill="#22c55e"/>
+    </g>
+    <text x="258" y="178" class="word">Flowmux</text>
+    <path d="M262 216H552" stroke="#d7e0ea" stroke-width="7" stroke-linecap="round"/>
+    <path d="M262 216H440" stroke="url(#blue-green)" stroke-width="7" stroke-linecap="round"/>
+    <text x="258" y="268" class="caption">Many inputs converging into one lane</text>
+  </g>
+
+  <g transform="translate(80 600)">
+    <rect class="card" width="690" height="380" rx="24"/>
+    <text x="28" y="48" class="label">03 / Grid Conductor</text>
+    <g transform="translate(48 88)" filter="url(#shadow)">
+      <rect width="172" height="172" rx="38" fill="#0e1525"/>
+      <path d="M52 52H120V120H52Z" fill="none" stroke="#2f3b4d" stroke-width="10"/>
+      <path d="M52 86H120M86 52V120" stroke="#2f3b4d" stroke-width="10" stroke-linecap="round"/>
+      <path d="M39 39C78 86 95 74 133 133" fill="none" stroke="url(#violet-cyan)" stroke-width="18" stroke-linecap="round"/>
+      <path d="M40 133C75 89 98 99 133 40" fill="none" stroke="#06b6d4" stroke-width="12" stroke-linecap="round" opacity="0.85"/>
+      <circle cx="39" cy="39" r="12" fill="#8b5cf6"/>
+      <circle cx="133" cy="133" r="12" fill="#06b6d4"/>
+      <circle cx="40" cy="133" r="10" fill="#06b6d4"/>
+      <circle cx="133" cy="40" r="10" fill="#8b5cf6"/>
+    </g>
+    <text x="258" y="178" class="word">Flowmux</text>
+    <path d="M262 216H552" stroke="#d7e0ea" stroke-width="7" stroke-linecap="round"/>
+    <path d="M262 216H430" stroke="url(#violet-cyan)" stroke-width="7" stroke-linecap="round"/>
+    <text x="258" y="268" class="caption">Agent orchestration over a pane grid</text>
+  </g>
+
+  <g transform="translate(830 600)">
+    <rect class="card" width="690" height="380" rx="24"/>
+    <text x="28" y="48" class="label">04 / Terminal Ribbon</text>
+    <g transform="translate(48 88)" filter="url(#shadow)">
+      <rect width="172" height="172" rx="38" fill="#10131f"/>
+      <path d="M36 54H136" stroke="#334155" stroke-width="10" stroke-linecap="round"/>
+      <path d="M50 80C80 48 113 52 130 78C147 104 122 128 92 116C62 104 51 121 45 137" fill="none" stroke="url(#amber-rose)" stroke-width="18" stroke-linecap="round"/>
+      <path d="M45 86L70 111L45 136" fill="none" stroke="#f59e0b" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M82 137H130" stroke="#f43f5e" stroke-width="14" stroke-linecap="round"/>
+      <circle cx="130" cy="78" r="11" fill="#f43f5e"/>
+      <circle cx="82" cy="137" r="10" fill="#f59e0b"/>
+    </g>
+    <text x="258" y="178" class="word">Flowmux</text>
+    <path d="M262 216H552" stroke="#d7e0ea" stroke-width="7" stroke-linecap="round"/>
+    <path d="M262 216H422" stroke="url(#amber-rose)" stroke-width="7" stroke-linecap="round"/>
+    <text x="258" y="268" class="caption">Command prompt with multiplexed motion</text>
+  </g>
+
+  <g transform="translate(80 1020)">
+    <rect class="card" width="690" height="380" rx="24"/>
+    <text x="28" y="48" class="label">05 / Hex Hub</text>
+    <g transform="translate(48 88)" filter="url(#shadow)">
+      <path d="M86 14L148 50V122L86 158L24 122V50Z" fill="#0b1020"/>
+      <path d="M86 34L130 60V112L86 138L42 112V60Z" fill="none" stroke="#2b3748" stroke-width="9"/>
+      <path d="M52 62H86L120 86L86 110H52" fill="none" stroke="url(#lime-blue)" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M86 62V110" stroke="#a3e635" stroke-width="16" stroke-linecap="round"/>
+      <circle cx="52" cy="62" r="10" fill="#a3e635"/>
+      <circle cx="52" cy="110" r="10" fill="#a3e635"/>
+      <circle cx="120" cy="86" r="12" fill="#2563eb"/>
+    </g>
+    <text x="258" y="178" class="word">Flowmux</text>
+    <path d="M262 216H552" stroke="#d7e0ea" stroke-width="7" stroke-linecap="round"/>
+    <path d="M262 216H408" stroke="url(#lime-blue)" stroke-width="7" stroke-linecap="round"/>
+    <text x="258" y="268" class="caption">Central hub for agent traffic</text>
+  </g>
+
+  <g transform="translate(830 1020)">
+    <rect class="card" width="690" height="380" rx="24"/>
+    <text x="28" y="48" class="label">06 / Stack Lanes</text>
+    <g transform="translate(48 88)" filter="url(#shadow)">
+      <rect width="172" height="172" rx="38" fill="#08111e"/>
+      <path d="M44 55H128M44 86H128M44 117H128" stroke="#304155" stroke-width="18" stroke-linecap="round"/>
+      <path d="M44 55H96C118 55 130 67 130 86C130 105 118 117 96 117H44" fill="none" stroke="url(#aqua-pink)" stroke-width="18" stroke-linecap="round"/>
+      <path d="M67 55V140" stroke="#65e4ff" stroke-width="18" stroke-linecap="round"/>
+      <circle cx="128" cy="86" r="12" fill="#4df1ad"/>
+      <circle cx="96" cy="117" r="12" fill="#ff5db8"/>
+    </g>
+    <text x="258" y="178" class="word">Flowmux</text>
+    <path d="M262 216H552" stroke="#d7e0ea" stroke-width="7" stroke-linecap="round"/>
+    <path d="M262 216H450" stroke="url(#aqua-pink)" stroke-width="7" stroke-linecap="round"/>
+    <text x="258" y="268" class="caption">Parallel terminal lanes and routing</text>
+  </g>
+
+  <g transform="translate(80 1440)">
+    <rect class="card" width="690" height="380" rx="24"/>
+    <text x="28" y="48" class="label">07 / Orbit Panes</text>
+    <g transform="translate(48 88)" filter="url(#shadow)">
+      <rect width="172" height="172" rx="38" fill="#0b1020"/>
+      <path d="M44 44H128V128H44Z" fill="none" stroke="#2f3b4d" stroke-width="9"/>
+      <path d="M44 86H128M86 44V128" stroke="#2f3b4d" stroke-width="9" stroke-linecap="round"/>
+      <ellipse cx="86" cy="86" rx="66" ry="36" fill="none" stroke="url(#blue-green)" stroke-width="14" stroke-linecap="round" transform="rotate(-28 86 86)"/>
+      <ellipse cx="86" cy="86" rx="66" ry="36" fill="none" stroke="#38bdf8" stroke-width="9" stroke-linecap="round" opacity="0.65" transform="rotate(28 86 86)"/>
+      <circle cx="125" cy="55" r="12" fill="#22c55e"/>
+      <circle cx="49" cy="119" r="10" fill="#38bdf8"/>
+    </g>
+    <text x="258" y="178" class="word">Flowmux</text>
+    <path d="M262 216H552" stroke="#d7e0ea" stroke-width="7" stroke-linecap="round"/>
+    <path d="M262 216H418" stroke="url(#blue-green)" stroke-width="7" stroke-linecap="round"/>
+    <text x="258" y="268" class="caption">Agents around a shared workspace</text>
+  </g>
+
+  <g transform="translate(830 1440)">
+    <rect class="card" width="690" height="380" rx="24"/>
+    <text x="28" y="48" class="label">08 / Switchboard</text>
+    <g transform="translate(48 88)" filter="url(#shadow)">
+      <rect width="172" height="172" rx="38" fill="#0d1322"/>
+      <path d="M49 49H123V123H49Z" fill="none" stroke="#334155" stroke-width="9"/>
+      <path d="M49 74H123M49 98H123M74 49V123M98 49V123" stroke="#334155" stroke-width="7"/>
+      <path d="M49 49L123 123M49 123L123 49" stroke="url(#violet-cyan)" stroke-width="13" stroke-linecap="round"/>
+      <circle cx="49" cy="49" r="10" fill="#8b5cf6"/>
+      <circle cx="123" cy="123" r="10" fill="#06b6d4"/>
+      <circle cx="49" cy="123" r="10" fill="#06b6d4"/>
+      <circle cx="123" cy="49" r="10" fill="#8b5cf6"/>
+    </g>
+    <text x="258" y="178" class="word">Flowmux</text>
+    <path d="M262 216H552" stroke="#d7e0ea" stroke-width="7" stroke-linecap="round"/>
+    <path d="M262 216H446" stroke="url(#violet-cyan)" stroke-width="7" stroke-linecap="round"/>
+    <text x="258" y="268" class="caption">Cross-pane switching and navigation</text>
+  </g>
+
+  <g transform="translate(80 1860)">
+    <rect class="card" width="690" height="380" rx="24"/>
+    <text x="28" y="48" class="label">09 / Bracket Flow</text>
+    <g transform="translate(48 88)" filter="url(#shadow)">
+      <rect width="172" height="172" rx="38" fill="#0a1020"/>
+      <path d="M56 42H37V130H56M116 42H135V130H116" fill="none" stroke="#334155" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M58 62H97C120 62 134 75 134 86C134 97 120 110 97 110H58" fill="none" stroke="url(#amber-rose)" stroke-width="18" stroke-linecap="round"/>
+      <path d="M58 86H115" stroke="#f59e0b" stroke-width="18" stroke-linecap="round"/>
+      <circle cx="58" cy="62" r="10" fill="#f59e0b"/>
+      <circle cx="115" cy="86" r="11" fill="#f43f5e"/>
+      <circle cx="97" cy="110" r="10" fill="#f43f5e"/>
+    </g>
+    <text x="258" y="178" class="word">Flowmux</text>
+    <path d="M262 216H552" stroke="#d7e0ea" stroke-width="7" stroke-linecap="round"/>
+    <path d="M262 216H404" stroke="url(#amber-rose)" stroke-width="7" stroke-linecap="round"/>
+    <text x="258" y="268" class="caption">CLI brackets around a mux path</text>
+  </g>
+
+  <g transform="translate(830 1860)">
+    <rect class="card" width="690" height="380" rx="24"/>
+    <text x="28" y="48" class="label">10 / Prism Lanes</text>
+    <g transform="translate(48 88)" filter="url(#shadow)">
+      <rect width="172" height="172" rx="38" fill="#0b1020"/>
+      <path d="M43 55H89L132 86L89 117H43" fill="none" stroke="#334155" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M43 55H89L132 86" fill="none" stroke="#65e4ff" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M43 86H132" fill="none" stroke="#4df1ad" stroke-width="14" stroke-linecap="round"/>
+      <path d="M43 117H89L132 86" fill="none" stroke="#ff5db8" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M68 55V140" stroke="#65e4ff" stroke-width="14" stroke-linecap="round"/>
+      <circle cx="132" cy="86" r="12" fill="#4df1ad"/>
+    </g>
+    <text x="258" y="178" class="word">Flowmux</text>
+    <path d="M262 216H552" stroke="#d7e0ea" stroke-width="7" stroke-linecap="round"/>
+    <path d="M262 216H456" stroke="url(#aqua-pink)" stroke-width="7" stroke-linecap="round"/>
+    <text x="258" y="268" class="caption">Multiplexed streams through one prism</text>
+  </g>
+</svg>

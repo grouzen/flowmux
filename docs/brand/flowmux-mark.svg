@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Flowmux mark</title>
+  <desc id="desc">A terminal window mark with pane grid lines and a routed F-shaped flow path.</desc>
+  <defs>
+    <linearGradient id="shell" x1="80" y1="44" x2="420" y2="468" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#111827"/>
+      <stop offset="1" stop-color="#06090f"/>
+    </linearGradient>
+    <linearGradient id="flow" x1="132" y1="134" x2="384" y2="356" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#66e3ff"/>
+      <stop offset="0.56" stop-color="#4ef2b2"/>
+      <stop offset="1" stop-color="#ff5db8"/>
+    </linearGradient>
+    <filter id="soft-shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#020617" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" rx="112" fill="#f8fafc"/>
+  <g filter="url(#soft-shadow)">
+    <rect x="58" y="58" width="396" height="396" rx="78" fill="url(#shell)"/>
+    <rect x="75" y="75" width="362" height="362" rx="61" fill="none" stroke="#263241" stroke-width="10"/>
+  </g>
+
+  <path d="M96 150H416" stroke="#263241" stroke-width="12" stroke-linecap="round"/>
+  <circle cx="125" cy="113" r="12" fill="#ff5d73"/>
+  <circle cx="164" cy="113" r="12" fill="#ffc857"/>
+  <circle cx="203" cy="113" r="12" fill="#4ef2b2"/>
+
+  <path d="M256 178V397" stroke="#1d2733" stroke-width="10" stroke-linecap="round"/>
+  <path d="M105 274H407" stroke="#1d2733" stroke-width="10" stroke-linecap="round"/>
+  <path d="M326 178V274" stroke="#1d2733" stroke-width="10" stroke-linecap="round"/>
+
+  <path
+    d="M144 362V196H312C353 196 386 229 386 270C386 311 353 344 312 344H238"
+    fill="none"
+    stroke="url(#flow)"
+    stroke-width="34"
+    stroke-linecap="round"
+    stroke-linejoin="round"/>
+  <path
+    d="M144 270H302"
+    fill="none"
+    stroke="url(#flow)"
+    stroke-width="34"
+    stroke-linecap="round"/>
+
+  <circle cx="144" cy="196" r="22" fill="#66e3ff"/>
+  <circle cx="302" cy="270" r="18" fill="#4ef2b2"/>
+  <circle cx="312" cy="344" r="22" fill="#ff5db8"/>
+  <circle cx="144" cy="362" r="18" fill="#4ef2b2"/>
+</svg>

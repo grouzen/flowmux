@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/brand/flowmux-logo.svg" alt="Flowmux" width="720">
+</p>
+
 # Flowmux
 
 Flowmux is a terminal-native AI agent multiplexer for running, tracking, and switching between multiple CLI agents from one keyboard-first dashboard.
