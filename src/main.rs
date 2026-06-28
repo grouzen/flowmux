@@ -7,8 +7,10 @@ mod git;
 mod global_config;
 mod host_terminal;
 mod launch;
+mod logging;
 mod model_registry;
 mod models;
+mod platform;
 mod runner;
 mod tmux;
 mod tui;
@@ -98,6 +100,8 @@ fn acquire_session_lock(session: &str) -> Result<std::fs::File> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let log_path = logging::init(&cli.tmux_session)?;
+    log::debug!("flowmux logs: {}", log_path.display());
 
     if let Some(Commands::Launch { command }) = cli.command.clone() {
         return launch::run(command).await;
@@ -132,7 +136,7 @@ async fn main() -> Result<()> {
     if let Some(ref names) = enabled_agents {
         for name in names {
             if AgentType::from_name(name).is_none() {
-                eprintln!("warning: unknown agent type '{}' in enabled_agents", name);
+                log::warn!("unknown agent type '{}' in enabled_agents", name);
             }
         }
     }
@@ -209,7 +213,7 @@ async fn main() -> Result<()> {
     let host_colors = match host_terminal::probe_host_colors() {
         Ok(colors) => colors,
         Err(e) => {
-            eprintln!("Warning: failed to probe host terminal colors: {}", e);
+            log::warn!("failed to probe host terminal colors: {e}");
             host_terminal::HostColors::default()
         }
     };

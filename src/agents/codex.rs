@@ -15,6 +15,7 @@ use tokio::time::{interval, sleep};
 use crate::agents::AgentAdapter;
 use crate::launch;
 use crate::models::{AgentStatus, ContextInfo};
+use crate::platform;
 use crate::tmux;
 
 const DISCOVERY_INTERVAL: Duration = Duration::from_millis(750);
@@ -187,7 +188,6 @@ async fn launch(dir: &str, name: &str, port: u16, session_id: Option<&str>) -> R
         "codex app-server did not become available in pane {pane}"
     ))
 }
-
 async fn app_server_ready(client: &reqwest::Client, port: u16) -> bool {
     let url = format!("http://127.0.0.1:{port}/readyz");
     client
@@ -209,7 +209,7 @@ async fn stop_server(port: u16) -> Result<()> {
 
     let signaled_pid = pid.is_some_and(|pid| signal_server_pid(pid, port, libc::SIGTERM));
     if !signaled_pid {
-        signal_port_owner(port, "TERM");
+        signal_port_owner(port, libc::SIGTERM);
     }
 
     for _ in 0..10 {
@@ -222,34 +222,58 @@ async fn stop_server(port: u16) -> Result<()> {
 
     let killed_pid = pid.is_some_and(|pid| signal_server_pid(pid, port, libc::SIGKILL));
     if !killed_pid {
-        signal_port_owner(port, "KILL");
+        signal_port_owner(port, libc::SIGKILL);
     }
     let _ = std::fs::remove_file(pid_path);
     Ok(())
 }
 
 fn signal_server_pid(pid: i32, port: u16, signal: i32) -> bool {
-    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-    let matches = server_cmdline_matches_port(&cmdline, port);
-    if matches {
-        unsafe {
-            libc::kill(pid, signal);
+    let matches = process_cmdline_matches_port(pid, port);
+    if !matches {
+        log::debug!("codex server pid {pid} did not match port {port}");
+        return false;
+    }
+    match platform::signal_pid(pid, signal) {
+        Ok(()) => {
+            log::info!("sent signal {signal} to codex app-server pid {pid} on port {port}");
+            true
+        }
+        Err(error) => {
+            log::warn!("failed to signal codex app-server pid {pid} on port {port}: {error}");
+            false
         }
     }
-    matches
+}
+
+fn process_cmdline_matches_port(pid: i32, port: u16) -> bool {
+    platform::process_command_line(pid)
+        .as_deref()
+        .is_some_and(|cmdline| server_cmdline_matches_port(cmdline.as_bytes(), port))
 }
 
 fn server_cmdline_matches_port(cmdline: &[u8], port: u16) -> bool {
     let expected = format!("ws://127.0.0.1:{port}");
-    cmdline
+    let matches_nul_arg = cmdline
         .split(|byte| *byte == 0)
-        .any(|arg| arg == expected.as_bytes())
+        .any(|arg| arg == expected.as_bytes());
+    let matches_text_arg = std::str::from_utf8(cmdline)
+        .ok()
+        .is_some_and(|cmdline| cmdline.split_whitespace().any(|arg| arg == expected));
+    matches_nul_arg || matches_text_arg
 }
 
-fn signal_port_owner(port: u16, signal: &str) {
-    let _ = std::process::Command::new("fuser")
-        .args(["-k", &format!("-{signal}"), &format!("{port}/tcp")])
-        .status();
+fn signal_port_owner(port: u16, signal: i32) {
+    for pid in platform::pids_listening_on_tcp_port(port) {
+        match platform::signal_pid(pid, signal) {
+            Ok(()) => {
+                log::info!("sent signal {signal} to TCP listener pid {pid} on port {port}");
+            }
+            Err(error) => {
+                log::warn!("failed to signal TCP listener pid {pid} on port {port}: {error}");
+            }
+        }
+    }
 }
 
 async fn run_loop(
@@ -1186,6 +1210,13 @@ mod tests {
     #[test]
     fn server_pid_signal_requires_matching_port_argument() {
         let cmdline = b"codex\0app-server\0--listen\0ws://127.0.0.1:32123\0";
+        assert!(server_cmdline_matches_port(cmdline, 32123));
+        assert!(!server_cmdline_matches_port(cmdline, 32124));
+    }
+
+    #[test]
+    fn server_pid_signal_matches_ps_style_command_line() {
+        let cmdline = b"codex app-server --listen ws://127.0.0.1:32123";
         assert!(server_cmdline_matches_port(cmdline, 32123));
         assert!(!server_cmdline_matches_port(cmdline, 32124));
     }

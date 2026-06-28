@@ -1640,16 +1640,17 @@ impl App {
 
         if !show_overlay {
             match mouse.kind {
-                MouseEventKind::Down(MouseButton::Left) if is_unmodified_left_button(mouse) => {
-                    if self.begin_pending_pane_click(mouse) {
-                        return;
-                    }
+                MouseEventKind::Down(MouseButton::Left)
+                    if is_unmodified_left_button(mouse) && self.begin_pending_pane_click(mouse) =>
+                {
+                    return;
                 }
-                MouseEventKind::Drag(MouseButton::Left) => {
-                    if self.pending_pane_click.is_some() || self.active_copy_selection.is_some() {
-                        self.update_copy_selection_drag(mouse);
-                        return;
-                    }
+                MouseEventKind::Drag(MouseButton::Left)
+                    if self.pending_pane_click.is_some()
+                        || self.active_copy_selection.is_some() =>
+                {
+                    self.update_copy_selection_drag(mouse);
+                    return;
                 }
                 MouseEventKind::Up(MouseButton::Left) => {
                     if self.active_copy_selection.is_some() {
@@ -3415,15 +3416,17 @@ impl App {
         if idx < self.agents.len() {
             if let Some(agent_config) = self.config.agents.get(idx) {
                 if stop_agent {
+                    if let Err(error) = self.adapters[idx].stop().await {
+                        log::warn!("failed to stop agent: {error}");
+                    }
                     // Extract window target from pane (e.g., "flowmux:1.0" -> "flowmux:1")
                     if let Some(colon_pos) = agent_config.pane.find(':')
                         && let Some(dot_pos) = agent_config.pane[colon_pos..].find('.')
                     {
                         let window_target = &agent_config.pane[..colon_pos + dot_pos];
-                        let _ = tmux::kill_window(window_target);
-                    }
-                    if let Err(error) = self.adapters[idx].stop().await {
-                        eprintln!("warning: failed to stop agent: {error}");
+                        if let Err(error) = tmux::kill_window(window_target) {
+                            log::warn!("failed to kill tmux window {window_target}: {error}");
+                        }
                     }
                 }
 
@@ -3442,10 +3445,7 @@ impl App {
                         &branch,
                         true,
                     ) {
-                        // Surface in the UI via a best-effort approach.
-                        // We cannot show a dialog here since we're already
-                        // tearing down — just emit to stderr.
-                        eprintln!("warning: failed to remove git worktree: {}", e);
+                        log::warn!("failed to remove git worktree: {e}");
                     }
                 }
             }
