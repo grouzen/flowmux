@@ -1,0 +1,129 @@
+---
+import HeroPanel from '../components/HeroPanel.astro';
+import SiteHeader from '../components/SiteHeader.astro';
+import BaseLayout from '../layouts/BaseLayout.astro';
+
+const features = [
+  {
+    title: 'Keyboard-first dashboard',
+    body: 'Manage multiple CLI agents from one terminal UI with fast hotkeys for the work that needs attention.',
+  },
+  {
+    title: 'Clean grid view',
+    body: 'Track running, waiting, and idle agents with model information and latest-response previews in the overview.',
+  },
+  {
+    title: 'Projects and worktrees',
+    body: 'Separate work by repo, task, or stream, then give agents their own working directories and optional git worktrees.',
+  },
+  {
+    title: 'Real terminal sessions',
+    body: 'Agent, git viewer, and shell views forward keys into live tmux panes instead of wrapping the agent UI.',
+  },
+  {
+    title: 'tmux-backed persistence',
+    body: 'Saved session state lets Flowmux reconnect to agents after tmux restarts so long-running work is easier to resume.',
+  },
+  {
+    title: 'Native Rust TUI',
+    body: 'Built with Ratatui, Tokio, tmux, libghostty-vt, and git2 for a focused terminal application.',
+  },
+];
+---
+
+<BaseLayout>
+  <main>
+    <section class="hero">
+      <SiteHeader />
+      <div class="hero-content">
+        <div class="hero-copy">
+          <p class="eyebrow">Terminal-native AI agent multiplexer</p>
+          <h1>Flowmux</h1>
+          <p class="lede">
+            Run, track, and switch between multiple CLI agents from one keyboard-first dashboard with tmux-backed persistence and real terminal sessions.
+          </p>
+          <div class="hero-actions">
+            <a class="button primary" href="#install">Install from source</a>
+            <a class="button secondary" href="https://github.com/grouzen/flowmux/releases">Download release</a>
+            <a class="button secondary" href="https://github.com/grouzen/flowmux">View on GitHub</a>
+          </div>
+        </div>
+        <HeroPanel />
+      </div>
+      <div class="signal-strip" aria-label="Flowmux capabilities">
+        <span>tmux panes</span>
+        <span>real CLI sessions</span>
+        <span>status hotkeys</span>
+        <span>project dashboards</span>
+      </div>
+    </section>
+
+    <section class="demo-section" aria-labelledby="demo-title">
+      <div>
+        <p class="eyebrow">Dashboard</p>
+        <h2 id="demo-title">A grid of active work, not a pile of hidden terminals.</h2>
+      </div>
+      <figure class="demo-frame">
+        <img src="/assets/flowmux-demo.gif" alt="Animated Flowmux terminal dashboard demo" loading="lazy" />
+      </figure>
+    </section>
+
+    <section class="section" id="features" aria-labelledby="features-title">
+      <div class="section-heading">
+        <p class="eyebrow">Why Flowmux</p>
+        <h2 id="features-title">Built for people who want hotkeys, persistence, and real agent sessions.</h2>
+      </div>
+      <div class="feature-grid">
+        {features.map((feature) => (
+          <article class="feature-card">
+            <h3>{feature.title}</h3>
+            <p>{feature.body}</p>
+          </article>
+        ))}
+      </div>
+    </section>
+
+    <section class="workflow" id="workflow" aria-labelledby="workflow-title">
+      <div class="section-heading">
+        <p class="eyebrow">Typical workflow</p>
+        <h2 id="workflow-title">Start in a repo, split the work, then jump to the agent that needs you.</h2>
+      </div>
+      <ol class="steps">
+        <li>
+          <span>01</span>
+          <strong>Start Flowmux in a repo.</strong>
+          <p>Open a tmux-backed dashboard where agents can work in the current repository or workspace.</p>
+        </li>
+        <li>
+          <span>02</span>
+          <strong>Create projects and agents.</strong>
+          <p>Group work by project, then add OpenCode, Claude Code, or Codex agents with separate directories.</p>
+        </li>
+        <li>
+          <span>03</span>
+          <strong>Move by status.</strong>
+          <p>Jump to running, waiting, or idle agents, open the full terminal, inspect git state, or use a persistent shell.</p>
+        </li>
+      </ol>
+    </section>
+
+    <section class="install" id="install" aria-labelledby="install-title">
+      <div>
+        <p class="eyebrow">Install</p>
+        <h2 id="install-title">Build the binary and launch Flowmux.</h2>
+        <p>Requires tmux and at least one supported agent CLI. Building from source also needs Rust 1.90+, Zig 0.15.x, and git.</p>
+      </div>
+      <div class="code-card">
+        <pre><code>git clone https://github.com/grouzen/flowmux.git
+cd flowmux
+./tools/build-release-prefetched-libghostty-vt.sh
+./target/release/flowmux</code></pre>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <span>Flowmux</span>
+    <a href="https://github.com/grouzen/flowmux">GitHub</a>
+  </footer>
+</BaseLayout>
