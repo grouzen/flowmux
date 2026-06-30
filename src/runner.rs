@@ -9,6 +9,7 @@ use crate::agents::opencode::OpenCodeAdapter;
 use crate::config::{AgentConfig, AgentKind};
 use crate::git;
 use crate::global_config::GlobalConfig;
+use crate::launch;
 use crate::models::AgentType;
 use crate::tmux;
 
@@ -201,10 +202,11 @@ impl AgentRunner {
                 let pane = format!("{}:{}.0", tmux::session_name(), window_index);
 
                 // Launch claude with the flowmux agent ID exported as an env var.
-                tmux::send_keys(
-                    &pane,
-                    &format!("FLOWMUX_AGENT_ID={} claude\n", flowmux_agent_id),
-                )?;
+                let args = vec![
+                    std::ffi::OsString::from("--flowmux-agent-id"),
+                    flowmux_agent_id.clone().into(),
+                ];
+                tmux::send_literal(&pane, &launch::flowmux_launch_command("claude", &args))?;
 
                 let runtime = self.claude.as_ref().unwrap();
                 let adapter = runtime.make_adapter(flowmux_agent_id.clone());
@@ -292,14 +294,15 @@ impl AgentRunner {
                 // Launch claude, exporting the flowmux agent ID.
                 // If we have a prior Claude session ID, resume it so the
                 // conversation context is preserved across restarts.
-                let claude_cmd = match session_id {
-                    Some(sid) => format!(
-                        "FLOWMUX_AGENT_ID={} claude --resume {}\n",
-                        flowmux_agent_id, sid
-                    ),
-                    None => format!("FLOWMUX_AGENT_ID={} claude\n", flowmux_agent_id),
-                };
-                tmux::send_keys(&new_pane, &claude_cmd)?;
+                let mut args = vec![
+                    std::ffi::OsString::from("--flowmux-agent-id"),
+                    flowmux_agent_id.clone().into(),
+                ];
+                if let Some(sid) = session_id {
+                    args.push(std::ffi::OsString::from("--session-id"));
+                    args.push(sid.clone().into());
+                }
+                tmux::send_literal(&new_pane, &launch::flowmux_launch_command("claude", &args))?;
 
                 let adapter = runtime.make_adapter(flowmux_agent_id.clone());
                 let mut new_config = config.clone();

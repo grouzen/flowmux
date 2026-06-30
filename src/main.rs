@@ -6,6 +6,7 @@ mod ghostty;
 mod git;
 mod global_config;
 mod host_terminal;
+mod launch;
 mod model_registry;
 mod models;
 mod runner;
@@ -16,7 +17,7 @@ mod ui;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 use agent_discovery::DiscoveredAgents;
 use app::App;
@@ -29,6 +30,9 @@ use runner::AgentRunner;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
     /// Name of the tmux session to use
     #[arg(long, default_value = "flowmux")]
     tmux_session: String,
@@ -42,6 +46,14 @@ struct Cli {
     /// Overrides the global config's `enabled_agents` setting.
     #[arg(long, value_delimiter = ',')]
     enabled_agents: Option<Vec<String>>,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum Commands {
+    Launch {
+        #[command(subcommand)]
+        command: launch::LaunchCommand,
+    },
 }
 
 /// Resolve the effective worktrees base directory.
@@ -85,8 +97,12 @@ fn acquire_session_lock(session: &str) -> Result<std::fs::File> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Parse CLI
     let cli = Cli::parse();
+
+    if let Some(Commands::Launch { command }) = cli.command.clone() {
+        return launch::run(command).await;
+    }
+
     let worktrees_base = resolve_worktrees_base(cli.git_worktrees_location);
 
     // Ensure only one instance runs per tmux session.

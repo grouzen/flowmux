@@ -13,6 +13,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::time::{interval, sleep};
 
 use crate::agents::AgentAdapter;
+use crate::launch;
 use crate::models::{AgentStatus, ContextInfo};
 use crate::tmux;
 
@@ -105,12 +106,8 @@ impl CodexAdapter {
     pub async fn create(dir: &str, name: &str) -> Result<(Self, usize)> {
         let port = find_free_port(16100);
         let created_at = unix_timestamp();
-        let (window_index, pane) = launch_server(dir, name, port).await?;
+        let window_index = launch(dir, name, port, None).await?;
         let adapter = Self::with_min_created_at(port, dir.to_owned(), None, created_at);
-
-        // Let the observer initialize before the TUI creates its thread.
-        sleep(Duration::from_millis(100)).await;
-        launch_tui(&pane, port, None)?;
         Ok((adapter, window_index))
     }
 
@@ -120,11 +117,9 @@ impl CodexAdapter {
         session_id: Option<&str>,
     ) -> Result<(Self, usize, u16)> {
         let port = find_free_port(16100);
-        let (window_index, pane) = launch_server(dir, name, port).await?;
+        let window_index = launch(dir, name, port, session_id).await?;
         let adapter =
             Self::with_min_created_at(port, dir.to_owned(), session_id.map(str::to_owned), 0);
-        sleep(Duration::from_millis(100)).await;
-        launch_tui(&pane, port, session_id)?;
         Ok((adapter, window_index, port))
     }
 }
@@ -165,19 +160,25 @@ impl AgentAdapter for CodexAdapter {
     }
 }
 
-async fn launch_server(dir: &str, name: &str, port: u16) -> Result<(usize, String)> {
+async fn launch(dir: &str, name: &str, port: u16, session_id: Option<&str>) -> Result<usize> {
     let window_index = tmux::new_window(dir, name)?;
     let pane = format!("{}:{}.0", tmux::session_name(), window_index);
-    let pid_path = server_pid_path(port);
-    let command = launch_server_command(port, &pid_path);
-    tmux::send_keys(&pane, &command)?;
+    let mut args = vec![
+        std::ffi::OsString::from("--port"),
+        std::ffi::OsString::from(port.to_string()),
+    ];
+    if let Some(session_id) = session_id {
+        args.push(std::ffi::OsString::from("--session-id"));
+        args.push(std::ffi::OsString::from(session_id));
+    }
+    tmux::send_literal(&pane, &launch::flowmux_launch_command("codex", &args))?;
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(500))
         .build()?;
     for _ in 0..25 {
         if app_server_ready(&client, port).await {
-            return Ok((window_index, pane));
+            return Ok(window_index);
         }
         sleep(Duration::from_millis(200)).await;
     }
@@ -187,13 +188,6 @@ async fn launch_server(dir: &str, name: &str, port: u16) -> Result<(usize, Strin
     ))
 }
 
-fn launch_server_command(port: u16, pid_path: &str) -> String {
-    format!(
-        "codex app-server --listen ws://127.0.0.1:{port} >/dev/null 2>&1 & \
-         FLOWMUX_CODEX_SERVER_PID=$!; printf '%s\\n' \"$FLOWMUX_CODEX_SERVER_PID\" >{pid_path}\n"
-    )
-}
-
 async fn app_server_ready(client: &reqwest::Client, port: u16) -> bool {
     let url = format!("http://127.0.0.1:{port}/readyz");
     client
@@ -201,19 +195,6 @@ async fn app_server_ready(client: &reqwest::Client, port: u16) -> bool {
         .send()
         .await
         .is_ok_and(|response| response.status().is_success())
-}
-
-fn launch_tui(pane: &str, port: u16, session_id: Option<&str>) -> Result<()> {
-    let remote = format!("ws://127.0.0.1:{port}");
-    let cleanup = format!(
-        "kill \"$FLOWMUX_CODEX_SERVER_PID\" 2>/dev/null; rm -f {}\n",
-        server_pid_path(port)
-    );
-    let command = match session_id {
-        Some(id) => format!("codex resume --remote {remote} {id}; {cleanup}"),
-        None => format!("codex --remote {remote}; {cleanup}"),
-    };
-    tmux::send_keys(pane, &command)
 }
 
 fn server_pid_path(port: u16) -> String {
@@ -1792,11 +1773,18 @@ mod tests {
     }
 
     #[test]
-    fn launch_server_command_discards_output_without_tmp_log() {
-        let command = launch_server_command(16123, "/tmp/flowmux-codex-16123.pid");
+    fn launch_command_uses_flowmux_subcommand() {
+        let command = crate::launch::flowmux_launch_command(
+            "codex",
+            &[
+                std::ffi::OsString::from("--port"),
+                std::ffi::OsString::from("16123"),
+            ],
+        );
 
-        assert!(command.contains(">/dev/null 2>&1 &"));
-        assert!(!command.contains(".log"));
+        assert!(command.contains("launch codex"));
+        assert!(command.contains("--port 16123"));
+        assert!(!command.contains("app-server"));
     }
 
     #[test]

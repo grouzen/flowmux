@@ -4763,7 +4763,10 @@ mod tests {
             AppState::TerminalView(tv) => assert_eq!(tv.agent_idx, 1),
             state => panic!("expected terminal view, got {state:?}"),
         }
-        assert_eq!(app.terminal_view_state.as_ref().map(|tv| tv.agent_idx), Some(1));
+        assert_eq!(
+            app.terminal_view_state.as_ref().map(|tv| tv.agent_idx),
+            Some(1)
+        );
     }
 
     #[test]
@@ -5093,7 +5096,10 @@ mod tests {
             AppState::TerminalView(tv) => assert_eq!(tv.agent_idx, 1),
             state => panic!("expected terminal view, got {state:?}"),
         }
-        assert_eq!(app.terminal_view_state.as_ref().map(|tv| tv.agent_idx), Some(1));
+        assert_eq!(
+            app.terminal_view_state.as_ref().map(|tv| tv.agent_idx),
+            Some(1)
+        );
     }
 
     #[test]
