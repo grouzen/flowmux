@@ -80,7 +80,7 @@ On first launch, Flowmux opens a tmux-backed dashboard where you can create agen
 
 ### Homebrew
 
-On Apple Silicon macOS, install Flowmux from the upstream tap with:
+On macOS, install Flowmux from the upstream tap with:
 
 ```bash
 brew install --cask grouzen/tap/flowmux
@@ -103,6 +103,14 @@ If you want a wrapper that reuses prefetched Ghostty inputs when present, use:
 ```bash
 ./tools/build-release-prefetched-libghostty-vt.sh
 ```
+
+On macOS, to build one universal binary that runs on both Apple Silicon and Intel Macs, use:
+
+```bash
+./tools/build-universal-macos-prefetched-libghostty-vt.sh
+```
+
+That writes the merged binary to `target/universal2-apple-darwin/release/flowmux`.
 
 You can also install directly from the repo:
 
