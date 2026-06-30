@@ -78,6 +78,14 @@ On first launch, Flowmux opens a tmux-backed dashboard where you can create agen
 
 ## Installation
 
+### Homebrew
+
+On Apple Silicon macOS, install Flowmux from the upstream tap with:
+
+```bash
+brew install --cask grouzen/tap/flowmux
+```
+
 ### From Source
 
 Build the release binary with:
