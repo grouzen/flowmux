@@ -1792,11 +1792,29 @@ impl App {
         self.agents.swap(self.selected, target);
         self.adapters.swap(self.selected, target);
         self.config.agents.swap(self.selected, target);
+        if self.agent_view_scroll.len() > self.selected.max(target) {
+            self.agent_view_scroll.swap(self.selected, target);
+        }
+        self.swap_terminal_pane_ownership(self.selected, target);
         self.card_scroll.swap(self.selected, target);
         let max_idx = self.selected.max(target);
         if self.card_response_heights.len() > max_idx {
             self.card_response_heights.swap(self.selected, target);
             self.card_response_widths.swap(self.selected, target);
+        }
+        if let Some(ref mut tv) = self.terminal_view_state {
+            if tv.agent_idx == self.selected {
+                tv.agent_idx = target;
+            } else if tv.agent_idx == target {
+                tv.agent_idx = self.selected;
+            }
+        }
+        if let AppState::TerminalView(ref mut tv) = self.state {
+            if tv.agent_idx == self.selected {
+                tv.agent_idx = target;
+            } else if tv.agent_idx == target {
+                tv.agent_idx = self.selected;
+            }
         }
         self.set_dashboard_selected(target);
         self.dirty = true;
@@ -2695,6 +2713,17 @@ impl App {
         self.state = AppState::Dashboard;
         self.terminal_view_state = None;
         self.dirty = true;
+    }
+
+    fn swap_terminal_pane_ownership(&mut self, first: usize, second: usize) {
+        let first_pane = self.terminal_panes.remove(&first);
+        let second_pane = self.terminal_panes.remove(&second);
+        if let Some(pane) = first_pane {
+            self.terminal_panes.insert(second, pane);
+        }
+        if let Some(pane) = second_pane {
+            self.terminal_panes.insert(first, pane);
+        }
     }
 
     fn reindex_state_after_agent_removal(&mut self, removed_idx: usize) {
@@ -4665,6 +4694,67 @@ mod tests {
 
         assert_eq!(app.selected, 1);
         assert_eq!(app.agents[app.selected].config.name, "work-b");
+    }
+
+    #[test]
+    fn moving_cards_swaps_terminal_pane_ownership_with_agents() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.agents = vec![
+            test_agent("one", "Default", AgentStatus::Idle),
+            test_agent("two", "Default", AgentStatus::Idle),
+        ];
+        app.adapters = vec![Box::new(NoopAdapter), Box::new(NoopAdapter)];
+        app.config.agents = app
+            .agents
+            .iter()
+            .map(|entry| entry.config.clone())
+            .collect();
+        app.selected = 0;
+        app.card_scroll = vec![0; app.agents.len()];
+        app.card_response_heights = vec![0; app.agents.len()];
+        app.card_response_widths = vec![0; app.agents.len()];
+        app.terminal_panes.insert(0, "flowmux:10.0".into());
+        app.terminal_panes.insert(1, "flowmux:11.0".into());
+
+        app.move_card(1);
+
+        assert_eq!(
+            app.terminal_panes.get(&0).map(String::as_str),
+            Some("flowmux:11.0")
+        );
+        assert_eq!(
+            app.terminal_panes.get(&1).map(String::as_str),
+            Some("flowmux:10.0")
+        );
+    }
+
+    #[test]
+    fn moving_cards_updates_live_terminal_view_owner() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.agents = vec![
+            test_agent("one", "Default", AgentStatus::Idle),
+            test_agent("two", "Default", AgentStatus::Idle),
+        ];
+        app.adapters = vec![Box::new(NoopAdapter), Box::new(NoopAdapter)];
+        app.config.agents = app
+            .agents
+            .iter()
+            .map(|entry| entry.config.clone())
+            .collect();
+        app.selected = 0;
+        app.card_scroll = vec![0; app.agents.len()];
+        app.card_response_heights = vec![0; app.agents.len()];
+        app.card_response_widths = vec![0; app.agents.len()];
+        app.terminal_view_state = Some(TerminalViewState::new(0, "flowmux:10.0".into()));
+        app.state = AppState::TerminalView(TerminalViewState::new(0, "flowmux:10.0".into()));
+
+        app.move_card(1);
+
+        match &app.state {
+            AppState::TerminalView(tv) => assert_eq!(tv.agent_idx, 1),
+            state => panic!("expected terminal view, got {state:?}"),
+        }
+        assert_eq!(app.terminal_view_state.as_ref().map(|tv| tv.agent_idx), Some(1));
     }
 
     #[test]
