@@ -11,16 +11,26 @@ env:
 
 jobs:
   build:
-    name: Build ${{ matrix.target }}
+    name: Build ${{ matrix.artifact_name }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - runner: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+            artifact_name: x86_64-unknown-linux-gnu
+            primary_target: x86_64-unknown-linux-gnu
+            install_targets: x86_64-unknown-linux-gnu
+            fetch_targets: x86_64-unknown-linux-gnu
+            build_script: ./tools/build-release-prefetched-libghostty-vt.sh --target x86_64-unknown-linux-gnu
+            package_binary: target/x86_64-unknown-linux-gnu/release/flowmux
           - runner: macos-latest
-            target: aarch64-apple-darwin
+            artifact_name: universal2-apple-darwin
+            primary_target: aarch64-apple-darwin
+            install_targets: aarch64-apple-darwin,x86_64-apple-darwin
+            fetch_targets: aarch64-apple-darwin x86_64-apple-darwin
+            build_script: ./tools/build-universal-macos-prefetched-libghostty-vt.sh
+            package_binary: target/universal2-apple-darwin/release/flowmux
 
     steps:
       - name: Check out repository
@@ -29,7 +39,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.install_targets }}
 
       - name: Install Zig
         uses: goto-bus-stop/setup-zig@v2
@@ -46,12 +56,16 @@ jobs:
             ~/.cargo/git/checkouts/
             target/
             vendor/ghostty-prefetch/
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('Cargo.lock', 'tools/prefetch-libghostty-vt.sh', 'tools/build-release-prefetched-libghostty-vt.sh') }}
+          key: ${{ runner.os }}-${{ matrix.artifact_name }}-cargo-${{ hashFiles('Cargo.lock', 'tools/prefetch-libghostty-vt.sh', 'tools/build-release-prefetched-libghostty-vt.sh', 'tools/build-universal-macos-prefetched-libghostty-vt.sh') }}
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.target }}-cargo-
+            ${{ runner.os }}-${{ matrix.artifact_name }}-cargo-
 
       - name: Fetch dependencies
-        run: cargo fetch --locked --target ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          for target in ${{ matrix.fetch_targets }}; do
+            cargo fetch --locked --target "$target"
+          done
 
       - name: Prefetch Ghostty build inputs
         run: ./tools/prefetch-libghostty-vt.sh
@@ -63,29 +77,30 @@ jobs:
           echo "LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast" >> "$GITHUB_ENV"
 
       - name: Run tests
-        run: cargo test --locked --target ${{ matrix.target }}
+        run: cargo test --locked --target ${{ matrix.primary_target }}
 
       - name: Run clippy
-        run: cargo clippy --locked --all-targets --all-features --target ${{ matrix.target }} -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features --target ${{ matrix.primary_target }} -- -D warnings
 
       - name: Build release binary
-        run: ./tools/build-release-prefetched-libghostty-vt.sh --target ${{ matrix.target }}
+        run: ${{ matrix.build_script }}
 
       - name: Package artifact
         env:
-          TARGET: ${{ matrix.target }}
+          ARTIFACT_NAME: ${{ matrix.artifact_name }}
+          PACKAGE_BINARY: ${{ matrix.package_binary }}
         run: |
           set -euo pipefail
           version="$(printf '%s' "$GITHUB_SHA" | cut -c1-7)"
-          package_dir="dist/flowmux-${version}-${TARGET}"
+          package_dir="dist/flowmux-${version}-${ARTIFACT_NAME}"
           mkdir -p "$package_dir"
-          cp target/"$TARGET"/release/flowmux "$package_dir"/flowmux
+          cp "$PACKAGE_BINARY" "$package_dir"/flowmux
           cp README.md "$package_dir"/README.md
-          tar -C dist -czf "dist/flowmux-${version}-${TARGET}.tar.gz" "$(basename "$package_dir")"
+          tar -C dist -czf "dist/flowmux-${version}-${ARTIFACT_NAME}.tar.gz" "$(basename "$package_dir")"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: flowmux-${{ matrix.target }}
+          name: flowmux-${{ matrix.artifact_name }}
           path: dist/flowmux-*.tar.gz
           if-no-files-found: error
