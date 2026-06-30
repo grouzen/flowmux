@@ -2697,6 +2697,48 @@ impl App {
         self.dirty = true;
     }
 
+    fn reindex_state_after_agent_removal(&mut self, removed_idx: usize) {
+        if removed_idx < self.agent_view_scroll.len() {
+            self.agent_view_scroll.remove(removed_idx);
+        }
+
+        let mut reindexed_terminal_panes =
+            std::collections::HashMap::with_capacity(self.terminal_panes.len());
+        for (agent_idx, pane) in self.terminal_panes.drain() {
+            if agent_idx == removed_idx {
+                continue;
+            }
+            let new_idx = if agent_idx > removed_idx {
+                agent_idx - 1
+            } else {
+                agent_idx
+            };
+            reindexed_terminal_panes.insert(new_idx, pane);
+        }
+        self.terminal_panes = reindexed_terminal_panes;
+
+        let mut clear_live_terminal_view = false;
+        if let AppState::TerminalView(ref mut tv) = self.state {
+            if tv.agent_idx == removed_idx {
+                clear_live_terminal_view = true;
+            } else if tv.agent_idx > removed_idx {
+                tv.agent_idx -= 1;
+            }
+        }
+        if let Some(ref mut tv) = self.terminal_view_state {
+            if tv.agent_idx == removed_idx {
+                clear_live_terminal_view = true;
+            } else if tv.agent_idx > removed_idx {
+                tv.agent_idx -= 1;
+            }
+        }
+        if clear_live_terminal_view {
+            self.clear_pane_copy_interaction();
+            self.state = AppState::Dashboard;
+            self.terminal_view_state = None;
+        }
+    }
+
     async fn handle_terminal_view_tick(&mut self) {
         let pane = match &self.state {
             AppState::TerminalView(tv) => tv.pane.clone(),
@@ -3382,9 +3424,7 @@ impl App {
                     true
                 }
             });
-            if idx < self.agent_view_scroll.len() {
-                self.agent_view_scroll.remove(idx);
-            }
+            self.reindex_state_after_agent_removal(idx);
             let _ = self.config.save();
             // Adjust selected if needed
             if self.selected >= self.agents.len() && !self.agents.is_empty() {
@@ -4834,6 +4874,122 @@ mod tests {
         assert_eq!(app.agent_view_scroll[0].view_scroll, 1);
         assert_eq!(app.agent_view_scroll[1].view_scroll, 3);
         assert_eq!(app.agent_view_scroll[1].viewport_height, Some(7));
+    }
+
+    #[test]
+    fn remove_agent_reindexes_terminal_pane_ownership() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.agents = vec![
+            test_agent("one", "Default", AgentStatus::Idle),
+            test_agent("two", "Default", AgentStatus::Idle),
+            test_agent("three", "Default", AgentStatus::Idle),
+        ];
+        app.adapters = vec![
+            Box::new(NoopAdapter),
+            Box::new(NoopAdapter),
+            Box::new(NoopAdapter),
+        ];
+        app.config.agents = app
+            .agents
+            .iter()
+            .map(|entry| entry.config.clone())
+            .collect();
+        app.terminal_panes.insert(0, "flowmux:10.0".into());
+        app.terminal_panes.insert(2, "flowmux:12.0".into());
+
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(app.remove_agent(1, false, false));
+
+        assert_eq!(app.terminal_panes.len(), 2);
+        assert_eq!(
+            app.terminal_panes.get(&0).map(String::as_str),
+            Some("flowmux:10.0")
+        );
+        assert_eq!(
+            app.terminal_panes.get(&1).map(String::as_str),
+            Some("flowmux:12.0")
+        );
+    }
+
+    #[test]
+    fn remove_agent_drops_removed_terminal_pane_cache() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.agents = vec![
+            test_agent("one", "Default", AgentStatus::Idle),
+            test_agent("two", "Default", AgentStatus::Idle),
+        ];
+        app.adapters = vec![Box::new(NoopAdapter), Box::new(NoopAdapter)];
+        app.config.agents = app
+            .agents
+            .iter()
+            .map(|entry| entry.config.clone())
+            .collect();
+        app.terminal_panes.insert(1, "flowmux:11.0".into());
+
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(app.remove_agent(1, false, false));
+
+        assert!(app.terminal_panes.is_empty());
+    }
+
+    #[test]
+    fn remove_agent_reindexes_live_terminal_view_owner() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.agents = vec![
+            test_agent("one", "Default", AgentStatus::Idle),
+            test_agent("two", "Default", AgentStatus::Idle),
+            test_agent("three", "Default", AgentStatus::Idle),
+        ];
+        app.adapters = vec![
+            Box::new(NoopAdapter),
+            Box::new(NoopAdapter),
+            Box::new(NoopAdapter),
+        ];
+        app.config.agents = app
+            .agents
+            .iter()
+            .map(|entry| entry.config.clone())
+            .collect();
+        app.terminal_view_state = Some(TerminalViewState::new(2, "flowmux:12.0".into()));
+        app.state = AppState::TerminalView(TerminalViewState::new(2, "flowmux:12.0".into()));
+
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(app.remove_agent(1, false, false));
+
+        match &app.state {
+            AppState::TerminalView(tv) => assert_eq!(tv.agent_idx, 1),
+            state => panic!("expected terminal view, got {state:?}"),
+        }
+        assert_eq!(app.terminal_view_state.as_ref().map(|tv| tv.agent_idx), Some(1));
+    }
+
+    #[test]
+    fn remove_agent_clears_live_terminal_view_for_removed_owner() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.agents = vec![
+            test_agent("one", "Default", AgentStatus::Idle),
+            test_agent("two", "Default", AgentStatus::Idle),
+        ];
+        app.adapters = vec![Box::new(NoopAdapter), Box::new(NoopAdapter)];
+        app.config.agents = app
+            .agents
+            .iter()
+            .map(|entry| entry.config.clone())
+            .collect();
+        app.terminal_view_state = Some(TerminalViewState::new(1, "flowmux:11.0".into()));
+        app.state = AppState::TerminalView(TerminalViewState::new(1, "flowmux:11.0".into()));
+        app.terminal_panes.insert(1, "flowmux:11.0".into());
+
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(app.remove_agent(1, false, false));
+
+        assert!(matches!(app.state, AppState::Dashboard));
+        assert!(app.terminal_view_state.is_none());
+        assert!(app.terminal_panes.is_empty());
     }
 
     #[test]
