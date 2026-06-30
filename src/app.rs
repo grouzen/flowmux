@@ -2730,6 +2730,15 @@ impl App {
         if removed_idx < self.agent_view_scroll.len() {
             self.agent_view_scroll.remove(removed_idx);
         }
+        if removed_idx < self.card_scroll.len() {
+            self.card_scroll.remove(removed_idx);
+        }
+        if removed_idx < self.card_response_heights.len() {
+            self.card_response_heights.remove(removed_idx);
+        }
+        if removed_idx < self.card_response_widths.len() {
+            self.card_response_widths.remove(removed_idx);
+        }
 
         let mut reindexed_terminal_panes =
             std::collections::HashMap::with_capacity(self.terminal_panes.len());
@@ -4964,6 +4973,37 @@ mod tests {
         assert_eq!(app.agent_view_scroll[0].view_scroll, 1);
         assert_eq!(app.agent_view_scroll[1].view_scroll, 3);
         assert_eq!(app.agent_view_scroll[1].viewport_height, Some(7));
+    }
+
+    #[test]
+    fn remove_agent_keeps_card_scroll_entries_aligned() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.agents = vec![
+            test_agent("one", "Default", AgentStatus::Idle),
+            test_agent("two", "Default", AgentStatus::Idle),
+            test_agent("three", "Default", AgentStatus::Idle),
+        ];
+        app.adapters = vec![
+            Box::new(NoopAdapter),
+            Box::new(NoopAdapter),
+            Box::new(NoopAdapter),
+        ];
+        app.config.agents = app
+            .agents
+            .iter()
+            .map(|entry| entry.config.clone())
+            .collect();
+        app.card_scroll = vec![4, 9, 2];
+        app.card_response_heights = vec![11, 12, 13];
+        app.card_response_widths = vec![81, 82, 83];
+
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(app.remove_agent(1, false, false));
+
+        assert_eq!(app.card_scroll, vec![4, 2]);
+        assert_eq!(app.card_response_heights, vec![11, 13]);
+        assert_eq!(app.card_response_widths, vec![81, 83]);
     }
 
     #[test]
