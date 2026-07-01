@@ -29,7 +29,27 @@ const features = [
   },
 ];
 
-const agents = ['Claude Code', 'Codex', 'OpenCode'];
+const installMethods = [
+  {
+    id: 'homebrew',
+    label: 'Homebrew',
+    command: `brew install grouzen/tap/flowmux`,
+  },
+  {
+    id: 'macos',
+    label: 'From source on macOS',
+    command: `git clone https://github.com/grouzen/flowmux.git
+cd flowmux
+./tools/build-universal-macos-prefetched-libghostty-vt.sh`,
+  },
+  {
+    id: 'linux',
+    label: 'From source on Linux',
+    command: `git clone https://github.com/grouzen/flowmux.git
+cd flowmux
+./tools/build-release-prefetched-libghostty-vt.sh`,
+  },
+];
 ---
 
 <BaseLayout>
@@ -115,51 +135,67 @@ const agents = ['Claude Code', 'Codex', 'OpenCode'];
         <h2 id="agents-title">Use the CLI agents already in your terminal.</h2>
       </div>
       <ul class="agent-list" aria-label="Supported Flowmux agents">
-        {agents.map((agent) => (
-          <li>{agent}</li>
-        ))}
+        <li>
+          <img src="/assets/agents/claude.svg" alt="" width="32" height="32" loading="lazy" />
+          <span>Claude Code</span>
+        </li>
+        <li>
+          <img src="/assets/agents/codex.svg" alt="" width="32" height="32" loading="lazy" />
+          <span>Codex</span>
+        </li>
+        <li>
+          <img src="/assets/agents/opencode.svg" alt="" width="32" height="32" loading="lazy" />
+          <span>Opencode</span>
+        </li>
       </ul>
       <p class="section-note">
         Flowmux auto-detects installed agent CLIs and enables discovered agents by default unless you configure an explicit allowlist.
       </p>
     </section>
 
-    <section class="install" id="install" aria-labelledby="install-title">
+    <section class="install" id="install" aria-label="Install">
       <div>
         <p class="eyebrow">Install</p>
-        <h2 id="install-title">Install Flowmux.</h2>
         <p>Requires tmux and at least one supported agent CLI. Homebrew is the preferred path on supported systems.</p>
         <a class="text-link" href="https://github.com/grouzen/flowmux/releases">Prebuilt Linux and macOS binaries are available on GitHub Releases.</a>
       </div>
       <div class="install-options">
-        <article class="install-option">
-          <h3>Homebrew</h3>
-          <div class="code-card">
-            <pre><code>brew install grouzen/tap/flowmux
-flowmux</code></pre>
-          </div>
-        </article>
-        <article class="install-option">
-          <h3>From source on macOS</h3>
-          <div class="code-card">
-            <pre><code>git clone https://github.com/grouzen/flowmux.git
-cd flowmux
-./tools/build-release-prefetched-libghostty-vt.sh
-./target/release/flowmux</code></pre>
-          </div>
-        </article>
-        <article class="install-option">
-          <h3>From source on Linux</h3>
-          <div class="code-card">
-            <pre><code>git clone https://github.com/grouzen/flowmux.git
-cd flowmux
-cargo build --release --locked
-./target/release/flowmux</code></pre>
-          </div>
-        </article>
+        <div class="install-tabs" role="tablist" aria-label="Installation methods">
+          {installMethods.map((method, index) => (
+            <button class="install-tab" type="button" role="tab" aria-selected={index === 0 ? 'true' : 'false'} aria-controls={`install-panel-${method.id}`} id={`install-tab-${method.id}`} data-install-tab={method.id}>
+              {method.label}
+            </button>
+          ))}
+        </div>
+        {installMethods.map((method, index) => (
+          <article class="install-panel" id={`install-panel-${method.id}`} role="tabpanel" aria-labelledby={`install-tab-${method.id}`} data-install-panel={method.id} hidden={index !== 0}>
+            <div class="code-card">
+              <pre><code>{method.command}</code></pre>
+            </div>
+          </article>
+        ))}
       </div>
     </section>
   </main>
+
+  <script>
+    const tabs = document.querySelectorAll<HTMLButtonElement>('[data-install-tab]');
+    const panels = document.querySelectorAll<HTMLElement>('[data-install-panel]');
+
+    for (const tab of tabs) {
+      tab.addEventListener('click', () => {
+        const selected = tab.dataset.installTab;
+
+        for (const item of tabs) {
+          item.setAttribute('aria-selected', String(item === tab));
+        }
+
+        for (const panel of panels) {
+          panel.hidden = panel.dataset.installPanel !== selected;
+        }
+      });
+    }
+  </script>
 
   <footer class="site-footer">
     <span><span class="heart" aria-hidden="true">♥</span> Flowmux</span>
