@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::io::BufRead;
 use std::net::TcpListener as StdTcpListener;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::extract::Extension;
 use axum::http::{HeaderMap, StatusCode};
@@ -11,6 +12,8 @@ use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::models::AgentStatus;
+
+const SESSION_END_GRACE: Duration = Duration::from_millis(1500);
 
 // ---------------------------------------------------------------------------
 // Shared state types
@@ -27,6 +30,7 @@ pub struct ClaudeHookState {
     pub context_used: Option<u64>,
     /// Sum of all `TurnDuration` system-entry `durationMs` values in the transcript.
     pub total_work_ms: u64,
+    pub pending_stop_until: Option<Instant>,
 }
 
 impl Default for ClaudeHookState {
@@ -40,7 +44,45 @@ impl Default for ClaudeHookState {
             transcript_path: None,
             context_used: None,
             total_work_ms: 0,
+            pending_stop_until: None,
         }
+    }
+}
+
+impl ClaudeHookState {
+    pub fn reported_status(&self) -> AgentStatus {
+        self.reported_status_at(Instant::now())
+    }
+
+    fn reported_status_at(&self, now: Instant) -> AgentStatus {
+        if self
+            .pending_stop_until
+            .is_some_and(|deadline| now >= deadline)
+        {
+            AgentStatus::Stopped
+        } else {
+            self.status.clone()
+        }
+    }
+
+    fn is_new_session(&self, session_id: Option<&str>, transcript_path: Option<&str>) -> bool {
+        self.session_id
+            .as_deref()
+            .zip(session_id)
+            .is_some_and(|(old, new)| old != new)
+            || self
+                .transcript_path
+                .as_deref()
+                .zip(transcript_path)
+                .is_some_and(|(old, new)| old != new)
+    }
+
+    fn reset_session_meta(&mut self) {
+        self.first_prompt = None;
+        self.last_model_response = None;
+        self.model_name = None;
+        self.context_used = None;
+        self.total_work_ms = 0;
     }
 }
 
@@ -131,9 +173,17 @@ async fn hook_handler(
 
             let mut map = state.hook_state.lock().unwrap();
             if let Some(entry) = map.get_mut(&agent_id) {
+                let is_new_session =
+                    entry.is_new_session(session_id.as_deref(), transcript_path.as_deref());
+                if is_new_session {
+                    entry.reset_session_meta();
+                }
+                entry.pending_stop_until = None;
                 entry.session_id = session_id;
                 entry.transcript_path = transcript_path;
-                if model_name.is_some() {
+                if is_new_session {
+                    entry.model_name = model_name;
+                } else if model_name.is_some() {
                     entry.model_name = model_name;
                 }
                 entry.status = AgentStatus::Running;
@@ -148,18 +198,11 @@ async fn hook_handler(
 
             let mut map = state.hook_state.lock().unwrap();
             if let Some(entry) = map.get_mut(&agent_id) {
-                if entry.first_prompt.is_none() {
+                entry.pending_stop_until = None;
+                let is_real_prompt = is_real_user_prompt(prompt.as_deref());
+                if entry.first_prompt.is_none() && is_real_prompt {
                     entry.first_prompt = prompt.clone();
                 }
-                // Only set status to Running if this is a real user prompt (not internal scaffolding)
-                let is_real_prompt = prompt
-                    .as_ref()
-                    .map(|p| {
-                        let trimmed = p.trim_start();
-                        !trimmed.is_empty() && !trimmed.starts_with('<')
-                    })
-                    .unwrap_or(false);
-
                 if is_real_prompt {
                     entry.status = AgentStatus::Running;
                 }
@@ -193,6 +236,7 @@ async fn hook_handler(
 
             let mut map = state.hook_state.lock().unwrap();
             if let Some(entry) = map.get_mut(&agent_id) {
+                entry.pending_stop_until = None;
                 // Prefer the payload's last_assistant_message (guaranteed
                 // fresh) over the transcript-parsed text.  Fall back to the
                 // transcript value so that tool-use-only turns (no text in
@@ -239,13 +283,14 @@ async fn hook_handler(
         "SessionEnd" => {
             let mut map = state.hook_state.lock().unwrap();
             if let Some(entry) = map.get_mut(&agent_id) {
-                entry.status = AgentStatus::Stopped;
+                entry.pending_stop_until = Some(Instant::now() + SESSION_END_GRACE);
             }
         }
 
         "PreToolUse" | "PostToolUse" | "SubagentStop" => {
             let mut map = state.hook_state.lock().unwrap();
             if let Some(entry) = map.get_mut(&agent_id) {
+                entry.pending_stop_until = None;
                 entry.status = AgentStatus::Running;
             }
         }
@@ -253,6 +298,7 @@ async fn hook_handler(
         "PermissionRequest" => {
             let mut map = state.hook_state.lock().unwrap();
             if let Some(entry) = map.get_mut(&agent_id) {
+                entry.pending_stop_until = None;
                 entry.status = AgentStatus::WaitingForInput;
             }
         }
@@ -265,6 +311,7 @@ async fn hook_handler(
         "Notification" => {
             let mut map = state.hook_state.lock().unwrap();
             if let Some(entry) = map.get_mut(&agent_id) {
+                entry.pending_stop_until = None;
                 entry.status = AgentStatus::WaitingForInput;
             }
         }
@@ -296,6 +343,17 @@ fn session_id_from_transcript_path(transcript_path: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn is_real_user_prompt(prompt: Option<&str>) -> bool {
+    let Some(prompt) = prompt else {
+        return false;
+    };
+    let trimmed = prompt.trim_start();
+    if trimmed.is_empty() || trimmed.starts_with('<') {
+        return false;
+    }
+    !matches!(trimmed.split_whitespace().next(), Some("/clear" | "/new"))
 }
 
 // ---------------------------------------------------------------------------
@@ -500,7 +558,53 @@ fn parse_ts_ms(ts: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::HeaderValue;
+    use serde_json::json;
     use std::io::Write;
+    use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+
+    const AGENT_ID: &str = "agent-1";
+
+    fn hook_headers(agent_id: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-flowmux-agent-id",
+            HeaderValue::from_str(agent_id).unwrap(),
+        );
+        headers
+    }
+
+    fn test_hook_state(
+        entry: ClaudeHookState,
+    ) -> (
+        HookStateMap,
+        UnboundedSender<HookPersistEvent>,
+        UnboundedReceiver<HookPersistEvent>,
+    ) {
+        let hook_state: HookStateMap = Arc::new(Mutex::new(HashMap::new()));
+        hook_state
+            .lock()
+            .unwrap()
+            .insert(AGENT_ID.to_owned(), entry);
+        let (persist_tx, persist_rx) = unbounded_channel();
+        (hook_state, persist_tx, persist_rx)
+    }
+
+    async fn send_hook(
+        hook_state: HookStateMap,
+        persist_tx: UnboundedSender<HookPersistEvent>,
+        body: Value,
+    ) -> StatusCode {
+        hook_handler(
+            hook_headers(AGENT_ID),
+            Extension(HookServerState {
+                hook_state,
+                persist_tx,
+            }),
+            Json(body),
+        )
+        .await
+    }
 
     fn make_transcript(lines: &[&str]) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("flowmux-test-{}", uuid::Uuid::new_v4()));
@@ -524,6 +628,147 @@ mod tests {
     const ASSISTANT_T5: &str = r#"{"type":"assistant","message":{"id":"m1","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"hi"}],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":100,"output_tokens":50}},"uuid":"a1","parentUuid":"u1","isSidechain":false,"sessionId":"s1","timestamp":"2026-01-01T00:00:05.000Z"}"#;
     const TOOL_RESULT_T50: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu1","content":"result"}]},"uuid":"tr1","parentUuid":"a1","isSidechain":false,"sessionId":"s1","timestamp":"2026-01-01T00:00:50.000Z"}"#;
     const ASSISTANT_T60: &str = r#"{"type":"assistant","message":{"id":"m2","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"done"}],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":200,"output_tokens":100}},"uuid":"a2","parentUuid":"tr1","isSidechain":false,"sessionId":"s1","timestamp":"2026-01-01T00:01:00.000Z"}"#;
+
+    #[test]
+    fn session_end_reports_stopped_only_after_grace() {
+        let now = Instant::now();
+        let entry = ClaudeHookState {
+            status: AgentStatus::Idle,
+            pending_stop_until: Some(now + SESSION_END_GRACE),
+            ..ClaudeHookState::default()
+        };
+
+        assert_eq!(entry.reported_status_at(now), AgentStatus::Idle);
+        assert_eq!(
+            entry.reported_status_at(now + SESSION_END_GRACE + Duration::from_millis(1)),
+            AgentStatus::Stopped
+        );
+    }
+
+    #[tokio::test]
+    async fn session_end_followed_by_new_start_resets_meta_without_stopping() {
+        let entry = ClaudeHookState {
+            status: AgentStatus::Idle,
+            first_prompt: Some("Old prompt".to_owned()),
+            last_model_response: Some("Old response".to_owned()),
+            model_name: Some("claude-old".to_owned()),
+            session_id: Some("session-old".to_owned()),
+            transcript_path: Some("/tmp/session-old.jsonl".to_owned()),
+            context_used: Some(123),
+            total_work_ms: 456,
+            pending_stop_until: None,
+        };
+        let (hook_state, persist_tx, mut persist_rx) = test_hook_state(entry);
+
+        let status = send_hook(
+            hook_state.clone(),
+            persist_tx.clone(),
+            json!({"hook_event_name": "SessionEnd"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        {
+            let map = hook_state.lock().unwrap();
+            let entry = map.get(AGENT_ID).unwrap();
+            assert_eq!(entry.reported_status(), AgentStatus::Idle);
+            assert!(entry.pending_stop_until.is_some());
+        }
+
+        let status = send_hook(
+            hook_state.clone(),
+            persist_tx,
+            json!({
+                "hook_event_name": "SessionStart",
+                "session_id": "session-new",
+                "transcript_path": "/tmp/session-new.jsonl",
+                "model": "claude-new"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let persisted = persist_rx.try_recv().unwrap();
+        assert_eq!(persisted.flowmux_agent_id, AGENT_ID);
+        assert_eq!(persisted.session_id.as_deref(), Some("session-new"));
+        assert_eq!(
+            persisted.transcript_path.as_deref(),
+            Some("/tmp/session-new.jsonl")
+        );
+
+        let map = hook_state.lock().unwrap();
+        let entry = map.get(AGENT_ID).unwrap();
+        assert_eq!(entry.reported_status(), AgentStatus::Running);
+        assert_eq!(entry.session_id.as_deref(), Some("session-new"));
+        assert_eq!(
+            entry.transcript_path.as_deref(),
+            Some("/tmp/session-new.jsonl")
+        );
+        assert_eq!(entry.first_prompt, None);
+        assert_eq!(entry.last_model_response, None);
+        assert_eq!(entry.context_used, None);
+        assert_eq!(entry.total_work_ms, 0);
+        assert_eq!(entry.model_name.as_deref(), Some("claude-new"));
+        assert_eq!(entry.pending_stop_until, None);
+    }
+
+    #[tokio::test]
+    async fn same_session_start_clears_pending_stop_without_resetting_meta() {
+        let entry = ClaudeHookState {
+            status: AgentStatus::Idle,
+            first_prompt: Some("Old prompt".to_owned()),
+            last_model_response: Some("Old response".to_owned()),
+            model_name: Some("claude-old".to_owned()),
+            session_id: Some("session-old".to_owned()),
+            transcript_path: Some("/tmp/session-old.jsonl".to_owned()),
+            context_used: Some(123),
+            total_work_ms: 456,
+            pending_stop_until: Some(Instant::now() + SESSION_END_GRACE),
+        };
+        let (hook_state, persist_tx, _) = test_hook_state(entry);
+
+        let status = send_hook(
+            hook_state.clone(),
+            persist_tx,
+            json!({
+                "hook_event_name": "SessionStart",
+                "session_id": "session-old",
+                "transcript_path": "/tmp/session-old.jsonl"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let map = hook_state.lock().unwrap();
+        let entry = map.get(AGENT_ID).unwrap();
+        assert_eq!(entry.reported_status(), AgentStatus::Running);
+        assert_eq!(entry.first_prompt.as_deref(), Some("Old prompt"));
+        assert_eq!(entry.last_model_response.as_deref(), Some("Old response"));
+        assert_eq!(entry.context_used, Some(123));
+        assert_eq!(entry.total_work_ms, 456);
+        assert_eq!(entry.model_name.as_deref(), Some("claude-old"));
+        assert_eq!(entry.pending_stop_until, None);
+    }
+
+    #[tokio::test]
+    async fn reset_slash_commands_are_not_recorded_as_first_prompt() {
+        let (hook_state, persist_tx, _) = test_hook_state(ClaudeHookState::default());
+
+        let status = send_hook(
+            hook_state.clone(),
+            persist_tx,
+            json!({
+                "hook_event_name": "UserPromptSubmit",
+                "prompt": "/clear"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let map = hook_state.lock().unwrap();
+        let entry = map.get(AGENT_ID).unwrap();
+        assert_eq!(entry.first_prompt, None);
+        assert_eq!(entry.status, AgentStatus::Idle);
+    }
 
     #[test]
     fn parse_transcript_skips_tool_results() {
