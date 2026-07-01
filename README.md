@@ -81,6 +81,14 @@ On first launch, Flowmux opens a tmux-backed dashboard where you can create agen
 
 ## Installation
 
+### Script
+
+Install the latest Flowmux release on Linux or macOS with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/grouzen/flowmux/main/install.sh | sh
+```
+
 ### Homebrew
 
 On macOS, install Flowmux from the upstream tap with:
