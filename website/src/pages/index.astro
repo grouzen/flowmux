@@ -48,7 +48,8 @@ const installMethods = [
     label: 'From source on macOS',
     command: `git clone https://github.com/grouzen/flowmux.git
 cd flowmux
-./tools/build-universal-macos-prefetched-libghostty-vt.sh`,
+./tools/build-universal-macos-prefetched-libghostty-vt.sh
+# first run may install Rust macOS targets via rustup`,
   },
   {
     id: 'linux',

@@ -121,6 +121,8 @@ On macOS, to build one universal binary that runs on both Apple Silicon and Inte
 ./tools/build-universal-macos-prefetched-libghostty-vt.sh
 ```
 
+If the required Rust macOS targets are not installed yet, the script installs `aarch64-apple-darwin` and `x86_64-apple-darwin` through `rustup` before building.
+
 That writes the merged binary to `target/universal2-apple-darwin/release/flowmux`.
 
 You can also install directly from the repo:

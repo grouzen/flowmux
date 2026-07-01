@@ -9,6 +9,17 @@ UNIVERSAL_TARGET_DIR="$ROOT_DIR/target/universal2-apple-darwin/release"
 
 source "$ROOT_DIR/tools/prefetch-libghostty-vt.sh"
 
+ensure_rust_target_installed() {
+    local target="$1"
+
+    if rustup target list --installed | grep -Fxq "$target"; then
+        return
+    fi
+
+    echo "installing missing Rust target: $target"
+    rustup target add "$target"
+}
+
 if ! prefetched_inputs_ready; then
     main
 fi
@@ -18,6 +29,11 @@ export GHOSTTY_ZIG_SYSTEM_DIR="$PREFETCH_ROOT/zig-system"
 export LIBGHOSTTY_VT_SYS_OPTIMIZE="${LIBGHOSTTY_VT_SYS_OPTIMIZE:-ReleaseFast}"
 
 cd "$ROOT_DIR"
+
+need_cmd rustup
+need_cmd lipo
+ensure_rust_target_installed "$TARGET_AARCH64"
+ensure_rust_target_installed "$TARGET_X86_64"
 
 cargo build --release --locked --target "$TARGET_AARCH64" "$@"
 cargo build --release --locked --target "$TARGET_X86_64" "$@"
