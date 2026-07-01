@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
 use crate::agents::AgentAdapter;
+use crate::launch;
 use crate::models::{AgentStatus, ContextInfo};
 use crate::tmux;
 
@@ -84,11 +85,15 @@ async fn launch(
     let window_index = tmux::new_window(dir, name)?;
     let pane = format!("{}:{}.0", tmux::session_name(), window_index);
 
-    let cmd = match session_id {
-        Some(sid) => format!("opencode --port {} --session {}\n", port, sid),
-        None => format!("opencode --port {}\n", port),
-    };
-    tmux::send_keys(&pane, &cmd)?;
+    let mut args = vec![
+        std::ffi::OsString::from("--port"),
+        std::ffi::OsString::from(port.to_string()),
+    ];
+    if let Some(sid) = session_id {
+        args.push(std::ffi::OsString::from("--session-id"));
+        args.push(std::ffi::OsString::from(sid));
+    }
+    tmux::send_literal(&pane, &launch::flowmux_launch_command("opencode", &args))?;
 
     let client = Client::new();
     let health_url = format!("http://127.0.0.1:{}/global/health", port);
