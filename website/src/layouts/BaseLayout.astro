@@ -18,7 +18,7 @@ const {
     <meta charset="UTF-8" />
     <meta name="description" content={description} />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#0e1411" />
+    <meta name="theme-color" content="#f6f3ec" />
     <meta property="og:type" content="website" />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
@@ -28,9 +28,53 @@ const {
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content="/assets/flowmux-demo.gif" />
     <link rel="icon" type="image/png" href="/assets/brand/flowmux-mark.png" />
+    <script is:inline>
+      const storedTheme = localStorage.getItem('flowmux-theme');
+      const systemTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      const theme = storedTheme || systemTheme;
+
+      document.documentElement.dataset.theme = theme;
+      document.documentElement.style.colorScheme = theme;
+      document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#10100e' : '#f6f3ec');
+    </script>
     <title>{title}</title>
   </head>
   <body>
     <slot />
+    <script>
+      const themeButtons = document.querySelectorAll<HTMLButtonElement>('[data-theme-toggle]');
+      const media = window.matchMedia('(prefers-color-scheme: dark)');
+
+      function preferredTheme() {
+        return localStorage.getItem('flowmux-theme') || (media.matches ? 'dark' : 'light');
+      }
+
+      function applyTheme(theme: string) {
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.style.colorScheme = theme;
+        document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#10100e' : '#f6f3ec');
+
+        for (const button of themeButtons) {
+          button.setAttribute('aria-pressed', String(theme === 'dark'));
+          button.setAttribute('aria-label', theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme');
+        }
+      }
+
+      for (const button of themeButtons) {
+        button.addEventListener('click', () => {
+          const nextTheme = preferredTheme() === 'dark' ? 'light' : 'dark';
+          localStorage.setItem('flowmux-theme', nextTheme);
+          applyTheme(nextTheme);
+        });
+      }
+
+      media.addEventListener('change', () => {
+        if (!localStorage.getItem('flowmux-theme')) {
+          applyTheme(preferredTheme());
+        }
+      });
+
+      applyTheme(preferredTheme());
+    </script>
   </body>
 </html>

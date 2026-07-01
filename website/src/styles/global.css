@@ -1,7 +1,9 @@
 :root {
   --paper: #f6f3ec;
+  --paper-rgb: 246, 243, 236;
   --paper-soft: #ebe5da;
   --ink: #11110f;
+  --ink-rgb: 17, 17, 15;
   --ink-soft: #4d4941;
   --muted: #777065;
   --line: rgba(17, 17, 15, 0.14);
@@ -11,6 +13,21 @@
   --accent-soft: #ead8cc;
   --radius: 8px;
   font-family: "IBM Plex Mono", "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+}
+
+[data-theme="dark"] {
+  --paper: #10100e;
+  --paper-rgb: 16, 16, 14;
+  --paper-soft: #1d1b18;
+  --ink: #f7f1e6;
+  --ink-rgb: 247, 241, 230;
+  --ink-soft: #c8bfb0;
+  --muted: #918879;
+  --line: rgba(247, 241, 230, 0.14);
+  --line-strong: rgba(247, 241, 230, 0.3);
+  --wash: rgba(247, 241, 230, 0.05);
+  --accent: #d97757;
+  --accent-soft: #3b241c;
 }
 
 * {
@@ -27,8 +44,8 @@ body {
   margin: 0;
   min-width: 320px;
   background:
-    linear-gradient(90deg, rgba(17, 17, 15, 0.025) 1px, transparent 1px),
-    linear-gradient(var(--paper) 0%, #fbfaf6 44%, var(--paper) 100%);
+    linear-gradient(90deg, rgba(var(--ink-rgb), 0.025) 1px, transparent 1px),
+    linear-gradient(var(--paper) 0%, rgba(var(--ink-rgb), 0.025) 44%, var(--paper) 100%);
   background-size: 96px 100%, auto;
 }
 
@@ -70,6 +87,7 @@ main {
 .brand {
   display: inline-flex;
   align-items: center;
+  position: relative;
   width: 154px;
   height: 58px;
   overflow: hidden;
@@ -79,6 +97,18 @@ main {
   display: block;
   width: 154px;
   height: auto;
+}
+
+.theme-asset-dark {
+  display: none;
+}
+
+[data-theme="dark"] .theme-asset-light {
+  display: none;
+}
+
+[data-theme="dark"] .theme-asset-dark {
+  display: block;
 }
 
 .nav {
@@ -105,6 +135,35 @@ main {
   gap: 7px;
 }
 
+.theme-toggle {
+  display: inline-grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--ink-soft);
+  background: rgba(var(--paper-rgb), 0.36);
+  cursor: pointer;
+}
+
+.theme-toggle:hover {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+.theme-icon-sun {
+  display: none;
+}
+
+[data-theme="dark"] .theme-icon-sun {
+  display: block;
+}
+
+[data-theme="dark"] .theme-icon-moon {
+  display: none;
+}
+
 .hero {
   min-height: 96vh;
   padding-bottom: 64px;
@@ -121,8 +180,12 @@ main {
 .hero-mark {
   width: min(42vw, 360px);
   min-width: 190px;
-  height: auto;
   margin-bottom: 28px;
+}
+
+.hero-mark img {
+  width: 100%;
+  height: auto;
 }
 
 .eyebrow {
@@ -207,7 +270,7 @@ p {
 }
 
 .button.secondary {
-  background: rgba(255, 255, 255, 0.34);
+  background: rgba(var(--paper-rgb), 0.34);
 }
 
 .button:hover,
@@ -264,7 +327,7 @@ p {
   border-radius: var(--radius);
   overflow: hidden;
   background: #11110f;
-  box-shadow: 0 24px 70px rgba(17, 17, 15, 0.18);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.24);
 }
 
 .terminal-titlebar {
@@ -324,7 +387,7 @@ p {
   padding: 28px;
   border-right: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.18);
+  background: rgba(var(--paper-rgb), 0.18);
 }
 
 .feature-card p,
@@ -361,7 +424,7 @@ p {
   padding: 28px;
   border-right: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.18);
+  background: rgba(var(--paper-rgb), 0.18);
 }
 
 .steps p {
@@ -397,7 +460,7 @@ kbd {
   border: 1px solid var(--line);
   border-radius: 5px;
   color: var(--ink);
-  background: rgba(255, 255, 255, 0.34);
+  background: rgba(var(--paper-rgb), 0.34);
   font: inherit;
   font-size: 0.74rem;
   font-weight: 700;
@@ -430,7 +493,7 @@ kbd {
   border-right: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
   background: #2f2d2a;
-  color: var(--paper);
+  color: #f6f3ec;
   font-weight: 700;
 }
 
