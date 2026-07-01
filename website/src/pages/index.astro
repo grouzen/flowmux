@@ -1,5 +1,4 @@
 ---
-import HeroPanel from '../components/HeroPanel.astro';
 import SiteHeader from '../components/SiteHeader.astro';
 import BaseLayout from '../layouts/BaseLayout.astro';
 
@@ -36,19 +35,17 @@ const features = [
     <section class="hero">
       <SiteHeader />
       <div class="hero-content">
-        <div class="hero-copy">
-          <p class="eyebrow">Terminal-native AI agent multiplexer</p>
-          <h1>Flowmux</h1>
-          <p class="lede">
-            Run, track, and switch between multiple CLI agents from one keyboard-first dashboard with tmux-backed persistence and real terminal sessions.
-          </p>
-          <div class="hero-actions">
-            <a class="button primary" href="#install">Install from source</a>
-            <a class="button secondary" href="https://github.com/grouzen/flowmux/releases">Download release</a>
-            <a class="button secondary" href="https://github.com/grouzen/flowmux">View on GitHub</a>
-          </div>
+        <img class="hero-mark" src="/assets/brand/flowmux-mark.png" alt="" width="1024" height="1024" aria-hidden="true" />
+        <p class="eyebrow">Terminal-native AI agent multiplexer</p>
+        <h1>Flowmux</h1>
+        <p class="lede">
+          Run, track, and switch between multiple CLI agents from one keyboard-first dashboard with tmux-backed persistence and real terminal sessions.
+        </p>
+        <div class="hero-actions">
+          <a class="button primary" href="#install">Install from source</a>
+          <a class="button secondary" href="https://github.com/grouzen/flowmux/releases">Download release</a>
+          <a class="button secondary" href="https://github.com/grouzen/flowmux">View on GitHub</a>
         </div>
-        <HeroPanel />
       </div>
       <div class="signal-strip" aria-label="Flowmux capabilities">
         <span>tmux panes</span>
@@ -59,9 +56,12 @@ const features = [
     </section>
 
     <section class="demo-section" aria-labelledby="demo-title">
-      <div>
+      <div class="section-heading">
         <p class="eyebrow">Dashboard</p>
         <h2 id="demo-title">A grid of active work, not a pile of hidden terminals.</h2>
+        <p>
+          Flowmux keeps the overview quiet: project dashboards, agent status, model information, and response previews are visible without leaving the terminal.
+        </p>
       </div>
       <figure class="demo-frame">
         <img src="/assets/flowmux-demo.gif" alt="Animated Flowmux terminal dashboard demo" loading="lazy" />
@@ -71,7 +71,7 @@ const features = [
     <section class="section" id="features" aria-labelledby="features-title">
       <div class="section-heading">
         <p class="eyebrow">Why Flowmux</p>
-        <h2 id="features-title">Built for people who want hotkeys, persistence, and real agent sessions.</h2>
+        <h2 id="features-title">A calm control surface for parallel agent work.</h2>
       </div>
       <div class="feature-grid">
         {features.map((feature) => (
@@ -86,7 +86,7 @@ const features = [
     <section class="workflow" id="workflow" aria-labelledby="workflow-title">
       <div class="section-heading">
         <p class="eyebrow">Typical workflow</p>
-        <h2 id="workflow-title">Start in a repo, split the work, then jump to the agent that needs you.</h2>
+        <h2 id="workflow-title">Start in a repo. Split the work. Return to what needs attention.</h2>
       </div>
       <ol class="steps">
         <li>
@@ -112,6 +112,7 @@ const features = [
         <p class="eyebrow">Install</p>
         <h2 id="install-title">Build the binary and launch Flowmux.</h2>
         <p>Requires tmux and at least one supported agent CLI. Building from source also needs Rust 1.90+, Zig 0.15.x, and git.</p>
+        <a class="text-link" href="https://github.com/grouzen/flowmux/releases">Prebuilt Linux and macOS binaries are available on GitHub Releases.</a>
       </div>
       <div class="code-card">
         <pre><code>git clone https://github.com/grouzen/flowmux.git
