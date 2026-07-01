@@ -260,17 +260,54 @@ p {
 
 .demo-frame {
   margin: 0;
-  padding: 10px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
+  overflow: hidden;
   background: #11110f;
+  box-shadow: 0 24px 70px rgba(17, 17, 15, 0.18);
+}
+
+.terminal-titlebar {
+  display: grid;
+  grid-template-columns: 14px 14px 14px 1fr;
+  gap: 8px;
+  align-items: center;
+  min-height: 38px;
+  padding: 0 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  background: linear-gradient(#f6f1e9, #dfd8ce);
+}
+
+.terminal-titlebar span {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+}
+
+.terminal-titlebar span:nth-child(1) {
+  background: #ff5f57;
+}
+
+.terminal-titlebar span:nth-child(2) {
+  background: #ffbd2e;
+}
+
+.terminal-titlebar span:nth-child(3) {
+  background: #28c840;
+}
+
+.terminal-titlebar strong {
+  justify-self: center;
+  margin-left: -66px;
+  color: #4d4941;
+  font-size: 0.76rem;
+  font-weight: 700;
 }
 
 .demo-frame img {
   display: block;
   width: 100%;
   height: auto;
-  border-radius: 4px;
 }
 
 .feature-grid {
@@ -319,6 +356,7 @@ p {
 
 .steps li {
   display: block;
+  min-height: 270px;
   padding: 28px;
   border-right: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
@@ -340,6 +378,27 @@ p {
 .steps strong {
   display: block;
   margin-bottom: 8px;
+}
+
+.step-keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 20px;
+}
+
+kbd {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.34);
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 700;
 }
 
 .agents-section {
@@ -376,12 +435,6 @@ p {
   width: 30px;
   height: 30px;
   object-fit: contain;
-}
-
-.agent-list li:nth-child(2),
-.agent-list li:nth-child(3) {
-  background: var(--ink);
-  color: var(--paper);
 }
 
 .section-note {
@@ -502,6 +555,10 @@ code {
 
   .feature-grid {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .section-note {

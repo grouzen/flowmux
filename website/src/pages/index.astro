@@ -50,6 +50,45 @@ cd flowmux
 ./tools/build-release-prefetched-libghostty-vt.sh`,
   },
 ];
+
+const workflowSteps = [
+  {
+    number: '01',
+    title: 'Create a project.',
+    body: 'Separate work by repo, task, or stream when you want distinct dashboards.',
+    keys: ['p'],
+  },
+  {
+    number: '02',
+    title: 'Add one or more agents.',
+    body: 'Create agents with separate working directories and optional isolated git worktrees.',
+    keys: ['n'],
+  },
+  {
+    number: '03',
+    title: 'Monitor the grid.',
+    body: 'Watch running, waiting, and idle agents from the dashboard without opening every terminal.',
+    keys: ['h/j/k/l', 'arrows'],
+  },
+  {
+    number: '04',
+    title: 'Jump to what needs attention.',
+    body: 'Move straight to running, waiting, or idle agents when the status changes.',
+    keys: ['Ctrl+q', 'Ctrl+o', 'Ctrl+p'],
+  },
+  {
+    number: '05',
+    title: 'Open the full agent terminal.',
+    body: 'Read output, respond, inspect git state, or open a persistent shell in the agent directory.',
+    keys: ['Enter', 'Ctrl+v', 'Ctrl+t'],
+  },
+  {
+    number: '06',
+    title: 'Resume later.',
+    body: 'Reopen Flowmux and continue from the saved session state after a restart.',
+    keys: ['flowmux'],
+  },
+];
 ---
 
 <BaseLayout>
@@ -79,13 +118,19 @@ cd flowmux
 
     <section class="demo-section" aria-labelledby="demo-title">
       <div class="section-heading">
-        <p class="eyebrow">Dashboard</p>
+        <p class="eyebrow">Quick demo</p>
         <h2 id="demo-title">A grid of active work, not a pile of hidden terminals.</h2>
         <p>
           Flowmux keeps the overview quiet: project dashboards, agent status, model information, and response previews are visible without leaving the terminal.
         </p>
       </div>
       <figure class="demo-frame">
+        <div class="terminal-titlebar" aria-hidden="true">
+          <span></span>
+          <span></span>
+          <span></span>
+          <strong>flowmux - dashboard</strong>
+        </div>
         <img src="/assets/flowmux-demo.gif" alt="Animated Flowmux terminal dashboard demo" loading="lazy" />
       </figure>
     </section>
@@ -108,24 +153,21 @@ cd flowmux
     <section class="workflow" id="workflow" aria-labelledby="workflow-title">
       <div class="section-heading">
         <p class="eyebrow">Typical workflow</p>
-        <h2 id="workflow-title">Start in a repo. Split the work. Return to what needs attention.</h2>
+        <h2 id="workflow-title">Separate the work. Watch the grid. Jump to what needs attention.</h2>
       </div>
       <ol class="steps">
-        <li>
-          <span>01</span>
-          <strong>Start Flowmux in a repo.</strong>
-          <p>Open a tmux-backed dashboard where agents can work in the current repository or workspace.</p>
-        </li>
-        <li>
-          <span>02</span>
-          <strong>Create projects and agents.</strong>
-          <p>Group work by project, then add OpenCode, Claude Code, or Codex agents with separate directories.</p>
-        </li>
-        <li>
-          <span>03</span>
-          <strong>Move by status.</strong>
-          <p>Jump to running, waiting, or idle agents, open the full terminal, inspect git state, or use a persistent shell.</p>
-        </li>
+        {workflowSteps.map((step) => (
+          <li>
+            <span>{step.number}</span>
+            <strong>{step.title}</strong>
+            <p>{step.body}</p>
+            <div class="step-keys" aria-label={`Useful hotkeys for ${step.title}`}>
+              {step.keys.map((key) => (
+                <kbd>{key}</kbd>
+              ))}
+            </div>
+          </li>
+        ))}
       </ol>
     </section>
 
