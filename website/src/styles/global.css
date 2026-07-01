@@ -298,7 +298,7 @@ p {
 
 .terminal-titlebar strong {
   justify-self: center;
-  margin-left: -66px;
+  margin-left: -58px;
   color: #4d4941;
   font-size: 0.76rem;
   font-weight: 700;
@@ -355,7 +355,8 @@ p {
 }
 
 .steps li {
-  display: block;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
   min-height: 270px;
   padding: 28px;
   border-right: 1px solid var(--line);
@@ -382,9 +383,10 @@ p {
 
 .step-keys {
   display: flex;
+  align-self: end;
   flex-wrap: wrap;
   gap: 7px;
-  margin-top: 20px;
+  margin-top: 24px;
 }
 
 kbd {
@@ -427,7 +429,8 @@ kbd {
   padding: 28px;
   border-right: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.18);
+  background: #2f2d2a;
+  color: var(--paper);
   font-weight: 700;
 }
 
