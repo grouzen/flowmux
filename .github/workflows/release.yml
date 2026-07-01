@@ -43,6 +43,15 @@ jobs:
         with:
           targets: ${{ matrix.install_targets }}
 
+      - name: Verify Rust target stdlibs
+        run: |
+          set -euo pipefail
+          rustup show active-toolchain
+          rustup target list --installed
+          for target in ${{ matrix.fetch_targets }}; do
+            rustc --print target-libdir --target "$target" >/dev/null
+          done
+
       - name: Install Zig
         uses: goto-bus-stop/setup-zig@v2
         with:
