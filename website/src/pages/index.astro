@@ -1,0 +1,262 @@
+---
+import SiteHeader from '../components/SiteHeader.astro';
+import BaseLayout from '../layouts/BaseLayout.astro';
+
+const features = [
+  {
+    title: 'Keyboard-first dashboard',
+    body: 'Manage multiple CLI agents from one terminal UI with fast hotkeys for the work that needs attention.',
+  },
+  {
+    title: 'Unix-style by design',
+    body: 'Flowmux coordinates panes, projects, agents, and worktrees without trying to replace the tools you already trust.',
+  },
+  {
+    title: 'Bring your own tools',
+    body: 'Keep using your preferred editor, git UI, shell, terminal, and command-line utilities around every agent session.',
+  },
+  {
+    title: 'Clean grid view',
+    body: 'Track running, waiting, and idle agents with model information and latest-response previews in the overview.',
+  },
+  {
+    title: 'Projects and worktrees',
+    body: 'Separate work by repo, task, or stream, then give agents their own working directories and optional git worktrees.',
+  },
+  {
+    title: 'Real terminal sessions',
+    body: 'Agent, git viewer, and shell views forward keys into live tmux panes instead of wrapping the agent UI.',
+  },
+  {
+    title: 'tmux-backed persistence',
+    body: 'Saved session state lets Flowmux reconnect to agents after tmux restarts so long-running work is easier to resume.',
+  },
+  {
+    title: 'Native Rust TUI',
+    body: 'Built with Ratatui, Tokio, tmux, libghostty-vt, and git2 for a focused terminal application.',
+  },
+];
+
+const installMethods = [
+  {
+    id: 'homebrew',
+    label: 'Homebrew',
+    command: `brew install grouzen/tap/flowmux`,
+  },
+  {
+    id: 'macos',
+    label: 'From source on macOS',
+    command: `git clone https://github.com/grouzen/flowmux.git
+cd flowmux
+./tools/build-universal-macos-prefetched-libghostty-vt.sh`,
+  },
+  {
+    id: 'linux',
+    label: 'From source on Linux',
+    command: `git clone https://github.com/grouzen/flowmux.git
+cd flowmux
+./tools/build-release-prefetched-libghostty-vt.sh`,
+  },
+];
+
+const workflowSteps = [
+  {
+    number: '01',
+    title: 'Create a project.',
+    body: 'Separate work by repo, task, or stream when you want distinct dashboards.',
+    keys: ['p'],
+  },
+  {
+    number: '02',
+    title: 'Add one or more agents.',
+    body: 'Create agents with separate working directories and optional isolated git worktrees.',
+    keys: ['n'],
+  },
+  {
+    number: '03',
+    title: 'Monitor the grid.',
+    body: 'Watch running, waiting, and idle agents from the dashboard without opening every terminal.',
+    keys: ['h/j/k/l', 'arrows'],
+  },
+  {
+    number: '04',
+    title: 'Jump to what needs attention.',
+    body: 'Move straight to running, waiting, or idle agents when the status changes.',
+    keys: ['Ctrl+q', 'Ctrl+o', 'Ctrl+p'],
+  },
+  {
+    number: '05',
+    title: 'Open the full agent terminal.',
+    body: 'Read output, respond, inspect git state, or open a persistent shell in the agent directory.',
+    keys: ['Enter', 'Ctrl+v', 'Ctrl+t'],
+  },
+  {
+    number: '06',
+    title: 'Resume later.',
+    body: 'Reopen Flowmux and continue from the saved session state after a restart.',
+    keys: ['flowmux'],
+  },
+];
+---
+
+<BaseLayout>
+  <main>
+    <section class="hero">
+      <SiteHeader />
+      <div class="hero-content">
+        <div class="hero-mark" aria-hidden="true">
+          <img class="theme-asset theme-asset-light" src="/assets/brand/flowmux-mark.png" alt="" width="1024" height="1024" />
+          <img class="theme-asset theme-asset-dark" src="/assets/brand/flowmux-mark-dark.png" alt="" width="1024" height="1024" />
+        </div>
+        <p class="eyebrow">Terminal-native AI agent multiplexer</p>
+        <h1>Flowmux</h1>
+        <p class="lede">
+          Run, track, and switch between multiple CLI agents from one keyboard-first dashboard with tmux-backed persistence and real terminal sessions.
+        </p>
+        <div class="hero-actions">
+          <a class="button primary" href="#install">Install</a>
+          <a class="button secondary" href="https://github.com/grouzen/flowmux/releases">Download release</a>
+          <a class="button secondary" href="https://github.com/grouzen/flowmux">View on GitHub</a>
+        </div>
+      </div>
+      <div class="signal-strip" aria-label="Flowmux capabilities">
+        <span>tmux panes</span>
+        <span>real CLI sessions</span>
+        <span>status hotkeys</span>
+        <span>project dashboards</span>
+      </div>
+    </section>
+
+    <section class="demo-section" aria-labelledby="demo-title">
+      <div class="section-heading">
+        <p class="eyebrow">Quick demo</p>
+        <h2 id="demo-title">A grid of active work, not a pile of hidden terminals.</h2>
+        <p>
+          Flowmux keeps the overview quiet: project dashboards, agent status, model information, and response previews are visible without leaving the terminal.
+        </p>
+      </div>
+      <figure class="demo-frame">
+        <div class="terminal-titlebar" aria-hidden="true">
+          <span></span>
+          <span></span>
+          <span></span>
+          <strong>Flowmux</strong>
+        </div>
+        <img src="/assets/flowmux-demo.gif" alt="Animated Flowmux terminal dashboard demo" loading="lazy" />
+      </figure>
+    </section>
+
+    <section class="section" id="features" aria-labelledby="features-title">
+      <div class="section-heading">
+        <p class="eyebrow">Why Flowmux</p>
+        <h2 id="features-title">A calm control surface for parallel agent work.</h2>
+      </div>
+      <div class="feature-grid">
+        {features.map((feature) => (
+          <article class="feature-card">
+            <h3>{feature.title}</h3>
+            <p>{feature.body}</p>
+          </article>
+        ))}
+      </div>
+    </section>
+
+    <section class="workflow" id="workflow" aria-labelledby="workflow-title">
+      <div class="section-heading">
+        <p class="eyebrow">Typical workflow</p>
+        <h2 id="workflow-title">Separate the work. Watch the grid. Jump to what needs attention.</h2>
+      </div>
+      <ol class="steps">
+        {workflowSteps.map((step) => (
+          <li>
+            <span>{step.number}</span>
+            <strong>{step.title}</strong>
+            <p>{step.body}</p>
+            <div class="step-keys" aria-label={`Useful hotkeys for ${step.title}`}>
+              {step.keys.map((key) => (
+                <kbd>{key}</kbd>
+              ))}
+            </div>
+          </li>
+        ))}
+      </ol>
+    </section>
+
+    <section class="agents-section" id="agents" aria-labelledby="agents-title">
+      <div class="section-heading">
+        <p class="eyebrow">Supported agents</p>
+        <h2 id="agents-title">Use the CLI agents already in your terminal.</h2>
+      </div>
+      <ul class="agent-list" aria-label="Supported Flowmux agents">
+        <li>
+          <img src="/assets/agents/claude.svg" alt="" width="32" height="32" loading="lazy" />
+          <span>Claude Code</span>
+        </li>
+        <li>
+          <img src="/assets/agents/codex.svg" alt="" width="32" height="32" loading="lazy" />
+          <span>Codex</span>
+        </li>
+        <li>
+          <img src="/assets/agents/opencode.svg" alt="" width="32" height="32" loading="lazy" />
+          <span>Opencode</span>
+        </li>
+      </ul>
+      <p class="section-note">
+        Flowmux auto-detects installed agent CLIs and enables discovered agents by default unless you configure an explicit allowlist.
+      </p>
+    </section>
+
+    <section class="install" id="install" aria-label="Install">
+      <div>
+        <p class="eyebrow">Install</p>
+        <p>Requires tmux and at least one supported agent CLI. Homebrew is the preferred path on supported systems.</p>
+        <a class="text-link" href="https://github.com/grouzen/flowmux/releases">Prebuilt Linux and macOS binaries are available on GitHub Releases.</a>
+      </div>
+      <div class="install-options">
+        <div class="install-tabs" role="tablist" aria-label="Installation methods">
+          {installMethods.map((method, index) => (
+            <button class="install-tab" type="button" role="tab" aria-selected={index === 0 ? 'true' : 'false'} aria-controls={`install-panel-${method.id}`} id={`install-tab-${method.id}`} data-install-tab={method.id}>
+              {method.label}
+            </button>
+          ))}
+        </div>
+        {installMethods.map((method, index) => (
+          <article class="install-panel" id={`install-panel-${method.id}`} role="tabpanel" aria-labelledby={`install-tab-${method.id}`} data-install-panel={method.id} hidden={index !== 0}>
+            <div class="code-card">
+              <pre><code>{method.command}</code></pre>
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const tabs = document.querySelectorAll<HTMLButtonElement>('[data-install-tab]');
+    const panels = document.querySelectorAll<HTMLElement>('[data-install-panel]');
+
+    for (const tab of tabs) {
+      tab.addEventListener('click', () => {
+        const selected = tab.dataset.installTab;
+
+        for (const item of tabs) {
+          item.setAttribute('aria-selected', String(item === tab));
+        }
+
+        for (const panel of panels) {
+          panel.hidden = panel.dataset.installPanel !== selected;
+        }
+      });
+    }
+  </script>
+
+  <footer class="site-footer">
+    <span><span class="heart" aria-hidden="true">♥</span> Flowmux</span>
+    <a class="github-link" href="https://github.com/grouzen/flowmux" aria-label="Flowmux on GitHub">
+      <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16">
+        <path fill="currentColor" d="M8 0C3.58 0 0 3.67 0 8.2c0 3.62 2.29 6.69 5.47 7.77.4.08.55-.18.55-.4 0-.2-.01-.85-.01-1.54-2.01.38-2.53-.5-2.69-.96-.09-.24-.48-.96-.82-1.16-.28-.16-.68-.55-.01-.56.63-.01 1.08.59 1.23.84.72 1.24 1.87.89 2.33.68.07-.53.28-.89.51-1.09-1.78-.21-3.64-.91-3.64-4.05 0-.89.31-1.63.82-2.2-.08-.21-.36-1.04.08-2.17 0 0 .67-.22 2.2.84A7.44 7.44 0 0 1 8 3.92c.68 0 1.36.09 2 .28 1.53-1.06 2.2-.84 2.2-.84.44 1.13.16 1.96.08 2.17.51.57.82 1.3.82 2.2 0 3.15-1.87 3.84-3.65 4.05.29.26.54.75.54 1.52 0 1.09-.01 1.97-.01 2.24 0 .22.15.48.55.4A8.13 8.13 0 0 0 16 8.2C16 3.67 12.42 0 8 0Z" />
+      </svg>
+      GitHub
+    </a>
+  </footer>
+</BaseLayout>

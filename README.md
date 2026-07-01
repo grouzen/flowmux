@@ -12,6 +12,8 @@ Flowmux is a terminal-native AI agent multiplexer for running, tracking, and swi
 
 It is built for people who want fast hotkeys, a clean grid view of active work, tmux-backed persistence, and real terminal sessions instead of wrapped agent UIs.
 
+Flowmux follows a simple Unix-style approach: it coordinates agent sessions, panes, projects, and worktrees while leaving your editor, git tools, shell, and terminal habits intact.
+
 ![](/docs/demo/screencast.gif)
 
 ## Table of Contents
@@ -37,7 +39,7 @@ It is built for people who want fast hotkeys, a clean grid view of active work, 
 
 ### Launch
 
-Run Flowmux in the repository or workspace where you want agents to work:
+Run Flowmux from your terminal:
 
 ```bash
 flowmux
@@ -59,16 +61,17 @@ On first launch, Flowmux opens a tmux-backed dashboard where you can create agen
 
 ## Typical Workflow
 
-1. Start `flowmux` in the repo where work should happen.
-2. Create a project if you want to separate this work from other dashboards.
-3. Add one or more agents and optionally give them isolated git worktrees.
-4. Monitor the grid to see which agents are running, waiting for input, or idle.
-5. Use hotkeys to jump straight to the next running or waiting agent when attention is needed.
-6. Open agent view when you want to read the full terminal, respond, inspect git state, or use a dedicated terminal in that working directory.
-7. Reopen Flowmux later and continue from the saved session state.
+1. Create a project if you want to separate this work from other dashboards.
+2. Add one or more agents and optionally give them isolated git worktrees.
+3. Monitor the grid to see which agents are running, waiting for input, or idle.
+4. Use hotkeys to jump straight to the next running or waiting agent when attention is needed.
+5. Open agent view when you want to read the full terminal, respond, inspect git state, or use a dedicated terminal in that working directory.
+6. Reopen Flowmux later and continue from the saved session state.
 
 ## Features
 
+- Simple Unix-style orchestration that keeps Flowmux focused on coordinating sessions instead of replacing your workflow
+- Bring your own tools: keep using your preferred editor, git UI, shell, terminal, and command-line utilities
 - Keyboard-first dashboard for managing multiple CLI agents from one terminal UI
 - Fast navigation between running, waiting, and idle agents
 - Project-based organization with per-agent working directories and optional git worktrees
