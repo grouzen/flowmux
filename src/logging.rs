@@ -1,4 +1,4 @@
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::PathBuf;
 
@@ -17,16 +17,7 @@ pub fn log_path(session_name: &str) -> PathBuf {
 
 pub fn init(session_name: &str) -> anyhow::Result<PathBuf> {
     let path = log_path(session_name);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("create log directory {:?}", parent))?;
-    }
-
-    let file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .with_context(|| format!("open log file {:?}", path))?;
+    let file = open_session_log_file(session_name)?;
 
     Builder::from_env(Env::default().default_filter_or(DEFAULT_FILTER))
         .target(Target::Pipe(Box::new(file)))
@@ -37,6 +28,20 @@ pub fn init(session_name: &str) -> anyhow::Result<PathBuf> {
 
     log::info!("logging initialized at {}", path.display());
     Ok(path)
+}
+
+pub fn open_session_log_file(session_name: &str) -> anyhow::Result<File> {
+    let path = log_path(session_name);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create log directory {:?}", parent))?;
+    }
+
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("open session log file {:?}", path))
 }
 
 fn log_file_stem(session_name: &str) -> String {

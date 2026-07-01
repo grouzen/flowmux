@@ -100,12 +100,13 @@ fn acquire_session_lock(session: &str) -> Result<std::fs::File> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let log_path = logging::init(&cli.tmux_session)?;
-    log::debug!("flowmux logs: {}", log_path.display());
 
     if let Some(Commands::Launch { command }) = cli.command.clone() {
         return launch::run(command).await;
     }
+
+    let log_path = logging::init(&cli.tmux_session)?;
+    log::debug!("flowmux logs: {}", log_path.display());
 
     let worktrees_base = resolve_worktrees_base(cli.git_worktrees_location);
 

@@ -126,15 +126,11 @@ fn exit_with_status(status: ExitStatus) -> ! {
 async fn run_codex(args: LaunchCodexArgs) -> Result<()> {
     let pid_path = server_pid_path(args.port);
     let listen_addr = format!("ws://127.0.0.1:{}", args.port);
-    let log_path = logging::log_path(tmux::session_name());
-    let log_file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .with_context(|| format!("failed to open codex log file {:?}", log_path))?;
+    let log_file = logging::open_session_log_file(tmux::session_name())
+        .context("failed to open shared session log for codex app-server")?;
     let log_file_err = log_file
         .try_clone()
-        .with_context(|| format!("failed to clone codex log file handle {:?}", log_path))?;
+        .context("failed to clone shared session log handle for codex app-server")?;
     let mut server = Command::new("codex")
         .args(["app-server", "--listen", &listen_addr])
         .stdin(Stdio::null())
