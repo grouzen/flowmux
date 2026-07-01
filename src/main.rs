@@ -7,8 +7,10 @@ mod git;
 mod global_config;
 mod host_terminal;
 mod launch;
+mod logging;
 mod model_registry;
 mod models;
+mod platform;
 mod runner;
 mod tmux;
 mod tui;
@@ -103,6 +105,9 @@ async fn main() -> Result<()> {
         return launch::run(command).await;
     }
 
+    let log_path = logging::init(&cli.tmux_session)?;
+    log::debug!("flowmux logs: {}", log_path.display());
+
     let worktrees_base = resolve_worktrees_base(cli.git_worktrees_location);
 
     // Ensure only one instance runs per tmux session.
@@ -132,7 +137,7 @@ async fn main() -> Result<()> {
     if let Some(ref names) = enabled_agents {
         for name in names {
             if AgentType::from_name(name).is_none() {
-                eprintln!("warning: unknown agent type '{}' in enabled_agents", name);
+                log::warn!("unknown agent type '{}' in enabled_agents", name);
             }
         }
     }
@@ -209,7 +214,7 @@ async fn main() -> Result<()> {
     let host_colors = match host_terminal::probe_host_colors() {
         Ok(colors) => colors,
         Err(e) => {
-            eprintln!("Warning: failed to probe host terminal colors: {}", e);
+            log::warn!("failed to probe host terminal colors: {e}");
             host_terminal::HostColors::default()
         }
     };

@@ -8,6 +8,9 @@ use anyhow::{Context, Result, anyhow};
 use clap::{Args, Subcommand};
 use tokio::time::sleep;
 
+use crate::logging;
+use crate::tmux;
+
 #[derive(Subcommand, Debug, Clone)]
 pub enum LaunchCommand {
     /// Internal helper used to launch agent processes behind a compact shell command.
@@ -77,6 +80,8 @@ pub async fn run(command: LaunchCommand) -> Result<()> {
 pub fn flowmux_launch_command(agent: &str, args: &[OsString]) -> String {
     let mut parts = vec![
         flowmux_invocation(),
+        "--tmux-session".to_string(),
+        shell_quote(tmux::session_name()),
         "launch".to_string(),
         agent.to_string(),
     ];
@@ -121,11 +126,16 @@ fn exit_with_status(status: ExitStatus) -> ! {
 async fn run_codex(args: LaunchCodexArgs) -> Result<()> {
     let pid_path = server_pid_path(args.port);
     let listen_addr = format!("ws://127.0.0.1:{}", args.port);
+    let log_file = logging::open_session_log_file(tmux::session_name())
+        .context("failed to open shared session log for codex app-server")?;
+    let log_file_err = log_file
+        .try_clone()
+        .context("failed to clone shared session log handle for codex app-server")?;
     let mut server = Command::new("codex")
         .args(["app-server", "--listen", &listen_addr])
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::from(log_file))
+        .stderr(Stdio::from(log_file_err))
         .spawn()
         .with_context(|| format!("failed to start codex app-server on {}", listen_addr))?;
 
@@ -209,6 +219,7 @@ mod tests {
         );
 
         assert!(command.contains("launch codex"));
+        assert!(command.contains("--tmux-session"));
         assert!(command.contains("--session-id 'thread with spaces'"));
         assert!(command.ends_with('\n'));
     }
