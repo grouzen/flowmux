@@ -12,6 +12,8 @@ Flowmux is a terminal-native AI agent multiplexer for running, tracking, and swi
 
 It is built for people who want fast hotkeys, a clean grid view of active work, tmux-backed persistence, and real terminal sessions instead of wrapped agent UIs.
 
+Flowmux follows a simple Unix-style approach: it coordinates agent sessions, panes, projects, and worktrees while leaving your editor, git tools, shell, and terminal habits intact.
+
 ![](/docs/demo/screencast.gif)
 
 ## Table of Contents
@@ -68,6 +70,8 @@ On first launch, Flowmux opens a tmux-backed dashboard where you can create agen
 
 ## Features
 
+- Simple Unix-style orchestration that keeps Flowmux focused on coordinating sessions instead of replacing your workflow
+- Bring your own tools: keep using your preferred editor, git UI, shell, terminal, and command-line utilities
 - Keyboard-first dashboard for managing multiple CLI agents from one terminal UI
 - Fast navigation between running, waiting, and idle agents
 - Project-based organization with per-agent working directories and optional git worktrees
