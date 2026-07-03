@@ -39,6 +39,11 @@ const features = [
 
 const installMethods = [
   {
+    id: 'script',
+    label: 'Install script',
+    command: `curl -fsSL https://raw.githubusercontent.com/grouzen/flowmux/main/install.sh | sh`,
+  },
+  {
     id: 'homebrew',
     label: 'Homebrew (macOS only)',
     command: `brew install --cask grouzen/tap/flowmux`,
