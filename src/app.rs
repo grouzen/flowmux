@@ -41,23 +41,45 @@ struct PaneCellPoint {
     row: u16,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PaneBufferPoint {
+    col: u16,
+    row: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaneMouseCell {
+    Inside(PaneCellPoint),
+    Above(PaneCellPoint),
+    Below(PaneCellPoint),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CopyScrollDirection {
+    Up,
+    Down,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct PendingPaneClick {
     mouse: MouseEvent,
-    anchor: PaneCellPoint,
+    anchor: PaneBufferPoint,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct ActiveCopySelection {
-    anchor: PaneCellPoint,
-    focus: PaneCellPoint,
+    anchor: PaneBufferPoint,
+    focus: PaneBufferPoint,
+    last_drag: MouseEvent,
 }
 
 impl ActiveCopySelection {
-    fn range(self) -> crate::ghostty::render::SelectionRange {
+    fn buffer_range(self) -> crate::ghostty::render::SelectionRange {
+        let start_row = self.anchor.row.min(u16::MAX as usize) as u16;
+        let end_row = self.focus.row.min(u16::MAX as usize) as u16;
         crate::ghostty::render::SelectionRange::new(
-            (self.anchor.col, self.anchor.row),
-            (self.focus.col, self.focus.row),
+            (self.anchor.col, start_row),
+            (self.focus.col, end_row),
         )
     }
 }
@@ -832,6 +854,19 @@ impl App {
         self.active_copy_selection = None;
     }
 
+    fn shift_active_copy_selection_rows(&mut self, rows: usize) {
+        if rows == 0 {
+            return;
+        }
+        if let Some(selection) = self.active_copy_selection.as_mut() {
+            selection.anchor.row = selection.anchor.row.saturating_add(rows);
+            selection.focus.row = selection.focus.row.saturating_add(rows);
+        }
+        if let Some(pending) = self.pending_pane_click.as_mut() {
+            pending.anchor.row = pending.anchor.row.saturating_add(rows);
+        }
+    }
+
     fn expire_copy_feedback(&mut self) {
         if self
             .copy_feedback
@@ -868,11 +903,14 @@ impl App {
     pub(crate) fn current_copy_selection_range(
         &self,
     ) -> Option<crate::ghostty::render::SelectionRange> {
-        self.active_copy_selection.map(ActiveCopySelection::range)
+        self.active_copy_selection
+            .and_then(|selection| self.viewport_selection_range(selection))
     }
 
     fn begin_pending_pane_click(&mut self, mouse: MouseEvent) -> bool {
-        let Some(anchor) = mouse_to_pane_cell(mouse, false) else {
+        let Some(anchor) =
+            mouse_to_pane_cell(mouse, false).and_then(|cell| self.pane_cell_to_buffer_point(cell))
+        else {
             return false;
         };
         self.pending_pane_click = Some(PendingPaneClick { mouse, anchor });
@@ -881,13 +919,23 @@ impl App {
     }
 
     fn update_copy_selection_drag(&mut self, mouse: MouseEvent) -> bool {
-        let Some(focus) = mouse_to_pane_cell(mouse, true) else {
+        let Some(mouse_cell) = mouse_to_pane_cell_edge(mouse) else {
+            self.clear_pane_copy_interaction();
+            return false;
+        };
+        let cell = match mouse_cell {
+            PaneMouseCell::Inside(cell)
+            | PaneMouseCell::Above(cell)
+            | PaneMouseCell::Below(cell) => cell,
+        };
+        let Some(focus) = Some(cell).and_then(|cell| self.pane_cell_to_buffer_point(cell)) else {
             self.clear_pane_copy_interaction();
             return false;
         };
 
         if let Some(selection) = self.active_copy_selection.as_mut() {
             selection.focus = focus;
+            selection.last_drag = mouse;
             self.dirty = true;
             return true;
         }
@@ -896,7 +944,7 @@ impl App {
             return false;
         };
 
-        if pending.anchor == focus {
+        if pending.anchor == focus && matches!(mouse_cell, PaneMouseCell::Inside(_)) {
             self.pending_pane_click = Some(pending);
             return false;
         }
@@ -904,6 +952,7 @@ impl App {
         self.active_copy_selection = Some(ActiveCopySelection {
             anchor: pending.anchor,
             focus,
+            last_drag: mouse,
         });
         self.dirty = true;
         true
@@ -915,7 +964,7 @@ impl App {
         };
         self.pending_pane_click = None;
 
-        let Some(text) = self.current_pane_selection_text(selection.range()) else {
+        let Some(text) = self.current_pane_selection_text(selection) else {
             self.set_copy_feedback("copy failed", false);
             return true;
         };
@@ -957,10 +1006,51 @@ impl App {
         true
     }
 
-    fn current_pane_selection_text(
+    fn viewport_selection_range(
         &self,
-        selection: crate::ghostty::render::SelectionRange,
-    ) -> Option<String> {
+        selection: ActiveCopySelection,
+    ) -> Option<crate::ghostty::render::SelectionRange> {
+        let viewport_height = self.pane_viewport_height()?;
+        let (_, view_scroll, total_lines) = self.current_pane_lines_scroll()?;
+        let (visible_start, visible_end) =
+            pane_visible_line_range(total_lines, view_scroll, viewport_height);
+        if visible_start >= visible_end {
+            return None;
+        }
+
+        let range = normalized_buffer_range(selection);
+        let start_row = range.start_row as usize;
+        let end_row = range.end_row as usize;
+        let visible_selection_start = start_row.max(visible_start);
+        let visible_selection_end = end_row.min(visible_end.saturating_sub(1));
+        if visible_selection_start > visible_selection_end {
+            return None;
+        }
+
+        let start_col = if visible_selection_start == start_row {
+            range.start_col
+        } else {
+            0
+        };
+        let end_col = if visible_selection_end == end_row {
+            range.end_col
+        } else {
+            u16::MAX
+        };
+
+        Some(crate::ghostty::render::SelectionRange::new(
+            (
+                start_col,
+                (visible_selection_start - visible_start).min(u16::MAX as usize) as u16,
+            ),
+            (
+                end_col,
+                (visible_selection_end - visible_start).min(u16::MAX as usize) as u16,
+            ),
+        ))
+    }
+
+    fn current_pane_selection_text(&self, selection: ActiveCopySelection) -> Option<String> {
         let (term_cols, term_rows) = crossterm::terminal::size().ok()?;
         let inner = pane_inner_rect(term_cols, term_rows);
         if inner.width == 0 || inner.height == 0 {
@@ -968,17 +1058,14 @@ impl App {
         }
 
         let viewport_height = inner.height as usize;
-        let (visible_text, live_pane) = match &self.state {
+        let (lines, view_scroll, live_pane) = match &self.state {
             AppState::AgentView(idx) => {
                 if self.agent_view_state.show_stopped_overlay {
                     return None;
                 }
                 (
-                    pane_visible_text(
-                        &self.agent_view_state.lines,
-                        self.agent_view_state.view_scroll,
-                        viewport_height,
-                    ),
+                    self.agent_view_state.lines.as_slice(),
+                    self.agent_view_state.view_scroll,
                     if self.agent_view_state.view_scroll == 0 {
                         self.agents
                             .get(*idx)
@@ -989,7 +1076,8 @@ impl App {
                 )
             }
             AppState::GitViewer(gv) => (
-                pane_visible_text(&gv.lines, gv.view_scroll, viewport_height),
+                gv.lines.as_slice(),
+                gv.view_scroll,
                 if gv.view_scroll == 0 {
                     Some(gv.pane.as_str())
                 } else {
@@ -997,7 +1085,8 @@ impl App {
                 },
             ),
             AppState::TerminalView(tv) => (
-                pane_visible_text(&tv.lines, tv.view_scroll, viewport_height),
+                tv.lines.as_slice(),
+                tv.view_scroll,
                 if tv.view_scroll == 0 {
                     Some(tv.pane.as_str())
                 } else {
@@ -1007,24 +1096,127 @@ impl App {
             _ => return None,
         };
 
+        let buffer_range = normalized_buffer_range(selection);
+        let (visible_start, visible_end) =
+            pane_visible_line_range(lines.len(), view_scroll, viewport_height);
+        let selection_within_live_view = buffer_range.start_row as usize >= visible_start
+            && (buffer_range.end_row as usize) < visible_end;
         if let Some(pane) = live_pane
+            && selection_within_live_view
             && let Ok(joined_text) = tmux::capture_pane_joined(pane)
         {
             let joined_text = joined_text.trim_end_matches('\n');
+            let visible_range = selection_buffer_range_to_visible(buffer_range, visible_start)?;
             let grid = crate::ghostty::render::pane_text_grid_for_copy(
                 joined_text.as_bytes(),
                 inner.width,
                 inner.height,
             );
-            return Some(grid.extract_wrap_aware(selection));
+            return Some(grid.extract_wrap_aware(visible_range));
         }
 
+        if lines.is_empty() {
+            return Some(String::new());
+        }
+        let all_text = lines.join("\r\n");
         let grid = crate::ghostty::render::pane_text_grid(
-            visible_text.as_bytes(),
+            all_text.as_bytes(),
             inner.width,
-            inner.height,
+            lines.len().min(u16::MAX as usize) as u16,
         );
-        Some(grid.extract(selection))
+        Some(grid.extract(buffer_range))
+    }
+
+    fn pane_viewport_height(&self) -> Option<usize> {
+        let (term_cols, term_rows) = crossterm::terminal::size().ok()?;
+        let inner = pane_inner_rect(term_cols, term_rows);
+        (inner.width > 0 && inner.height > 0).then_some(inner.height as usize)
+    }
+
+    fn current_pane_lines_scroll(&self) -> Option<(&[String], usize, usize)> {
+        match &self.state {
+            AppState::AgentView(_) => Some((
+                self.agent_view_state.lines.as_slice(),
+                self.agent_view_state.view_scroll,
+                self.agent_view_state.lines.len(),
+            )),
+            AppState::GitViewer(gv) => Some((gv.lines.as_slice(), gv.view_scroll, gv.lines.len())),
+            AppState::TerminalView(tv) => {
+                Some((tv.lines.as_slice(), tv.view_scroll, tv.lines.len()))
+            }
+            _ => None,
+        }
+    }
+
+    fn pane_cell_to_buffer_point(&self, cell: PaneCellPoint) -> Option<PaneBufferPoint> {
+        let viewport_height = self.pane_viewport_height()?;
+        let (_, view_scroll, total_lines) = self.current_pane_lines_scroll()?;
+        let (visible_start, _) = pane_visible_line_range(total_lines, view_scroll, viewport_height);
+        Some(PaneBufferPoint {
+            col: cell.col,
+            row: visible_start.saturating_add(cell.row as usize),
+        })
+    }
+
+    fn apply_copy_autoscroll(&mut self) -> bool {
+        let Some(selection) = self.active_copy_selection else {
+            return false;
+        };
+        let Some(mouse_cell) = mouse_to_pane_cell_edge(selection.last_drag) else {
+            return false;
+        };
+
+        let (direction, cell) = match mouse_cell {
+            PaneMouseCell::Above(cell) => (CopyScrollDirection::Up, cell),
+            PaneMouseCell::Below(cell) => (CopyScrollDirection::Down, cell),
+            PaneMouseCell::Inside(_) => return false,
+        };
+
+        if !self.scroll_active_pane_for_copy(direction, MOUSE_WHEEL_SCROLL_LINES) {
+            return false;
+        }
+
+        if let Some(focus) = self.pane_cell_to_buffer_point(cell)
+            && let Some(selection) = self.active_copy_selection.as_mut()
+        {
+            selection.focus = focus;
+        }
+        self.dirty = true;
+        true
+    }
+
+    fn scroll_active_pane_for_copy(
+        &mut self,
+        direction: CopyScrollDirection,
+        lines: usize,
+    ) -> bool {
+        match &mut self.state {
+            AppState::AgentView(_) => {
+                let before = self.agent_view_state.view_scroll;
+                self.agent_view_state.view_scroll = match direction {
+                    CopyScrollDirection::Up => before.saturating_add(lines).min(MAX_RETAINED_LINES),
+                    CopyScrollDirection::Down => before.saturating_sub(lines),
+                };
+                self.agent_view_state.view_scroll != before
+            }
+            AppState::GitViewer(gv) => {
+                let before = gv.view_scroll;
+                gv.view_scroll = match direction {
+                    CopyScrollDirection::Up => before.saturating_add(lines).min(MAX_RETAINED_LINES),
+                    CopyScrollDirection::Down => before.saturating_sub(lines),
+                };
+                gv.view_scroll != before
+            }
+            AppState::TerminalView(tv) => {
+                let before = tv.view_scroll;
+                tv.view_scroll = match direction {
+                    CopyScrollDirection::Up => before.saturating_add(lines).min(MAX_RETAINED_LINES),
+                    CopyScrollDirection::Down => before.saturating_sub(lines),
+                };
+                tv.view_scroll != before
+            }
+            _ => false,
+        }
     }
 
     fn load_create_state_worktree_presets(&mut self) {
@@ -1311,6 +1503,7 @@ impl App {
                 true
             }
             Event::AgentViewTick => {
+                self.apply_copy_autoscroll();
                 // handle_agent_view_tick sets self.dirty = true only when
                 // the captured output has actually changed.
                 self.handle_agent_view_tick().await;
@@ -1322,6 +1515,7 @@ impl App {
                 true
             }
             Event::GitViewerTick => {
+                self.apply_copy_autoscroll();
                 self.handle_git_viewer_tick().await;
                 if self.notification.is_blinking_running()
                     || self.notification.is_blinking_waiting()
@@ -1331,6 +1525,7 @@ impl App {
                 true
             }
             Event::TerminalViewTick => {
+                self.apply_copy_autoscroll();
                 self.handle_terminal_view_tick().await;
                 if self.notification.is_blinking_running()
                     || self.notification.is_blinking_waiting()
@@ -2110,13 +2305,26 @@ impl App {
                 return;
             }
 
-            if let Ok(raw) = if self.agent_view_state.view_scroll > 0 {
+            let capture_history =
+                self.agent_view_state.view_scroll > 0 || self.active_copy_selection.is_some();
+            if let Ok(raw) = if capture_history {
                 tmux::capture_pane_history(&pane, MAX_RETAINED_LINES)
             } else {
                 tmux::capture_pane(&pane)
             } {
+                let old_lines = if self.active_copy_selection.is_some() {
+                    self.agent_view_state.lines.clone()
+                } else {
+                    Vec::new()
+                };
                 // update_lines returns true only when content changed.
                 if self.agent_view_state.update_lines(&raw) {
+                    if capture_history {
+                        let prepended_rows =
+                            prepended_row_count(&old_lines, &self.agent_view_state.lines)
+                                .unwrap_or(0);
+                        self.shift_active_copy_selection_rows(prepended_rows);
+                    }
                     self.dirty = true;
                 }
             }
@@ -2541,12 +2749,23 @@ impl App {
             }
         }
 
+        let mut prepended_rows = 0;
+        let copy_selection_active = self.active_copy_selection.is_some();
         let changed = if let AppState::GitViewer(ref mut gv) = self.state {
-            if gv.view_scroll > 0 {
+            if gv.view_scroll > 0 || copy_selection_active {
                 tmux::capture_pane_history(&pane, MAX_RETAINED_LINES)
                     .ok()
                     .map(|raw| {
+                        let old_lines = if copy_selection_active {
+                            gv.lines.clone()
+                        } else {
+                            Vec::new()
+                        };
                         let changed = gv.update_lines(&raw);
+                        if changed {
+                            prepended_rows =
+                                prepended_row_count(&old_lines, &gv.lines).unwrap_or(0);
+                        }
                         clamp_external_pane_scroll(&mut gv.view_scroll, gv.lines.len());
                         changed
                     })
@@ -2560,6 +2779,7 @@ impl App {
         } else {
             false
         };
+        self.shift_active_copy_selection_rows(prepended_rows);
         if changed {
             self.dirty = true;
         }
@@ -2804,12 +3024,23 @@ impl App {
             }
         }
 
+        let mut prepended_rows = 0;
+        let copy_selection_active = self.active_copy_selection.is_some();
         let changed = if let AppState::TerminalView(ref mut tv) = self.state {
-            if tv.view_scroll > 0 {
+            if tv.view_scroll > 0 || copy_selection_active {
                 tmux::capture_pane_history(&pane, MAX_RETAINED_LINES)
                     .ok()
                     .map(|raw| {
+                        let old_lines = if copy_selection_active {
+                            tv.lines.clone()
+                        } else {
+                            Vec::new()
+                        };
                         let changed = tv.update_lines(&raw);
+                        if changed {
+                            prepended_rows =
+                                prepended_row_count(&old_lines, &tv.lines).unwrap_or(0);
+                        }
                         clamp_external_pane_scroll(&mut tv.view_scroll, tv.lines.len());
                         changed
                     })
@@ -2823,6 +3054,7 @@ impl App {
         } else {
             false
         };
+        self.shift_active_copy_selection_rows(prepended_rows);
         if changed {
             self.dirty = true;
         }
@@ -3813,6 +4045,32 @@ pub(crate) fn pane_visible_text(
     }
 }
 
+fn prepended_row_count(old_lines: &[String], new_lines: &[String]) -> Option<usize> {
+    if old_lines.is_empty() || new_lines.len() < old_lines.len() {
+        return None;
+    }
+    let start = new_lines.len() - old_lines.len();
+    (new_lines[start..] == *old_lines).then_some(start)
+}
+
+fn normalized_buffer_range(
+    selection: ActiveCopySelection,
+) -> crate::ghostty::render::SelectionRange {
+    selection.buffer_range()
+}
+
+fn selection_buffer_range_to_visible(
+    selection: crate::ghostty::render::SelectionRange,
+    visible_start: usize,
+) -> Option<crate::ghostty::render::SelectionRange> {
+    let start_row = (selection.start_row as usize).checked_sub(visible_start)?;
+    let end_row = (selection.end_row as usize).checked_sub(visible_start)?;
+    Some(crate::ghostty::render::SelectionRange::new(
+        (selection.start_col, start_row.min(u16::MAX as usize) as u16),
+        (selection.end_col, end_row.min(u16::MAX as usize) as u16),
+    ))
+}
+
 fn resized_view_scroll(
     total_lines: usize,
     view_scroll: usize,
@@ -3846,6 +4104,14 @@ fn pane_inner_rect(term_cols: u16, term_rows: u16) -> Rect {
 fn mouse_to_pane_cell(mouse: MouseEvent, clamp: bool) -> Option<PaneCellPoint> {
     let (term_cols, term_rows) = crossterm::terminal::size().ok()?;
     let inner = pane_inner_rect(term_cols, term_rows);
+    mouse_to_pane_cell_in_rect(mouse, inner, clamp)
+}
+
+fn mouse_to_pane_cell_in_rect(
+    mouse: MouseEvent,
+    inner: Rect,
+    clamp: bool,
+) -> Option<PaneCellPoint> {
     if inner.width == 0 || inner.height == 0 {
         return None;
     }
@@ -3870,6 +4136,38 @@ fn mouse_to_pane_cell(mouse: MouseEvent, clamp: bool) -> Option<PaneCellPoint> {
         col: col.saturating_sub(inner.x),
         row: row.saturating_sub(inner.y),
     })
+}
+
+fn mouse_to_pane_cell_edge(mouse: MouseEvent) -> Option<PaneMouseCell> {
+    let (term_cols, term_rows) = crossterm::terminal::size().ok()?;
+    let inner = pane_inner_rect(term_cols, term_rows);
+    mouse_to_pane_cell_edge_in_rect(mouse, inner)
+}
+
+fn mouse_to_pane_cell_edge_in_rect(mouse: MouseEvent, inner: Rect) -> Option<PaneMouseCell> {
+    if inner.width == 0 || inner.height == 0 {
+        return None;
+    }
+
+    let col = mouse.column.clamp(inner.x, inner.x + inner.width - 1);
+    let point_col = col.saturating_sub(inner.x);
+    if mouse.row < inner.y {
+        return Some(PaneMouseCell::Above(PaneCellPoint {
+            col: point_col,
+            row: 0,
+        }));
+    }
+    if mouse.row >= inner.y + inner.height {
+        return Some(PaneMouseCell::Below(PaneCellPoint {
+            col: point_col,
+            row: inner.height - 1,
+        }));
+    }
+
+    Some(PaneMouseCell::Inside(PaneCellPoint {
+        col: point_col,
+        row: mouse.row.saturating_sub(inner.y),
+    }))
 }
 
 fn is_unmodified_left_button(mouse: MouseEvent) -> bool {
@@ -4022,6 +4320,99 @@ mod project_tests {
         assert_eq!(pane_visible_line_range(6, 0, 3), (3, 6));
         assert_eq!(pane_visible_line_range(6, 2, 3), (1, 4));
         assert_eq!(pane_visible_line_range(2, 8, 3), (0, 2));
+    }
+
+    #[test]
+    fn prepended_row_count_detects_history_prefix_growth() {
+        let old = vec!["visible-a".to_string(), "visible-b".to_string()];
+        let new = vec![
+            "history-a".to_string(),
+            "history-b".to_string(),
+            "visible-a".to_string(),
+            "visible-b".to_string(),
+        ];
+        assert_eq!(prepended_row_count(&old, &new), Some(2));
+
+        let appended = vec![
+            "visible-a".to_string(),
+            "visible-b".to_string(),
+            "live-c".to_string(),
+        ];
+        assert_eq!(prepended_row_count(&old, &appended), None);
+    }
+
+    #[test]
+    fn mouse_to_pane_cell_edge_classifies_vertical_edges_and_clamps_columns() {
+        let inner = Rect {
+            x: 10,
+            y: 5,
+            width: 20,
+            height: 6,
+        };
+
+        let above = MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 4,
+            row: 2,
+            modifiers: KeyModifiers::empty(),
+        };
+        assert_eq!(
+            mouse_to_pane_cell_edge_in_rect(above, inner),
+            Some(PaneMouseCell::Above(PaneCellPoint { col: 0, row: 0 }))
+        );
+
+        let below = MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 99,
+            row: 12,
+            modifiers: KeyModifiers::empty(),
+        };
+        assert_eq!(
+            mouse_to_pane_cell_edge_in_rect(below, inner),
+            Some(PaneMouseCell::Below(PaneCellPoint { col: 19, row: 5 }))
+        );
+
+        let inside = MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 13,
+            row: 8,
+            modifiers: KeyModifiers::empty(),
+        };
+        assert_eq!(
+            mouse_to_pane_cell_edge_in_rect(inside, inner),
+            Some(PaneMouseCell::Inside(PaneCellPoint { col: 3, row: 3 }))
+        );
+    }
+
+    #[test]
+    fn selection_buffer_range_to_visible_preserves_columns() {
+        let selection = crate::ghostty::render::SelectionRange::new((4, 10), (7, 14));
+        let visible = selection_buffer_range_to_visible(selection, 10).unwrap();
+
+        assert_eq!(
+            visible,
+            crate::ghostty::render::SelectionRange::new((4, 0), (7, 4))
+        );
+    }
+
+    #[test]
+    fn active_copy_selection_normalizes_buffer_rows() {
+        let drag = MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::empty(),
+        };
+        let selection = ActiveCopySelection {
+            anchor: PaneBufferPoint { col: 8, row: 12 },
+            focus: PaneBufferPoint { col: 2, row: 9 },
+            last_drag: drag,
+        };
+
+        assert_eq!(
+            normalized_buffer_range(selection),
+            crate::ghostty::render::SelectionRange::new((2, 9), (8, 12))
+        );
     }
 
     #[test]
