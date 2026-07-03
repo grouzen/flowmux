@@ -155,6 +155,7 @@ impl AgentRunner {
         agent_type: AgentType,
         create_worktree: bool,
         git_repo_root: Option<&str>,
+        initialize_submodules: bool,
         copy_directories: Vec<String>,
         symlink_directories: Vec<String>,
     ) -> Result<(AgentConfig, Box<dyn AgentAdapter>)> {
@@ -166,6 +167,7 @@ impl AgentRunner {
             dir,
             create_worktree,
             git_repo_root,
+            initialize_submodules,
             &self.worktrees_base,
             WorktreeMaterialization {
                 copy_directories,
@@ -334,6 +336,7 @@ fn prepare_worktree_directory(
     dir: &str,
     create_worktree: bool,
     git_repo_root: Option<&str>,
+    initialize_submodules: bool,
     worktrees_base: &Path,
     materialization: WorktreeMaterialization,
 ) -> Result<(String, Option<String>)> {
@@ -356,6 +359,18 @@ fn prepare_worktree_directory(
 
     if let Err(error) =
         materialize_worktree_directories(repo_root_path, Path::new(dir), &wt_path, &materialization)
+    {
+        return match git::remove_worktree(repo_root_path, &wt_path, &branch, !use_existing) {
+            Ok(()) => Err(error),
+            Err(cleanup_error) => Err(error.context(format!(
+                "failed to roll back git worktree {:?}: {}",
+                wt_path, cleanup_error
+            ))),
+        };
+    }
+
+    if initialize_submodules
+        && let Err(error) = git::initialize_submodules(&wt_path)
     {
         return match git::remove_worktree(repo_root_path, &wt_path, &branch, !use_existing) {
             Ok(()) => Err(error),
@@ -667,6 +682,7 @@ mod tests {
             selected_dir.to_str().unwrap(),
             true,
             Some(repo_root.to_str().unwrap()),
+            false,
             &worktrees_base,
             WorktreeMaterialization {
                 copy_directories: vec!["missing".into()],
@@ -700,6 +716,7 @@ mod tests {
             selected_dir.to_str().unwrap(),
             true,
             Some(repo_root.to_str().unwrap()),
+            false,
             &worktrees_base,
             WorktreeMaterialization {
                 copy_directories: vec!["missing".into()],
@@ -714,5 +731,52 @@ mod tests {
         assert!(!worktree_path.exists());
         assert!(!git_worktree_list_contains(&repo_root, &worktree_path));
         assert!(git::branch_exists(&repo_root, &branch));
+    }
+
+    #[test]
+    fn prepare_worktree_directory_initializes_submodules_when_requested() {
+        let temp = TestDir::new("init-submodules");
+        let repo_root = init_test_repo(&temp);
+        let submodule_remote = temp.path.join("submodule-remote");
+        let worktrees_base = temp.path.join("worktrees");
+
+        std::fs::create_dir_all(&submodule_remote).unwrap();
+        run_git(&submodule_remote, &["init"]);
+        run_git(&submodule_remote, &["config", "user.name", "Flowmux Tests"]);
+        run_git(
+            &submodule_remote,
+            &["config", "user.email", "flowmux@example.com"],
+        );
+        std::fs::write(submodule_remote.join("submodule.txt"), "submodule\n").unwrap();
+        run_git(&submodule_remote, &["add", "submodule.txt"]);
+        run_git(&submodule_remote, &["commit", "-m", "init"]);
+
+        let output = Command::new("git")
+            .current_dir(&repo_root)
+            .args(["-c", "protocol.file.allow=always", "submodule", "add"])
+            .arg(&submodule_remote)
+            .arg("private-api")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git submodule add failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        run_git(&repo_root, &["commit", "-am", "add submodule"]);
+
+        let (worktree_dir, _) = prepare_worktree_directory(
+            "agent with submodules",
+            repo_root.to_str().unwrap(),
+            true,
+            Some(repo_root.to_str().unwrap()),
+            true,
+            &worktrees_base,
+            WorktreeMaterialization::default(),
+        )
+        .unwrap();
+
+        let submodule_file = Path::new(&worktree_dir).join("private-api/submodule.txt");
+        assert_eq!(std::fs::read_to_string(submodule_file).unwrap(), "submodule\n");
     }
 }

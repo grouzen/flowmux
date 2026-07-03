@@ -394,6 +394,7 @@ pub enum CreateField {
     CreateWorktree,
     CopyDirectories,
     SymlinkDirectories,
+    InitializeSubmodules,
     AgentType,
 }
 
@@ -506,6 +507,8 @@ pub struct CreateAgentState {
     /// Whether to create a git worktree for this agent.
     /// Only meaningful (and shown in the UI) when `git_repo_root.is_some()`.
     pub create_worktree: bool,
+    pub has_git_submodules: bool,
+    pub initialize_submodules: bool,
     pub copy_directories_enabled: bool,
     pub symlink_directories_enabled: bool,
     pub copy_directories: RelativeDirSelector,
@@ -527,6 +530,8 @@ impl Default for CreateAgentState {
             selected_type_idx: 0,
             git_repo_root: None,
             create_worktree: false,
+            has_git_submodules: false,
+            initialize_submodules: true,
             copy_directories_enabled: false,
             symlink_directories_enabled: false,
             copy_directories: RelativeDirSelector::default(),
@@ -551,6 +556,10 @@ impl CreateAgentState {
 
     pub fn worktree_selectors_visible(&self) -> bool {
         self.git_repo_root.is_some() && self.create_worktree
+    }
+
+    pub fn initialize_submodules_visible(&self) -> bool {
+        self.worktree_selectors_visible() && self.has_git_submodules
     }
 
     pub fn selector_enabled(&self, field: &CreateField) -> bool {
@@ -700,6 +709,9 @@ impl CreateAgentState {
             }
             _ => {} // unchanged
         }
+        self.has_git_submodules = new_root
+            .as_ref()
+            .is_some_and(|repo_root| crate::git::repo_has_submodules(repo_root));
         self.git_repo_root = new_root;
     }
 }
@@ -2886,6 +2898,7 @@ impl App {
                     &current_focus,
                     self.create_state.git_repo_root.is_some(),
                     self.create_state.create_worktree,
+                    self.create_state.has_git_submodules,
                     self.create_state.available_types.len() > 1,
                 );
                 self.create_state.error = None;
@@ -2936,7 +2949,9 @@ impl App {
                         self.create_state.selected_type_idx = idx.saturating_sub(1);
                     }
                 }
-                CreateField::Name | CreateField::CreateWorktree => {}
+                CreateField::Name
+                | CreateField::CreateWorktree
+                | CreateField::InitializeSubmodules => {}
             },
             KeyCode::Down => match self.create_state.focus {
                 CreateField::Directory => {
@@ -2972,7 +2987,9 @@ impl App {
                         self.create_state.selected_type_idx = (idx + 1).min(n - 1);
                     }
                 }
-                CreateField::Name | CreateField::CreateWorktree => {}
+                CreateField::Name
+                | CreateField::CreateWorktree
+                | CreateField::InitializeSubmodules => {}
             },
 
             KeyCode::Enter => {
@@ -3014,6 +3031,8 @@ impl App {
                     let agent_type = self.create_state.selected_agent_type();
                     let create_worktree = self.create_state.create_worktree
                         && self.create_state.git_repo_root.is_some();
+                    let initialize_submodules =
+                        create_worktree && self.create_state.initialize_submodules_visible();
                     let git_repo_root = self
                         .create_state
                         .git_repo_root
@@ -3038,6 +3057,7 @@ impl App {
                             agent_type,
                             create_worktree,
                             git_repo_root.as_deref(),
+                            initialize_submodules,
                             copy_directories,
                             symlink_directories,
                         )
@@ -3095,7 +3115,9 @@ impl App {
                             }
                         }
                     }
-                    CreateField::AgentType | CreateField::CreateWorktree => {}
+                    CreateField::AgentType
+                    | CreateField::CreateWorktree
+                    | CreateField::InitializeSubmodules => {}
                 }
             }
 
@@ -3129,7 +3151,9 @@ impl App {
                             }
                         }
                     }
-                    CreateField::AgentType | CreateField::CreateWorktree => {}
+                    CreateField::AgentType
+                    | CreateField::CreateWorktree
+                    | CreateField::InitializeSubmodules => {}
                 }
             }
 
@@ -3177,7 +3201,9 @@ impl App {
                             }
                         }
                     }
-                    CreateField::AgentType | CreateField::CreateWorktree => {}
+                    CreateField::AgentType
+                    | CreateField::CreateWorktree
+                    | CreateField::InitializeSubmodules => {}
                 }
             }
 
@@ -3240,9 +3266,16 @@ impl App {
                                     &CreateField::CreateWorktree,
                                     self.create_state.git_repo_root.is_some(),
                                     self.create_state.create_worktree,
+                                    self.create_state.has_git_submodules,
                                     self.create_state.available_types.len() > 1,
                                 );
                             }
+                        }
+                    }
+                    CreateField::InitializeSubmodules => {
+                        if c == ' ' && self.create_state.initialize_submodules_visible() {
+                            self.create_state.initialize_submodules =
+                                !self.create_state.initialize_submodules;
                         }
                     }
                 }
@@ -4137,6 +4170,7 @@ fn next_create_field(
     current: &CreateField,
     has_git_repo: bool,
     create_worktree: bool,
+    has_git_submodules: bool,
     has_multiple_agent_types: bool,
 ) -> CreateField {
     match current {
@@ -4161,6 +4195,15 @@ fn next_create_field(
         }
         CreateField::CopyDirectories => CreateField::SymlinkDirectories,
         CreateField::SymlinkDirectories => {
+            if has_git_submodules {
+                CreateField::InitializeSubmodules
+            } else if has_multiple_agent_types {
+                CreateField::AgentType
+            } else {
+                CreateField::Name
+            }
+        }
+        CreateField::InitializeSubmodules => {
             if has_multiple_agent_types {
                 CreateField::AgentType
             } else {
@@ -5225,17 +5268,44 @@ mod tests {
     #[test]
     fn next_create_field_skips_worktree_selectors_when_disabled() {
         assert_eq!(
-            next_create_field(&CreateField::CreateWorktree, true, false, true),
+            next_create_field(&CreateField::CreateWorktree, true, false, false, true),
             CreateField::AgentType
         );
         assert_eq!(
-            next_create_field(&CreateField::CreateWorktree, true, true, true),
+            next_create_field(&CreateField::CreateWorktree, true, true, true, true),
             CreateField::CopyDirectories
         );
         assert_eq!(
-            next_create_field(&CreateField::SymlinkDirectories, true, true, false),
+            next_create_field(&CreateField::SymlinkDirectories, true, true, true, false),
+            CreateField::InitializeSubmodules
+        );
+        assert_eq!(
+            next_create_field(&CreateField::InitializeSubmodules, true, true, true, false),
             CreateField::Name
         );
+        assert_eq!(
+            next_create_field(&CreateField::SymlinkDirectories, true, true, false, true),
+            CreateField::AgentType
+        );
+    }
+
+    #[test]
+    fn create_agent_state_defaults_to_initializing_submodules() {
+        let state = CreateAgentState::default();
+        assert!(state.initialize_submodules);
+    }
+
+    #[test]
+    fn initialize_submodules_visibility_requires_worktree_and_submodules() {
+        let mut state = CreateAgentState::default();
+        assert!(!state.initialize_submodules_visible());
+
+        state.git_repo_root = Some(PathBuf::from("/tmp/repo"));
+        state.create_worktree = true;
+        assert!(!state.initialize_submodules_visible());
+
+        state.has_git_submodules = true;
+        assert!(state.initialize_submodules_visible());
     }
 
     #[test]

@@ -58,6 +58,11 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
         state.focus == CreateField::SymlinkDirectories,
         state.worktree_selectors_visible(),
     );
+    let initialize_submodules_rows: u16 = if state.initialize_submodules_visible() {
+        2
+    } else {
+        0
+    };
 
     let agent_rows = state.available_types.len().max(1) as u16;
     let agent_label_row: u16 = 1;
@@ -74,6 +79,7 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
         + worktree_rows
         + copy_rows
         + symlink_rows
+        + initialize_submodules_rows
         + 1
         + agent_label_row
         + agent_rows
@@ -123,6 +129,10 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
         state.focus == CreateField::SymlinkDirectories,
         state.worktree_selectors_visible(),
     );
+    if state.initialize_submodules_visible() {
+        constraints.push(Constraint::Length(1)); // blank gap
+        constraints.push(Constraint::Length(1)); // checkbox
+    }
     constraints.push(Constraint::Length(1)); // blank
     constraints.push(Constraint::Length(1)); // "Agent" label
     for _ in 0..agent_rows {
@@ -357,6 +367,44 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
         state.focus == CreateField::SymlinkDirectories,
         state.worktree_selectors_visible(),
     );
+    if state.initialize_submodules_visible() {
+        row += 1;
+
+        let focused = state.focus == CreateField::InitializeSubmodules;
+        let checkbox = if state.initialize_submodules {
+            "[x]"
+        } else {
+            "[ ]"
+        };
+        let label_style = if focused {
+            Style::default().fg(FG).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(GRAY)
+        };
+        let checkbox_style = if state.initialize_submodules {
+            if focused {
+                Style::default().fg(CYAN).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(CYAN)
+            }
+        } else {
+            Style::default().fg(GRAY)
+        };
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::raw(label_pad()),
+                Span::styled(checkbox, checkbox_style),
+                Span::styled(" Initialize submodules", label_style),
+                Span::styled(
+                    "  space",
+                    Style::default().fg(if focused { GRAY } else { BG2 }),
+                ),
+            ]))
+            .style(Style::default().bg(BG1)),
+            rows[row],
+        );
+        row += 1;
+    }
 
     // blank (before agent section)
     row += 1;
@@ -969,5 +1017,43 @@ mod tests {
             .unwrap();
 
         assert_eq!(buttons_row, 16);
+    }
+
+    #[test]
+    fn render_create_agent_shows_submodule_checkbox_only_when_visible() {
+        let visible = CreateAgentState {
+            name: "agent-1".into(),
+            directory: "/tmp/repo".into(),
+            git_repo_root: Some("/tmp/repo".into()),
+            create_worktree: true,
+            has_git_submodules: true,
+            ..CreateAgentState::default()
+        };
+        let hidden_without_submodules = CreateAgentState {
+            name: "agent-1".into(),
+            directory: "/tmp/repo".into(),
+            git_repo_root: Some("/tmp/repo".into()),
+            create_worktree: true,
+            has_git_submodules: false,
+            ..CreateAgentState::default()
+        };
+        let hidden_without_worktree = CreateAgentState {
+            name: "agent-1".into(),
+            directory: "/tmp/repo".into(),
+            git_repo_root: Some("/tmp/repo".into()),
+            create_worktree: false,
+            has_git_submodules: true,
+            ..CreateAgentState::default()
+        };
+
+        assert!(buffer_text(&render_buffer(&visible, 80, 24)).contains("Initialize submodules"));
+        assert!(
+            !buffer_text(&render_buffer(&hidden_without_submodules, 80, 24))
+                .contains("Initialize submodules")
+        );
+        assert!(
+            !buffer_text(&render_buffer(&hidden_without_worktree, 80, 24))
+                .contains("Initialize submodules")
+        );
     }
 }
