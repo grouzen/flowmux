@@ -40,8 +40,8 @@ const features = [
 const installMethods = [
   {
     id: 'homebrew',
-    label: 'Homebrew',
-    command: `brew install grouzen/tap/flowmux`,
+    label: 'Homebrew (macOS only)',
+    command: `brew install --cask grouzen/tap/flowmux`,
   },
   {
     id: 'macos',
@@ -210,7 +210,7 @@ const workflowSteps = [
     <section class="install" id="install" aria-label="Install">
       <div>
         <p class="eyebrow">Install</p>
-        <p>Requires tmux and at least one supported agent CLI. Homebrew is the preferred path on supported systems.</p>
+        <p>Requires tmux and at least one supported agent CLI. On macOS, Homebrew is the preferred install path.</p>
         <a class="text-link" href="https://github.com/grouzen/flowmux/releases">Prebuilt Linux and macOS binaries are available on GitHub Releases.</a>
       </div>
       <div class="install-options">
