@@ -1,9 +1,12 @@
 name: Update Homebrew Cask
 
 on:
-  release:
-    types:
-      - published
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to sync, for example v0.1.2
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       tag:
@@ -17,7 +20,6 @@ permissions:
 jobs:
   update-cask:
     name: Update flowmux cask
-    if: github.event_name != 'release' || (!github.event.release.draft && !github.event.release.prerelease)
     runs-on: ubuntu-latest
 
     steps:
@@ -26,23 +28,28 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           INPUT_TAG: ${{ inputs.tag }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
 
-          if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
-            tag="$RELEASE_TAG"
-          else
-            tag="$INPUT_TAG"
-          fi
-
-          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}")"
+          tag="$INPUT_TAG"
           asset_name="flowmux-${tag}-universal2-apple-darwin.tar.gz"
-          asset_url="$(
-            jq -r --arg asset_name "$asset_name" \
-              '.assets[] | select(.name == $asset_name) | .browser_download_url' \
-              <<<"$release_json"
-          )"
+
+          asset_url=""
+          for attempt in {1..12}; do
+            release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}")"
+            asset_url="$(
+              jq -r --arg asset_name "$asset_name" \
+                '.assets[] | select(.name == $asset_name) | .browser_download_url' \
+                <<<"$release_json"
+            )"
+
+            if [[ -n "$asset_url" ]]; then
+              break
+            fi
+
+            echo "Release asset not found yet: ${asset_name} (attempt ${attempt}/12)"
+            sleep 10
+          done
 
           if [[ -z "$asset_url" ]]; then
             echo "Release asset not found: $asset_name" >&2

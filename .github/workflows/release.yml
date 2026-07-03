@@ -141,3 +141,11 @@ jobs:
             dist/*.tar.gz
             dist/checksums.txt
           generate_release_notes: true
+
+  update-homebrew-cask:
+    name: Update Homebrew cask
+    needs: publish
+    uses: ./.github/workflows/update-homebrew-cask.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets: inherit
