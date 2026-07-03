@@ -5,6 +5,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Clear, Paragraph},
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::CreateProjectState;
 use crate::ui::theme::*;
@@ -50,18 +51,22 @@ pub fn render_create_project(f: &mut Frame, area: Rect, state: &CreateProjectSta
         rows[1],
     );
 
+    let value_width = rows[3].width.saturating_sub(12) as usize;
+    let name = state.name.value.as_str();
+    let name_display = truncate_left(name, value_width);
+
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::raw("   "),
             Span::styled("Name", Style::default().fg(GRAY)),
             Span::raw("  "),
             Span::styled(
-                if state.name.is_empty() {
+                if name.is_empty() {
                     "type a project name..."
                 } else {
-                    state.name.as_str()
+                    name_display.as_str()
                 },
-                if state.name.is_empty() {
+                if name.is_empty() {
                     Style::default().fg(BG2)
                 } else {
                     Style::default().fg(FG)
@@ -105,9 +110,37 @@ pub fn render_create_project(f: &mut Frame, area: Rect, state: &CreateProjectSta
         rows[6],
     );
 
-    let cursor_x = (rows[3].x + 9 + state.name.len() as u16)
+    let displayed_start = truncate_left_start(name, value_width);
+    let cursor = previous_char_boundary(name, state.name.cursor.min(name.len()));
+    let cursor_offset = cursor.saturating_sub(displayed_start);
+    let cursor_width = UnicodeWidthStr::width(&name[displayed_start..][..cursor_offset]);
+    let cursor_x = (rows[3].x + 9 + cursor_width as u16)
         .min(dialog_area.x + dialog_area.width.saturating_sub(1));
     f.set_cursor_position((cursor_x, rows[3].y));
+}
+
+fn truncate_left(s: &str, max: usize) -> String {
+    let start = truncate_left_start(s, max);
+    s[start..].to_string()
+}
+
+fn truncate_left_start(s: &str, max: usize) -> usize {
+    if max == 0 {
+        return s.len();
+    }
+    if s.len() <= max {
+        0
+    } else {
+        previous_char_boundary(s, s.len() - max)
+    }
+}
+
+fn previous_char_boundary(s: &str, mut idx: usize) -> usize {
+    idx = idx.min(s.len());
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
 }
 
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {

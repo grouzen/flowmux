@@ -185,8 +185,11 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
     );
     if name_focused {
         let val_width = rows[row].width.saturating_sub(LABEL_WIDTH + 3);
-        let displayed_len = state.name.len().min(val_width as usize) as u16;
-        let cx = (rows[row].x + LABEL_WIDTH + displayed_len)
+        let displayed_start = truncate_left_start(&state.name, val_width as usize);
+        let cursor = previous_char_boundary(&state.name, state.name_cursor.min(state.name.len()));
+        let cursor_offset = cursor.saturating_sub(displayed_start);
+        let cursor_width = UnicodeWidthStr::width(&state.name[displayed_start..][..cursor_offset]);
+        let cx = (rows[row].x + LABEL_WIDTH + cursor_width as u16)
             .min(modal_area.x + modal_area.width.saturating_sub(1));
         f.set_cursor_position((cx, rows[row].y));
     }
@@ -281,7 +284,8 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
             // Prefix " ● " / "   " = 3 chars; name fills the rest.
             // Content width = row width minus 10-char pad minus 1 for scrollbar column.
             let content_width = rows[row].width.saturating_sub(11) as usize;
-            let name_width = content_width.saturating_sub(3);
+            let hint_width = if selected { 6 } else { 0 };
+            let name_width = content_width.saturating_sub(3 + hint_width);
 
             let line = if selected {
                 Line::from(vec![
@@ -290,6 +294,7 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
                         format!(" ● {:<width$}", display, width = name_width),
                         Style::default().fg(BG).bg(FG).add_modifier(Modifier::BOLD),
                     ),
+                    Span::styled(" enter", Style::default().fg(GRAY).bg(BG1)),
                     Span::styled(scrollbar_char.to_string(), Style::default().fg(BG2).bg(BG1)),
                 ])
             } else {
@@ -673,8 +678,16 @@ fn render_selector_section(
 
     row += 1;
 
-    for selected in &selector.selected_dirs {
-        render_selector_value_row(f, rows[row], &format!("./{selected}"), false, focused);
+    let last_selected_idx = selector.selected_dirs.len().saturating_sub(1);
+    for (idx, selected) in selector.selected_dirs.iter().enumerate() {
+        render_selector_value_row(
+            f,
+            rows[row],
+            &format!("./{selected}"),
+            false,
+            focused,
+            focused && idx == last_selected_idx,
+        );
         row += 1;
     }
 
@@ -685,7 +698,7 @@ fn render_selector_section(
             selector.current_display()
         };
         let candidate_row = rows[row];
-        render_selector_value_row(f, candidate_row, &candidate_display, true, focused);
+        render_selector_value_row(f, candidate_row, &candidate_display, true, focused, false);
         let val_width = candidate_row.width.saturating_sub(LABEL_WIDTH + 3);
         let displayed_len = candidate_display.len().min(val_width as usize) as u16;
         let cx = (candidate_row.x + LABEL_WIDTH + displayed_len)
@@ -714,7 +727,8 @@ fn render_selector_section(
                 ' '
             };
             let content_width = rows[row].width.saturating_sub(11) as usize;
-            let name_width = content_width.saturating_sub(3);
+            let hint_width = if selected { 6 } else { 0 };
+            let name_width = content_width.saturating_sub(3 + hint_width);
 
             let line = if selected {
                 Line::from(vec![
@@ -723,6 +737,7 @@ fn render_selector_section(
                         format!(" ● {:<width$}", suggestion, width = name_width),
                         Style::default().fg(BG).bg(FG).add_modifier(Modifier::BOLD),
                     ),
+                    Span::styled(" enter", Style::default().fg(GRAY).bg(BG1)),
                     Span::styled(scrollbar_char.to_string(), Style::default().fg(BG2).bg(BG1)),
                 ])
             } else {
@@ -752,6 +767,7 @@ fn render_selector_value_row(
     value: &str,
     is_current: bool,
     focused: bool,
+    show_backspace_hint: bool,
 ) {
     let style = if is_current {
         if focused {
@@ -767,6 +783,14 @@ fn render_selector_value_row(
         Paragraph::new(Line::from(vec![
             Span::raw(label_pad()),
             Span::styled(value.to_string(), style),
+            Span::styled(
+                if show_backspace_hint {
+                    "  backspace"
+                } else {
+                    ""
+                },
+                Style::default().fg(GRAY),
+            ),
         ]))
         .style(Style::default().bg(BG1)),
         area,
@@ -877,15 +901,27 @@ fn wrap_text_lines(text: &str, width: usize) -> Vec<String> {
 }
 
 fn truncate_left(s: &str, max: usize) -> String {
+    let start = truncate_left_start(s, max);
+    s[start..].to_string()
+}
+
+fn truncate_left_start(s: &str, max: usize) -> usize {
     if max == 0 {
-        return String::new();
+        return s.len();
     }
     if s.len() <= max {
-        s.to_string()
+        0
     } else {
-        let start = s.len() - max;
-        s[start..].to_string()
+        previous_char_boundary(s, s.len() - max)
     }
+}
+
+fn previous_char_boundary(s: &str, mut idx: usize) -> usize {
+    idx = idx.min(s.len());
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
 }
 
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
@@ -939,6 +975,99 @@ mod tests {
 
         assert!(text.contains("Agent"));
         assert!(text.contains("◉ codex"));
+    }
+
+    #[test]
+    fn render_create_agent_can_focus_single_available_type() {
+        let state = CreateAgentState {
+            name: "agent-1".into(),
+            directory: "/tmp".into(),
+            focus: CreateField::AgentType,
+            available_types: vec![AgentType::Codex],
+            selected_type_idx: 0,
+            ..CreateAgentState::default()
+        };
+
+        let buffer = render_buffer(&state, 80, 24);
+        let text = buffer_text(&buffer);
+
+        assert!(text.lines().any(|line| line.contains("◉ codex")));
+    }
+
+    #[test]
+    fn render_create_agent_shows_enter_hint_on_active_working_directory_row() {
+        let state = CreateAgentState {
+            name: "agent-1".into(),
+            directory: "/tmp".into(),
+            focus: CreateField::Directory,
+            dir_matches: vec!["src".into()],
+            dir_selected_idx: 0,
+            ..CreateAgentState::default()
+        };
+
+        let buffer = render_buffer(&state, 80, 24);
+        let text = buffer_text(&buffer);
+
+        assert!(
+            text.lines()
+                .any(|line| line.contains("src") && line.contains("enter"))
+        );
+    }
+
+    #[test]
+    fn render_create_agent_shows_enter_hint_on_active_directory_selector_row() {
+        let state = CreateAgentState {
+            name: "agent-1".into(),
+            directory: "/tmp".into(),
+            focus: CreateField::CopyDirectories,
+            git_repo_root: Some("/tmp".into()),
+            create_worktree: true,
+            copy_directories_enabled: true,
+            copy_directories: RelativeDirSelector {
+                matches: vec!["target".into()],
+                selected_idx: 0,
+                ..RelativeDirSelector::default()
+            },
+            ..CreateAgentState::default()
+        };
+
+        let buffer = render_buffer(&state, 80, 28);
+        let text = buffer_text(&buffer);
+
+        assert!(
+            text.lines()
+                .any(|line| line.contains("target") && line.contains("enter"))
+        );
+    }
+
+    #[test]
+    fn render_create_agent_shows_backspace_hint_on_last_selected_directory() {
+        let state = CreateAgentState {
+            name: "agent-1".into(),
+            directory: "/tmp".into(),
+            focus: CreateField::SymlinkDirectories,
+            git_repo_root: Some("/tmp".into()),
+            create_worktree: true,
+            symlink_directories_enabled: true,
+            symlink_directories: RelativeDirSelector {
+                selected_dirs: vec!["target".into(), "vendor".into()],
+                ..RelativeDirSelector::default()
+            },
+            ..CreateAgentState::default()
+        };
+
+        let buffer = render_buffer(&state, 90, 28);
+        let text = buffer_text(&buffer);
+
+        assert!(
+            text.lines()
+                .any(|line| line.contains("./vendor") && line.contains("backspace"))
+        );
+        assert!(
+            !text
+                .lines()
+                .any(|line| line.contains("./target") && line.contains("backspace"))
+        );
     }
 
     #[test]
