@@ -590,13 +590,7 @@ fn render_keybindings_bar(
     spans.push(Span::raw(" "));
     push_keybind(&mut spans, "ctrl+d", "delete project", dimmed);
     spans.push(Span::raw(" "));
-    push_keybind(&mut spans, "tab (0-9)", "switch projects", dimmed);
-    spans.push(Span::raw(" "));
     push_keybind(&mut spans, "enter", "open", dimmed);
-    spans.push(Span::raw(" "));
-    push_keybind(&mut spans, "ctrl+arrows", "move card", dimmed);
-    spans.push(Span::raw(" "));
-    push_keybind(&mut spans, "pgup/pgdown", "scroll", dimmed);
     spans.push(Span::raw(" "));
     push_keybind(&mut spans, "q", "quit", dimmed);
 
