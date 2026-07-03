@@ -146,8 +146,44 @@ pub struct RemoveAgentState {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct TextInputState {
+    pub value: String,
+    pub cursor: usize,
+}
+
+impl TextInputState {
+    fn move_left(&mut self) {
+        move_text_cursor_left(&self.value, &mut self.cursor);
+    }
+
+    fn move_right(&mut self) {
+        move_text_cursor_right(&self.value, &mut self.cursor);
+    }
+
+    fn move_home(&mut self) {
+        self.cursor = 0;
+    }
+
+    fn move_end(&mut self) {
+        self.cursor = self.value.len();
+    }
+
+    fn insert_char(&mut self, c: char) {
+        insert_text_char(&mut self.value, &mut self.cursor, c);
+    }
+
+    fn backspace(&mut self) {
+        backspace_text(&mut self.value, &mut self.cursor);
+    }
+
+    fn ctrl_w_delete(&mut self) {
+        ctrl_w_delete_text(&mut self.value, &mut self.cursor);
+    }
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct CreateProjectState {
-    pub name: String,
+    pub name: TextInputState,
     pub error: Option<String>,
 }
 
@@ -484,6 +520,7 @@ impl RelativeDirSelector {
 #[derive(Debug)]
 pub struct CreateAgentState {
     pub name: String,
+    pub name_cursor: usize,
     /// The confirmed base directory (always an existing dir or empty).
     pub directory: String,
     /// The filter prefix the user is currently typing within `directory`.
@@ -519,6 +556,7 @@ impl Default for CreateAgentState {
     fn default() -> Self {
         Self {
             name: String::new(),
+            name_cursor: 0,
             directory: String::new(),
             dir_filter: String::new(),
             focus: CreateField::Name,
@@ -554,6 +592,34 @@ impl CreateAgentState {
             && !self.available_types.is_empty()
     }
 
+    fn move_name_cursor_left(&mut self) {
+        move_text_cursor_left(&self.name, &mut self.name_cursor);
+    }
+
+    fn move_name_cursor_right(&mut self) {
+        move_text_cursor_right(&self.name, &mut self.name_cursor);
+    }
+
+    fn move_name_cursor_home(&mut self) {
+        self.name_cursor = 0;
+    }
+
+    fn move_name_cursor_end(&mut self) {
+        self.name_cursor = self.name.len();
+    }
+
+    fn insert_name_char(&mut self, c: char) {
+        insert_text_char(&mut self.name, &mut self.name_cursor, c);
+    }
+
+    fn backspace_name(&mut self) {
+        backspace_text(&mut self.name, &mut self.name_cursor);
+    }
+
+    fn ctrl_w_delete_name(&mut self) {
+        ctrl_w_delete_text(&mut self.name, &mut self.name_cursor);
+    }
+
     pub fn worktree_selectors_visible(&self) -> bool {
         self.git_repo_root.is_some() && self.create_worktree
     }
@@ -567,6 +633,20 @@ impl CreateAgentState {
             CreateField::CopyDirectories => self.copy_directories_enabled,
             CreateField::SymlinkDirectories => self.symlink_directories_enabled,
             _ => false,
+        }
+    }
+
+    fn disable_empty_selector(&mut self, field: &CreateField) {
+        match field {
+            CreateField::CopyDirectories if self.copy_directories.selected_dirs.is_empty() => {
+                self.copy_directories_enabled = false;
+            }
+            CreateField::SymlinkDirectories
+                if self.symlink_directories.selected_dirs.is_empty() =>
+            {
+                self.symlink_directories_enabled = false;
+            }
+            _ => {}
         }
     }
 
@@ -2892,6 +2972,7 @@ impl App {
                         }
                         return true;
                     }
+                    self.create_state.disable_empty_selector(&current_focus);
                 }
 
                 self.create_state.focus = next_create_field(
@@ -2899,7 +2980,6 @@ impl App {
                     self.create_state.git_repo_root.is_some(),
                     self.create_state.create_worktree,
                     self.create_state.has_git_submodules,
-                    self.create_state.available_types.len() > 1,
                 );
                 self.create_state.error = None;
                 if matches!(
@@ -2991,6 +3071,30 @@ impl App {
                 | CreateField::CreateWorktree
                 | CreateField::InitializeSubmodules => {}
             },
+
+            KeyCode::Left => {
+                if self.create_state.focus == CreateField::Name {
+                    self.create_state.move_name_cursor_left();
+                }
+            }
+
+            KeyCode::Right => {
+                if self.create_state.focus == CreateField::Name {
+                    self.create_state.move_name_cursor_right();
+                }
+            }
+
+            KeyCode::Home => {
+                if self.create_state.focus == CreateField::Name {
+                    self.create_state.move_name_cursor_home();
+                }
+            }
+
+            KeyCode::End => {
+                if self.create_state.focus == CreateField::Name {
+                    self.create_state.move_name_cursor_end();
+                }
+            }
 
             KeyCode::Enter => {
                 // When Directory focused: commit the highlighted suggestion name
@@ -3089,7 +3193,7 @@ impl App {
                 // Ctrl+W: delete back to the last word boundary (unix shell style)
                 match self.create_state.focus {
                     CreateField::Name => {
-                        ctrl_w_delete(&mut self.create_state.name);
+                        self.create_state.ctrl_w_delete_name();
                     }
                     CreateField::Directory => {
                         if !self.create_state.dir_filter.is_empty() {
@@ -3125,7 +3229,7 @@ impl App {
                 // Ctrl+W: delete back to the last word boundary (unix shell style)
                 match self.create_state.focus {
                     CreateField::Name => {
-                        ctrl_w_delete(&mut self.create_state.name);
+                        self.create_state.ctrl_w_delete_name();
                     }
                     CreateField::Directory => {
                         if !self.create_state.dir_filter.is_empty() {
@@ -3160,7 +3264,7 @@ impl App {
             KeyCode::Backspace => {
                 match self.create_state.focus {
                     CreateField::Name => {
-                        self.create_state.name.pop();
+                        self.create_state.backspace_name();
                     }
                     CreateField::Directory => {
                         if !self.create_state.dir_filter.is_empty() {
@@ -3210,7 +3314,7 @@ impl App {
             KeyCode::Char(c) => {
                 match self.create_state.focus {
                     CreateField::Name => {
-                        self.create_state.name.push(c);
+                        self.create_state.insert_name_char(c);
                     }
                     CreateField::Directory => {
                         self.create_state.dir_filter.push(c);
@@ -3267,7 +3371,6 @@ impl App {
                                     self.create_state.git_repo_root.is_some(),
                                     self.create_state.create_worktree,
                                     self.create_state.has_git_submodules,
-                                    self.create_state.available_types.len() > 1,
                                 );
                             }
                         }
@@ -3296,7 +3399,7 @@ impl App {
                 self.state = AppState::Dashboard;
             }
             KeyCode::Enter => {
-                let trimmed = self.create_project_state.name.trim();
+                let trimmed = self.create_project_state.name.value.trim();
                 if trimmed.is_empty() {
                     self.create_project_state.error = Some("Project name is required".into());
                     return true;
@@ -3325,19 +3428,31 @@ impl App {
                 self.state = AppState::Dashboard;
             }
             KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                ctrl_w_delete(&mut self.create_project_state.name);
+                self.create_project_state.name.ctrl_w_delete();
                 self.create_project_state.error = None;
             }
             KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                ctrl_w_delete(&mut self.create_project_state.name);
+                self.create_project_state.name.ctrl_w_delete();
                 self.create_project_state.error = None;
             }
             KeyCode::Backspace => {
-                self.create_project_state.name.pop();
+                self.create_project_state.name.backspace();
                 self.create_project_state.error = None;
             }
+            KeyCode::Left => {
+                self.create_project_state.name.move_left();
+            }
+            KeyCode::Right => {
+                self.create_project_state.name.move_right();
+            }
+            KeyCode::Home => {
+                self.create_project_state.name.move_home();
+            }
+            KeyCode::End => {
+                self.create_project_state.name.move_end();
+            }
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.create_project_state.name.push(c);
+                self.create_project_state.name.insert_char(c);
                 self.create_project_state.error = None;
             }
             _ => {}
@@ -4133,6 +4248,65 @@ fn key_event_to_tmux(key: &KeyEvent) -> String {
 // Ctrl+W helpers
 // ---------------------------------------------------------------------------
 
+fn clamp_text_cursor(text: &str, cursor: &mut usize) {
+    *cursor = (*cursor).min(text.len());
+    while *cursor > 0 && !text.is_char_boundary(*cursor) {
+        *cursor -= 1;
+    }
+}
+
+fn move_text_cursor_left(text: &str, cursor: &mut usize) {
+    clamp_text_cursor(text, cursor);
+    if *cursor == 0 {
+        return;
+    }
+    *cursor = text[..*cursor]
+        .char_indices()
+        .last()
+        .map(|(idx, _)| idx)
+        .unwrap_or(0);
+}
+
+fn move_text_cursor_right(text: &str, cursor: &mut usize) {
+    clamp_text_cursor(text, cursor);
+    if *cursor >= text.len() {
+        return;
+    }
+    *cursor = text[*cursor..]
+        .char_indices()
+        .nth(1)
+        .map(|(idx, _)| *cursor + idx)
+        .unwrap_or(text.len());
+}
+
+fn insert_text_char(text: &mut String, cursor: &mut usize, c: char) {
+    clamp_text_cursor(text, cursor);
+    text.insert(*cursor, c);
+    *cursor += c.len_utf8();
+}
+
+fn backspace_text(text: &mut String, cursor: &mut usize) {
+    clamp_text_cursor(text, cursor);
+    if *cursor == 0 {
+        return;
+    }
+    let prev = text[..*cursor]
+        .char_indices()
+        .last()
+        .map(|(idx, _)| idx)
+        .unwrap_or(0);
+    text.drain(prev..*cursor);
+    *cursor = prev;
+}
+
+fn ctrl_w_delete_text(text: &mut String, cursor: &mut usize) {
+    clamp_text_cursor(text, cursor);
+    let after_cursor = text.split_off(*cursor);
+    ctrl_w_delete(text);
+    *cursor = text.len();
+    text.push_str(&after_cursor);
+}
+
 /// Deletes the last "word" from a generic string (space-delimited).
 fn ctrl_w_delete(s: &mut String) {
     // Trim trailing spaces, then remove back to the next space
@@ -4171,45 +4345,32 @@ fn next_create_field(
     has_git_repo: bool,
     create_worktree: bool,
     has_git_submodules: bool,
-    has_multiple_agent_types: bool,
 ) -> CreateField {
     match current {
         CreateField::Name => CreateField::Directory,
         CreateField::Directory => {
             if has_git_repo {
                 CreateField::CreateWorktree
-            } else if has_multiple_agent_types {
-                CreateField::AgentType
             } else {
-                CreateField::Name
+                CreateField::AgentType
             }
         }
         CreateField::CreateWorktree => {
             if create_worktree {
                 CreateField::CopyDirectories
-            } else if has_multiple_agent_types {
-                CreateField::AgentType
             } else {
-                CreateField::Name
+                CreateField::AgentType
             }
         }
         CreateField::CopyDirectories => CreateField::SymlinkDirectories,
         CreateField::SymlinkDirectories => {
             if has_git_submodules {
                 CreateField::InitializeSubmodules
-            } else if has_multiple_agent_types {
-                CreateField::AgentType
             } else {
-                CreateField::Name
+                CreateField::AgentType
             }
         }
-        CreateField::InitializeSubmodules => {
-            if has_multiple_agent_types {
-                CreateField::AgentType
-            } else {
-                CreateField::Name
-            }
-        }
+        CreateField::InitializeSubmodules => CreateField::AgentType,
         CreateField::AgentType => CreateField::Name,
     }
 }
@@ -5268,25 +5429,177 @@ mod tests {
     #[test]
     fn next_create_field_skips_worktree_selectors_when_disabled() {
         assert_eq!(
-            next_create_field(&CreateField::CreateWorktree, true, false, false, true),
+            next_create_field(&CreateField::CreateWorktree, true, false, false),
             CreateField::AgentType
         );
         assert_eq!(
-            next_create_field(&CreateField::CreateWorktree, true, true, true, true),
+            next_create_field(&CreateField::CreateWorktree, true, true, true),
             CreateField::CopyDirectories
         );
         assert_eq!(
-            next_create_field(&CreateField::SymlinkDirectories, true, true, true, false),
+            next_create_field(&CreateField::SymlinkDirectories, true, true, true),
             CreateField::InitializeSubmodules
         );
         assert_eq!(
-            next_create_field(&CreateField::InitializeSubmodules, true, true, true, false),
-            CreateField::Name
-        );
-        assert_eq!(
-            next_create_field(&CreateField::SymlinkDirectories, true, true, false, true),
+            next_create_field(&CreateField::InitializeSubmodules, true, true, true),
             CreateField::AgentType
         );
+        assert_eq!(
+            next_create_field(&CreateField::SymlinkDirectories, true, true, false),
+            CreateField::AgentType
+        );
+        assert_eq!(
+            next_create_field(&CreateField::Directory, false, false, false),
+            CreateField::AgentType
+        );
+    }
+
+    #[test]
+    fn name_input_cursor_edits_in_place() {
+        let mut state = CreateAgentState {
+            name: "alpha beta".into(),
+            name_cursor: "alpha".len(),
+            ..CreateAgentState::default()
+        };
+
+        state.insert_name_char('-');
+        assert_eq!(state.name, "alpha- beta");
+        assert_eq!(state.name_cursor, "alpha-".len());
+
+        state.move_name_cursor_left();
+        state.backspace_name();
+        assert_eq!(state.name, "alph- beta");
+        assert_eq!(state.name_cursor, "alph".len());
+
+        state.move_name_cursor_right();
+        state.move_name_cursor_right();
+        state.ctrl_w_delete_name();
+        assert_eq!(state.name, "beta");
+        assert_eq!(state.name_cursor, 0);
+    }
+
+    #[test]
+    fn name_input_home_and_end_move_to_boundaries() {
+        let mut state = CreateAgentState {
+            name: "alpha".into(),
+            name_cursor: 2,
+            ..CreateAgentState::default()
+        };
+
+        state.move_name_cursor_end();
+        state.insert_name_char('!');
+        assert_eq!(state.name, "alpha!");
+
+        state.move_name_cursor_home();
+        state.insert_name_char('#');
+        assert_eq!(state.name, "#alpha!");
+    }
+
+    #[test]
+    fn create_project_name_input_uses_cursor_navigation() {
+        let mut state = CreateProjectState {
+            name: TextInputState {
+                value: "alpha beta".into(),
+                cursor: "alpha".len(),
+            },
+            error: Some("stale".into()),
+        };
+
+        state.name.move_end();
+        state.name.insert_char('!');
+        state.name.move_home();
+        state.name.insert_char('#');
+        state.name.backspace();
+        state.name.ctrl_w_delete();
+
+        assert_eq!(state.name.value, "alpha beta!");
+        assert_eq!(state.name.cursor, 0);
+    }
+
+    #[tokio::test]
+    async fn create_agent_name_home_and_end_keys_edit_at_boundaries() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.create_state = CreateAgentState {
+            name: "alpha".into(),
+            name_cursor: 2,
+            focus: CreateField::Name,
+            available_types: vec![AgentType::Codex],
+            ..CreateAgentState::default()
+        };
+
+        app.handle_create_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE))
+            .await;
+        app.handle_create_key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE))
+            .await;
+        app.handle_create_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE))
+            .await;
+        app.handle_create_key(KeyEvent::new(KeyCode::Char('#'), KeyModifiers::NONE))
+            .await;
+
+        assert_eq!(app.create_state.name, "#alpha!");
+    }
+
+    #[test]
+    fn create_project_name_home_and_end_keys_edit_at_boundaries() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.create_project_state = CreateProjectState {
+            name: TextInputState {
+                value: "alpha".into(),
+                cursor: 2,
+            },
+            error: None,
+        };
+
+        app.handle_create_project_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        app.handle_create_project_key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE));
+        app.handle_create_project_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        app.handle_create_project_key(KeyEvent::new(KeyCode::Char('#'), KeyModifiers::NONE));
+
+        assert_eq!(app.create_project_state.name.value, "#alpha!");
+    }
+
+    #[tokio::test]
+    async fn tab_leaving_empty_directory_selector_disables_checkbox() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.create_state = CreateAgentState {
+            focus: CreateField::CopyDirectories,
+            directory: std::env::temp_dir().to_string_lossy().to_string(),
+            git_repo_root: Some(std::env::temp_dir()),
+            create_worktree: true,
+            copy_directories_enabled: true,
+            available_types: vec![AgentType::Codex],
+            ..CreateAgentState::default()
+        };
+
+        app.handle_create_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .await;
+
+        assert!(!app.create_state.copy_directories_enabled);
+        assert_eq!(app.create_state.focus, CreateField::SymlinkDirectories);
+    }
+
+    #[tokio::test]
+    async fn tab_leaving_selected_directory_selector_keeps_checkbox_enabled() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.create_state = CreateAgentState {
+            focus: CreateField::SymlinkDirectories,
+            directory: std::env::temp_dir().to_string_lossy().to_string(),
+            git_repo_root: Some(std::env::temp_dir()),
+            create_worktree: true,
+            symlink_directories_enabled: true,
+            symlink_directories: RelativeDirSelector {
+                selected_dirs: vec!["vendor".into()],
+                ..RelativeDirSelector::default()
+            },
+            available_types: vec![AgentType::Codex],
+            ..CreateAgentState::default()
+        };
+
+        app.handle_create_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .await;
+
+        assert!(app.create_state.symlink_directories_enabled);
+        assert_eq!(app.create_state.focus, CreateField::AgentType);
     }
 
     #[test]
