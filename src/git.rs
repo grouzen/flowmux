@@ -89,6 +89,15 @@ pub fn current_branch(path: &Path) -> Option<String> {
         .filter(|s| s != "HEAD")
 }
 
+/// Returns `true` when the repo defines at least one submodule in `.gitmodules`.
+pub fn repo_has_submodules(repo_root: &Path) -> bool {
+    let gitmodules = repo_root.join(".gitmodules");
+    let Ok(contents) = std::fs::read_to_string(gitmodules) else {
+        return false;
+    };
+    contents.contains("[submodule ")
+}
+
 // ---------------------------------------------------------------------------
 // Worktree creation
 // ---------------------------------------------------------------------------
@@ -135,6 +144,29 @@ pub fn create_worktree(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("git worktree add failed: {}", stderr.trim());
+    }
+
+    Ok(())
+}
+
+/// Initialize submodules in the given worktree, including nested submodules.
+pub fn initialize_submodules(worktree_path: &Path) -> Result<()> {
+    let output = std::process::Command::new("git")
+        .current_dir(worktree_path)
+        .args([
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "update",
+            "--init",
+            "--recursive",
+        ])
+        .output()
+        .context("run git submodule update --init --recursive")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git submodule update --init --recursive failed: {}", stderr.trim());
     }
 
     Ok(())
@@ -198,6 +230,7 @@ pub fn remove_worktree(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn sanitize_basic() {
@@ -208,5 +241,18 @@ mod tests {
         assert_eq!(sanitize_branch_name("hello_world"), "hello_world");
         assert_eq!(sanitize_branch_name("v1.2.3"), "v1.2.3");
         assert_eq!(sanitize_branch_name("trailing-"), "trailing");
+    }
+
+    #[test]
+    fn repo_has_submodules_detects_gitmodules_entries() {
+        let root = std::env::temp_dir().join(format!("flowmux-git-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+
+        assert!(!repo_has_submodules(&root));
+
+        std::fs::write(root.join(".gitmodules"), "[submodule \"private-api\"]\n").unwrap();
+        assert!(repo_has_submodules(&root));
+
+        let _ = std::fs::remove_dir_all(PathBuf::from(&root));
     }
 }
