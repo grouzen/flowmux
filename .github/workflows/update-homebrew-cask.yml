@@ -1,0 +1,125 @@
+name: Update Homebrew Cask
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to sync, for example v0.1.2
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  update-cask:
+    name: Update flowmux cask
+    if: github.event_name != 'release' || (!github.event.release.draft && !github.event.release.prerelease)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve release metadata
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
+            tag="$RELEASE_TAG"
+          else
+            tag="$INPUT_TAG"
+          fi
+
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}")"
+          asset_name="flowmux-${tag}-universal2-apple-darwin.tar.gz"
+          asset_url="$(
+            jq -r --arg asset_name "$asset_name" \
+              '.assets[] | select(.name == $asset_name) | .browser_download_url' \
+              <<<"$release_json"
+          )"
+
+          if [[ -z "$asset_url" ]]; then
+            echo "Release asset not found: $asset_name" >&2
+            exit 1
+          fi
+
+          version="${tag#v}"
+
+          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          printf 'asset_name=%s\n' "$asset_name" >> "$GITHUB_OUTPUT"
+          printf 'asset_url=%s\n' "$asset_url" >> "$GITHUB_OUTPUT"
+
+      - name: Download release archive
+        run: curl -fsSL "${{ steps.release.outputs.asset_url }}" -o flowmux.tar.gz
+
+      - name: Compute SHA-256
+        id: checksum
+        run: |
+          set -euo pipefail
+          sha256="$(sha256sum flowmux.tar.gz | awk '{ print $1 }')"
+          printf 'sha256=%s\n' "$sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Check out homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: grouzen/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update cask file
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          SHA256: ${{ steps.checksum.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          ruby <<'RUBY'
+          path = "homebrew-tap/Casks/flowmux.rb"
+          content = File.read(path)
+          content.sub!(/version "[^"]+"/, %{version "#{ENV.fetch("VERSION")}"})
+          content.sub!(/sha256 "[^"]+"/, %{sha256 "#{ENV.fetch("SHA256")}"})
+          File.write(path, content)
+          RUBY
+
+      - name: Create cask update pull request
+        working-directory: homebrew-tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet -- Casks/flowmux.rb; then
+            echo "Cask already up to date"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          branch="automation/update-flowmux-cask-${TAG}"
+          git checkout -B "$branch"
+          git add Casks/flowmux.rb
+          git commit -m "chore(cask): update flowmux to ${VERSION}"
+          git push --force-with-lease --set-upstream origin "$branch"
+
+          if gh pr view "$branch" --repo grouzen/homebrew-tap >/dev/null 2>&1; then
+            gh pr edit "$branch" \
+              --repo grouzen/homebrew-tap \
+              --title "chore(cask): update flowmux to ${VERSION}" \
+              --body "Updates the flowmux Homebrew cask for release ${TAG}."
+          else
+            gh pr create \
+              --repo grouzen/homebrew-tap \
+              --base main \
+              --head "$branch" \
+              --title "chore(cask): update flowmux to ${VERSION}" \
+              --body "Updates the flowmux Homebrew cask for release ${TAG}."
+          fi
