@@ -369,9 +369,7 @@ fn prepare_worktree_directory(
         };
     }
 
-    if initialize_submodules
-        && let Err(error) = git::initialize_submodules(&wt_path)
-    {
+    if initialize_submodules && let Err(error) = git::initialize_submodules(&wt_path) {
         return match git::remove_worktree(repo_root_path, &wt_path, &branch, !use_existing) {
             Ok(()) => Err(error),
             Err(cleanup_error) => Err(error.context(format!(
@@ -777,6 +775,9 @@ mod tests {
         .unwrap();
 
         let submodule_file = Path::new(&worktree_dir).join("private-api/submodule.txt");
-        assert_eq!(std::fs::read_to_string(submodule_file).unwrap(), "submodule\n");
+        assert_eq!(
+            std::fs::read_to_string(submodule_file).unwrap(),
+            "submodule\n"
+        );
     }
 }

@@ -166,7 +166,10 @@ pub fn initialize_submodules(worktree_path: &Path) -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git submodule update --init --recursive failed: {}", stderr.trim());
+        bail!(
+            "git submodule update --init --recursive failed: {}",
+            stderr.trim()
+        );
     }
 
     Ok(())

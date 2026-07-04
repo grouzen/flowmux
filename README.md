@@ -183,6 +183,7 @@ flowmux --enabled-agents opencode,claude,codex
 | `Ctrl+v` | Open configured git viewer |
 | `Ctrl+t` | Open persistent terminal in the agent directory |
 | `Ctrl+b` | Arm prefix mode so the next key is sent directly to the pane |
+| `?` | Reopen the startup guide |
 | `h/j/k/l` or arrows | Move selection |
 
 All other keys in agent, git viewer, and terminal views are forwarded to the active tmux pane.
@@ -198,6 +199,7 @@ Global config lives at `~/.config/flowmux/config.toml`.
 claude_hook_server_port = 15100
 
 # External git viewer command (optional)
+# Defaults to "git diff" when omitted or blank
 # Examples: "lazygit", "lazydiff diff"
 git_viewer = "lazygit"
 
