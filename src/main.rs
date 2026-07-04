@@ -240,12 +240,14 @@ async fn main() -> Result<()> {
                 let selection = app.current_copy_selection_range();
                 terminal.draw(|f| {
                     let area = f.area();
+                    let theme = app.theme();
                     match &state {
                         app::AppState::Dashboard => {
                             let visible_indices = app.visible_agent_indices();
                             ui::dashboard::render_dashboard(
                                 f,
                                 area,
+                                theme,
                                 &app.agents,
                                 &visible_indices,
                                 Some(app.selected),
@@ -265,6 +267,7 @@ async fn main() -> Result<()> {
                             ui::dashboard::render_dashboard(
                                 f,
                                 area,
+                                theme,
                                 &app.agents,
                                 &visible_indices,
                                 Some(app.selected),
@@ -278,13 +281,35 @@ async fn main() -> Result<()> {
                                 blink_running,
                                 blink_waiting,
                             );
-                            ui::startup_guide::render_startup_guide(f, area, guide);
+                            ui::startup_guide::render_startup_guide(f, area, theme, guide);
+                        }
+                        app::AppState::SettingsDialog(settings_state) => {
+                            let visible_indices = app.visible_agent_indices();
+                            ui::dashboard::render_dashboard(
+                                f,
+                                area,
+                                theme,
+                                &app.agents,
+                                &visible_indices,
+                                Some(app.selected),
+                                &app.config.projects,
+                                app.active_project_idx,
+                                &app.card_scroll,
+                                &mut app.card_response_heights,
+                                &mut app.card_response_widths,
+                                true,
+                                status_counts,
+                                blink_running,
+                                blink_waiting,
+                            );
+                            ui::settings::render_settings(f, area, theme, settings_state);
                         }
                         app::AppState::AgentView(idx) => {
                             if let Some(entry) = app.agents.get(*idx) {
                                 ui::agent_view::render_agent_view(
                                     f,
                                     area,
+                                    theme,
                                     &app.agent_view_state,
                                     entry,
                                     status_counts,
@@ -303,6 +328,7 @@ async fn main() -> Result<()> {
                             ui::dashboard::render_dashboard(
                                 f,
                                 area,
+                                theme,
                                 &app.agents,
                                 &visible_indices,
                                 Some(app.selected),
@@ -316,13 +342,19 @@ async fn main() -> Result<()> {
                                 blink_running,
                                 blink_waiting,
                             );
-                            ui::create_agent::render_create_agent(f, area, &app.create_state);
+                            ui::create_agent::render_create_agent(
+                                f,
+                                area,
+                                theme,
+                                &app.create_state,
+                            );
                         }
                         app::AppState::CreateProjectDialog => {
                             let visible_indices = app.visible_agent_indices();
                             ui::dashboard::render_dashboard(
                                 f,
                                 area,
+                                theme,
                                 &app.agents,
                                 &visible_indices,
                                 Some(app.selected),
@@ -339,6 +371,7 @@ async fn main() -> Result<()> {
                             ui::create_project::render_create_project(
                                 f,
                                 area,
+                                theme,
                                 &app.create_project_state,
                             );
                         }
@@ -347,6 +380,7 @@ async fn main() -> Result<()> {
                             ui::dashboard::render_dashboard(
                                 f,
                                 area,
+                                theme,
                                 &app.agents,
                                 &visible_indices,
                                 Some(app.selected),
@@ -373,6 +407,7 @@ async fn main() -> Result<()> {
                             ui::remove_agent::render_remove_agent(
                                 f,
                                 area,
+                                theme,
                                 name,
                                 has_worktree,
                                 remove_state.remove_worktree,
@@ -385,6 +420,7 @@ async fn main() -> Result<()> {
                             ui::dashboard::render_dashboard(
                                 f,
                                 area,
+                                theme,
                                 &app.agents,
                                 &visible_indices,
                                 Some(app.selected),
@@ -401,6 +437,7 @@ async fn main() -> Result<()> {
                             ui::remove_project::render_remove_project(
                                 f,
                                 area,
+                                theme,
                                 &remove_state.name,
                                 remove_state.agent_count,
                                 remove_state.confirm_remove_agents,
@@ -411,6 +448,7 @@ async fn main() -> Result<()> {
                                 ui::git_viewer::render_git_viewer(
                                     f,
                                     area,
+                                    theme,
                                     gv,
                                     entry,
                                     status_counts,
@@ -429,6 +467,7 @@ async fn main() -> Result<()> {
                                 ui::terminal_view::render_terminal_view(
                                     f,
                                     area,
+                                    theme,
                                     tv,
                                     entry,
                                     status_counts,

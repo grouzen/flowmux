@@ -6,11 +6,13 @@ use ratatui::{
     widgets::{Block, Clear, Paragraph},
 };
 
-use crate::ui::theme::*;
+use crate::ui::theme::Theme;
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_remove_agent(
     f: &mut Frame,
     area: Rect,
+    theme: &Theme,
     agent_name: &str,
     has_worktree: bool,
     remove_worktree: bool,
@@ -37,7 +39,7 @@ pub fn render_remove_agent(
 
     f.render_widget(Clear, dialog_area);
     f.render_widget(
-        Block::default().style(Style::default().bg(BG1)),
+        Block::default().style(Style::default().bg(theme.bg1)),
         dialog_area,
     );
 
@@ -71,10 +73,10 @@ pub fn render_remove_agent(
             Span::raw("   "),
             Span::styled(
                 "Remove agent",
-                Style::default().fg(RED).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme.red).add_modifier(Modifier::BOLD),
             ),
         ]))
-        .style(Style::default().bg(BG1)),
+        .style(Style::default().bg(theme.bg1)),
         rows[row],
     );
     row += 1;
@@ -84,14 +86,14 @@ pub fn render_remove_agent(
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::raw("   "),
-            Span::styled("Remove ", Style::default().fg(GRAY)),
+            Span::styled("Remove ", Style::default().fg(theme.gray)),
             Span::styled(
                 agent_name,
-                Style::default().fg(FG).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
             ),
-            Span::styled("?", Style::default().fg(GRAY)),
+            Span::styled("?", Style::default().fg(theme.gray)),
         ]))
-        .style(Style::default().bg(BG1)),
+        .style(Style::default().bg(theme.bg1)),
         rows[row],
     );
     row += 1;
@@ -101,22 +103,24 @@ pub fn render_remove_agent(
     let stop_checkbox = if stop_agent { "[x]" } else { "[ ]" };
     let stop_focus = focus == 0;
     let stop_label_style = if stop_focus {
-        Style::default().fg(FG).add_modifier(Modifier::BOLD)
+        Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(GRAY)
+        Style::default().fg(theme.gray)
     };
     let stop_checkbox_style = if stop_agent {
         if stop_focus {
-            Style::default().fg(ORANGE).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(theme.orange)
+                .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(ORANGE)
+            Style::default().fg(theme.orange)
         }
     } else {
-        Style::default().fg(GRAY)
+        Style::default().fg(theme.gray)
     };
     let stop_hint = Span::styled(
         "  space",
-        Style::default().fg(if stop_focus { GRAY } else { BG2 }),
+        Style::default().fg(if stop_focus { theme.gray } else { theme.bg2 }),
     );
     f.render_widget(
         Paragraph::new(Line::from(vec![
@@ -125,7 +129,7 @@ pub fn render_remove_agent(
             Span::styled(" Stop agent", stop_label_style),
             stop_hint,
         ]))
-        .style(Style::default().bg(BG1)),
+        .style(Style::default().bg(theme.bg1)),
         rows[row],
     );
     row += 1;
@@ -136,22 +140,24 @@ pub fn render_remove_agent(
         let checkbox = if remove_worktree { "[x]" } else { "[ ]" };
         let wt_focus = focus == 1;
         let wt_label_style = if wt_focus {
-            Style::default().fg(FG).add_modifier(Modifier::BOLD)
+            Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(GRAY)
+            Style::default().fg(theme.gray)
         };
         let checkbox_style = if remove_worktree {
             if wt_focus {
-                Style::default().fg(ORANGE).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(theme.orange)
+                    .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(ORANGE)
+                Style::default().fg(theme.orange)
             }
         } else {
-            Style::default().fg(GRAY)
+            Style::default().fg(theme.gray)
         };
         let wt_hint = Span::styled(
             "  space",
-            Style::default().fg(if wt_focus { GRAY } else { BG2 }),
+            Style::default().fg(if wt_focus { theme.gray } else { theme.bg2 }),
         );
         f.render_widget(
             Paragraph::new(Line::from(vec![
@@ -160,7 +166,7 @@ pub fn render_remove_agent(
                 Span::styled(" Remove git worktree", wt_label_style),
                 wt_hint,
             ]))
-            .style(Style::default().bg(BG1)),
+            .style(Style::default().bg(theme.bg1)),
             rows[row],
         );
         row += 1;
@@ -173,17 +179,23 @@ pub fn render_remove_agent(
             Span::raw("   "),
             Span::styled(
                 " Confirm ",
-                Style::default().bg(RED).fg(FG).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .bg(theme.red)
+                    .fg(theme.fg)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" y / enter", Style::default().fg(GRAY)),
+            Span::styled(" y / enter", Style::default().fg(theme.gray)),
             Span::raw("   "),
             Span::styled(
                 " Cancel ",
-                Style::default().bg(BG2).fg(FG).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .bg(theme.bg2)
+                    .fg(theme.fg)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" n / esc", Style::default().fg(GRAY)),
+            Span::styled(" n / esc", Style::default().fg(theme.gray)),
         ]))
-        .style(Style::default().bg(BG1)),
+        .style(Style::default().bg(theme.bg1)),
         rows[row],
     );
 }

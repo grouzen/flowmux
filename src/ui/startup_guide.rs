@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::app::StartupGuideState;
-use crate::ui::theme::*;
+use crate::ui::theme::Theme;
 
 const LEFT_PAD: &str = "   ";
 const BULLET: &str = "•";
@@ -74,11 +74,11 @@ const STARTUP_GUIDE_PAGES: &[StartupGuidePage] = &[
     },
 ];
 
-pub fn render_startup_guide(f: &mut Frame, area: Rect, state: &StartupGuideState) {
+pub fn render_startup_guide(f: &mut Frame, area: Rect, theme: &Theme, state: &StartupGuideState) {
     let dialog_area = startup_guide_dialog_area(area);
     f.render_widget(Clear, dialog_area);
     f.render_widget(
-        Block::default().style(Style::default().bg(BG1)),
+        Block::default().style(Style::default().bg(theme.bg1)),
         dialog_area,
     );
 
@@ -100,9 +100,9 @@ pub fn render_startup_guide(f: &mut Frame, area: Rect, state: &StartupGuideState
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::raw(LEFT_PAD),
-            Span::styled(progress, Style::default().fg(GRAY)),
+            Span::styled(progress, Style::default().fg(theme.gray)),
         ]))
-        .style(Style::default().bg(BG1)),
+        .style(Style::default().bg(theme.bg1)),
         rows[1],
     );
 
@@ -116,10 +116,10 @@ pub fn render_startup_guide(f: &mut Frame, area: Rect, state: &StartupGuideState
         height: content_area.height,
     };
 
-    let page_text = startup_guide_page_text(page);
+    let page_text = startup_guide_page_text(page, theme);
     f.render_widget(
         Paragraph::new(page_text)
-            .style(Style::default().fg(FG).bg(BG1))
+            .style(Style::default().fg(theme.fg).bg(theme.bg1))
             .wrap(Wrap { trim: false }),
         inner_content,
     );
@@ -129,29 +129,41 @@ pub fn render_startup_guide(f: &mut Frame, area: Rect, state: &StartupGuideState
             Span::raw(LEFT_PAD),
             Span::styled(
                 " h / ← ",
-                Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.fg)
+                    .bg(theme.bg2)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" previous", Style::default().fg(FG)),
+            Span::styled(" previous", Style::default().fg(theme.fg)),
             Span::raw(" "),
             Span::styled(
                 " l / → ",
-                Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.fg)
+                    .bg(theme.bg2)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" next", Style::default().fg(FG)),
+            Span::styled(" next", Style::default().fg(theme.fg)),
             Span::raw(" "),
             Span::styled(
                 " Enter ",
-                Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.fg)
+                    .bg(theme.bg2)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" close", Style::default().fg(FG)),
+            Span::styled(" close", Style::default().fg(theme.fg)),
             Span::raw(" "),
             Span::styled(
                 " Esc ",
-                Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.fg)
+                    .bg(theme.bg2)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" dismiss", Style::default().fg(FG)),
+            Span::styled(" dismiss", Style::default().fg(theme.fg)),
         ]))
-        .style(Style::default().bg(BG1)),
+        .style(Style::default().bg(theme.bg1)),
         rows[4],
     );
 }
@@ -187,25 +199,45 @@ fn startup_guide_dialog_height(term_height: u16, dialog_width: u16) -> u16 {
 }
 
 fn startup_guide_page_line_count(page: &StartupGuidePage, content_width: u16) -> u16 {
-    wrapped_line_count(&startup_guide_page_text(page), content_width)
+    wrapped_line_count(
+        &startup_guide_page_text(page, &measurement_theme()),
+        content_width,
+    )
 }
 
-fn startup_guide_page_text(page: &StartupGuidePage) -> Text<'static> {
+fn startup_guide_page_text(page: &StartupGuidePage, theme: &Theme) -> Text<'static> {
     let mut lines = Vec::with_capacity(page.bullets.len() * 2);
     lines.push(Line::from(vec![Span::styled(
         page.title.to_string(),
-        Style::default().fg(FG).add_modifier(Modifier::BOLD),
+        Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
     )]));
     lines.push(Line::from(""));
     for bullet in page.bullets {
         lines.push(Line::from(vec![
-            Span::styled(BULLET, Style::default().fg(ORANGE)),
+            Span::styled(BULLET, Style::default().fg(theme.orange)),
             Span::raw(" "),
-            Span::styled((*bullet).to_string(), Style::default().fg(FG)),
+            Span::styled((*bullet).to_string(), Style::default().fg(theme.fg)),
         ]));
     }
     lines.push(Line::from(""));
     Text::from(lines)
+}
+
+fn measurement_theme() -> Theme {
+    Theme {
+        bg: ratatui::style::Color::Reset,
+        bg1: ratatui::style::Color::Reset,
+        bg2: ratatui::style::Color::Reset,
+        fg: ratatui::style::Color::Reset,
+        gray: ratatui::style::Color::Reset,
+        red: ratatui::style::Color::Reset,
+        heart_red: ratatui::style::Color::Reset,
+        green: ratatui::style::Color::Reset,
+        yellow: ratatui::style::Color::Reset,
+        blue: ratatui::style::Color::Reset,
+        orange: ratatui::style::Color::Reset,
+        cyan: ratatui::style::Color::Reset,
+    }
 }
 
 fn wrapped_line_count(text: &Text<'_>, width: u16) -> u16 {
@@ -235,6 +267,7 @@ mod tests {
         STARTUP_GUIDE_PAGES, startup_guide_dialog_height, startup_guide_page_count,
         startup_guide_page_line_count, startup_guide_page_text,
     };
+    use crate::ui::theme::default_theme;
 
     #[test]
     fn startup_guide_has_multiple_pages() {
@@ -243,7 +276,7 @@ mod tests {
 
     #[test]
     fn startup_guide_page_starts_with_blank_line_before_bullets() {
-        let text = startup_guide_page_text(&STARTUP_GUIDE_PAGES[0]);
+        let text = startup_guide_page_text(&STARTUP_GUIDE_PAGES[0], &default_theme().theme);
         assert!(text.lines[1].spans.is_empty());
     }
 

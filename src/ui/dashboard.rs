@@ -7,7 +7,10 @@ use ratatui::{
 };
 
 use crate::models::{AgentEntry, AgentStatus, AgentStatusCounts};
-use crate::ui::theme::*;
+use crate::ui::theme::{
+    ICON_AGENT, ICON_CTX, ICON_DIR, ICON_IDLE, ICON_MODEL, ICON_RUN, ICON_STOP, ICON_TIME,
+    ICON_WAIT, Theme, brand_line, format_tokens, format_uptime, status_count_spans,
+};
 
 pub const PROJECT_TABS_HEIGHT: u16 = 1;
 
@@ -41,6 +44,7 @@ fn ds(dimmed: bool) -> Style {
 pub fn render_dashboard(
     f: &mut Frame,
     area: Rect,
+    theme: &Theme,
     agents: &[AgentEntry],
     visible_indices: &[usize],
     selected: Option<usize>,
@@ -54,6 +58,8 @@ pub fn render_dashboard(
     blink_running: bool,
     blink_waiting: bool,
 ) {
+    f.render_widget(Block::default().style(ds(dimmed).bg(theme.bg)), area);
+
     // Split into tabs, main area, and keybindings bar at bottom
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -68,10 +74,11 @@ pub fn render_dashboard(
     let main_area = chunks[1];
     let bar_area = chunks[2];
 
-    render_project_tabs(f, tabs_area, projects, active_project_idx, dimmed);
+    render_project_tabs(f, tabs_area, theme, projects, active_project_idx, dimmed);
     render_keybindings_bar(
         f,
         bar_area,
+        theme,
         dimmed,
         status_counts,
         blink_running,
@@ -80,6 +87,7 @@ pub fn render_dashboard(
     render_grid(
         f,
         main_area,
+        theme,
         agents,
         visible_indices,
         selected,
@@ -123,6 +131,7 @@ pub fn grid_layout(n: usize) -> (usize, usize) {
 fn render_grid(
     f: &mut Frame,
     area: Rect,
+    theme: &Theme,
     agents: &[AgentEntry],
     visible_indices: &[usize],
     selected: Option<usize>,
@@ -141,7 +150,7 @@ fn render_grid(
             ])
             .split(area);
         let msg = Paragraph::new("No agents in this project. Press [n] to create one.")
-            .style(ds(dimmed).fg(GRAY))
+            .style(ds(dimmed).fg(theme.gray))
             .alignment(Alignment::Center);
         f.render_widget(msg, chunks[1]);
         return;
@@ -186,6 +195,7 @@ fn render_grid(
                     cell_area,
                     &agents[agent_idx],
                     selected == Some(agent_idx),
+                    theme,
                     scroll,
                     dimmed,
                 );
@@ -221,13 +231,13 @@ fn status_label(status: &AgentStatus) -> &'static str {
     }
 }
 
-fn status_color(status: &AgentStatus) -> ratatui::style::Color {
+fn status_color(theme: &Theme, status: &AgentStatus) -> ratatui::style::Color {
     match status {
-        AgentStatus::Running => GREEN,
-        AgentStatus::WaitingForInput => YELLOW,
-        AgentStatus::Idle => CYAN,
-        AgentStatus::Stopped => RED,
-        AgentStatus::Unknown => GRAY,
+        AgentStatus::Running => theme.green,
+        AgentStatus::WaitingForInput => theme.yellow,
+        AgentStatus::Idle => theme.cyan,
+        AgentStatus::Stopped => theme.red,
+        AgentStatus::Unknown => theme.gray,
     }
 }
 
@@ -263,10 +273,15 @@ fn render_card(
     area: Rect,
     entry: &AgentEntry,
     is_selected: bool,
+    theme: &Theme,
     response_scroll: u16,
     dimmed: bool,
 ) -> (u16, u16) {
-    let (border_color, title_color) = if is_selected { (BLUE, BLUE) } else { (BG2, FG) };
+    let (border_color, title_color) = if is_selected {
+        (theme.blue, theme.blue)
+    } else {
+        (theme.bg2, theme.fg)
+    };
 
     let border_style = if is_selected {
         ds(dimmed).fg(border_color).add_modifier(Modifier::BOLD)
@@ -282,6 +297,11 @@ fn render_card(
             title_style,
         ))
         .borders(Borders::ALL)
+        .border_type(if is_selected {
+            BorderType::Thick
+        } else {
+            BorderType::Plain
+        })
         .border_style(border_style);
 
     // Apply 1-cell left/right inner padding
@@ -291,6 +311,7 @@ fn render_card(
     if raw_inner.height == 0 || raw_inner.width < 2 {
         return (0, 0);
     }
+
     let inner = Rect {
         x: raw_inner.x + 1,
         y: raw_inner.y,
@@ -305,7 +326,7 @@ fn render_card(
     // Row 0: ctx + work time (left) + status badge (right) — always height 2
     let sym = status_symbol(&entry.meta.status);
     let lbl = status_label(&entry.meta.status);
-    let col = status_color(&entry.meta.status);
+    let col = status_color(theme, &entry.meta.status);
 
     let ctx_text = if let Some(ctx) = &entry.meta.context {
         let used = format_tokens(ctx.used);
@@ -333,11 +354,14 @@ fn render_card(
             + unicode_width::UnicodeWidthStr::width(badge_text.as_str()),
     );
     let row0 = Line::from(vec![
-        Span::styled(left_text, ds(dimmed).fg(GRAY)),
+        Span::styled(left_text, ds(dimmed).fg(theme.gray)),
         Span::raw(" ".repeat(padding)),
         Span::styled(
             badge_text,
-            ds(dimmed).fg(BG1).bg(col).add_modifier(Modifier::BOLD),
+            ds(dimmed)
+                .fg(theme.bg1)
+                .bg(col)
+                .add_modifier(Modifier::BOLD),
         ),
     ]);
 
@@ -363,16 +387,16 @@ fn render_card(
     // --- Info row B: agent_type · model_name (only if known) ---
     let agent_type = entry.config.agent_type_str();
     let mut info_b_spans = vec![
-        Span::styled(format!("{} ", ICON_AGENT), ds(dimmed).fg(GRAY)),
-        Span::styled(agent_type, ds(dimmed).fg(GRAY)),
+        Span::styled(format!("{} ", ICON_AGENT), ds(dimmed).fg(theme.gray)),
+        Span::styled(agent_type, ds(dimmed).fg(theme.gray)),
     ];
     if let Some(model_str) = entry.meta.model_name.as_deref() {
-        info_b_spans.push(Span::styled(" ", ds(dimmed).fg(GRAY)));
+        info_b_spans.push(Span::styled(" ", ds(dimmed).fg(theme.gray)));
         info_b_spans.push(Span::styled(
             format!("{} ", ICON_MODEL),
-            ds(dimmed).fg(GRAY),
+            ds(dimmed).fg(theme.gray),
         ));
-        info_b_spans.push(Span::styled(model_str, ds(dimmed).fg(GRAY)));
+        info_b_spans.push(Span::styled(model_str, ds(dimmed).fg(theme.gray)));
     }
     let info_b = Line::from(info_b_spans);
 
@@ -424,22 +448,25 @@ fn render_card(
         let prompt_block = Block::default()
             .borders(Borders::LEFT)
             .border_type(BorderType::Thick)
-            .border_style(ds(dimmed).fg(YELLOW))
-            .style(ds(dimmed).bg(BG1))
+            .border_style(ds(dimmed).fg(theme.yellow))
+            .style(ds(dimmed).bg(theme.bg1))
             .padding(Padding::new(1, 1, 1, 1));
         let text_inner = prompt_block.inner(slot);
         f.render_widget(prompt_block, slot);
 
         let usable = text_inner.width as usize;
         let content = if !text.is_empty() {
-            Paragraph::new(Span::styled(truncate(text, usable), ds(dimmed).fg(FG)))
-                .style(ds(dimmed).bg(BG1))
+            Paragraph::new(Span::styled(
+                truncate(text, usable),
+                ds(dimmed).fg(theme.fg),
+            ))
+            .style(ds(dimmed).bg(theme.bg1))
         } else {
             Paragraph::new(Span::styled(
                 "No prompt yet",
-                ds(dimmed).fg(GRAY).add_modifier(Modifier::ITALIC),
+                ds(dimmed).fg(theme.gray).add_modifier(Modifier::ITALIC),
             ))
-            .style(ds(dimmed).bg(BG1))
+            .style(ds(dimmed).bg(theme.bg1))
         };
         f.render_widget(content, text_inner);
     };
@@ -466,7 +493,10 @@ fn render_card(
             .constraints([Constraint::Length(prefix_width), Constraint::Min(0)])
             .split(slot);
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled(&dir_prefix, ds(dimmed).fg(GRAY)))),
+            Paragraph::new(Line::from(Span::styled(
+                &dir_prefix,
+                ds(dimmed).fg(theme.gray),
+            ))),
             dir_area[0],
         );
         let dir_text_width = dir_area[1].width as usize;
@@ -481,15 +511,18 @@ fn render_card(
             .split(dir_area[1]);
         if is_truncated {
             f.render_widget(
-                Paragraph::new(Line::from(Span::styled("…", ds(dimmed).fg(GRAY)))),
+                Paragraph::new(Line::from(Span::styled("…", ds(dimmed).fg(theme.gray)))),
                 text_chunks[0],
             );
         }
         let text_w = text_chunks[1].width as usize;
         let text_scroll = dir_line_width.saturating_sub(text_w) as u16;
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled(&dir_display, ds(dimmed).fg(GRAY))))
-                .scroll((0, text_scroll)),
+            Paragraph::new(Line::from(Span::styled(
+                &dir_display,
+                ds(dimmed).fg(theme.gray),
+            )))
+            .scroll((0, text_scroll)),
             text_chunks[1],
         );
     }
@@ -533,7 +566,7 @@ fn render_card(
                     ..content_area
                 };
                 let hint = Paragraph::new("▲ PgUp")
-                    .style(ds(dimmed).fg(GRAY))
+                    .style(ds(dimmed).fg(theme.gray))
                     .alignment(Alignment::Right);
                 f.render_widget(hint, hint_area);
             }
@@ -547,7 +580,7 @@ fn render_card(
             };
             let hint = Paragraph::new(Span::styled(
                 "No response yet",
-                ds(dimmed).fg(GRAY).add_modifier(Modifier::ITALIC),
+                ds(dimmed).fg(theme.gray).add_modifier(Modifier::ITALIC),
             ))
             .alignment(Alignment::Center);
             f.render_widget(hint, hint_area);
@@ -563,17 +596,30 @@ fn render_card(
 
 /// Renders a styled ` key  action` pair as spans into the given vec.
 /// The key is shown on an orange background with bright white text; no brackets.
-fn push_keybind<'a>(spans: &mut Vec<Span<'a>>, key: &'a str, action: &'a str, dimmed: bool) {
+fn push_keybind<'a>(
+    spans: &mut Vec<Span<'a>>,
+    key: &'a str,
+    action: &'a str,
+    theme: &Theme,
+    dimmed: bool,
+) {
     spans.push(Span::styled(
         format!(" {} ", key),
-        ds(dimmed).fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
+        ds(dimmed)
+            .fg(theme.fg)
+            .bg(theme.bg2)
+            .add_modifier(Modifier::BOLD),
     ));
-    spans.push(Span::styled(format!(" {}", action), ds(dimmed).fg(FG)));
+    spans.push(Span::styled(
+        format!(" {}", action),
+        ds(dimmed).fg(theme.fg),
+    ));
 }
 
 fn render_keybindings_bar(
     f: &mut Frame,
     area: Rect,
+    theme: &Theme,
     dimmed: bool,
     status_counts: AgentStatusCounts,
     blink_running: bool,
@@ -582,22 +628,25 @@ fn render_keybindings_bar(
     // Left: hotkeys
     let mut spans: Vec<Span> = Vec::new();
     spans.push(Span::raw(" "));
-    push_keybind(&mut spans, "n", "new agent", dimmed);
+    push_keybind(&mut spans, "n", "new agent", theme, dimmed);
     spans.push(Span::raw(" "));
-    push_keybind(&mut spans, "p", "new project", dimmed);
+    push_keybind(&mut spans, "p", "new project", theme, dimmed);
     spans.push(Span::raw(" "));
-    push_keybind(&mut spans, "d", "delete agent", dimmed);
+    push_keybind(&mut spans, "d", "delete agent", theme, dimmed);
     spans.push(Span::raw(" "));
-    push_keybind(&mut spans, "ctrl+d", "delete project", dimmed);
+    push_keybind(&mut spans, "ctrl+d", "delete project", theme, dimmed);
     spans.push(Span::raw(" "));
-    push_keybind(&mut spans, "enter", "open", dimmed);
+    push_keybind(&mut spans, "shift+s", "settings", theme, dimmed);
     spans.push(Span::raw(" "));
-    push_keybind(&mut spans, "?", "help", dimmed);
+    push_keybind(&mut spans, "?", "help", theme, dimmed);
     spans.push(Span::raw(" "));
-    push_keybind(&mut spans, "q", "quit", dimmed);
+    push_keybind(&mut spans, "enter", "open", theme, dimmed);
+    spans.push(Span::raw(" "));
+    push_keybind(&mut spans, "q", "quit", theme, dimmed);
 
     // Right: agent status counts (leading space separates from middle chunk; trailing space before brand)
     let (status_spans, status_width) = status_count_spans(
+        theme,
         status_counts.running,
         status_counts.waiting,
         status_counts.idle,
@@ -606,7 +655,7 @@ fn render_keybindings_bar(
         dimmed,
     );
 
-    let (brand, brand_width) = brand_line(dimmed);
+    let (brand, brand_width) = brand_line(theme, dimmed);
 
     let bar_chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -625,6 +674,7 @@ fn render_keybindings_bar(
 fn render_project_tabs(
     f: &mut Frame,
     area: Rect,
+    theme: &Theme,
     projects: &[String],
     active_project_idx: usize,
     dimmed: bool,
@@ -635,9 +685,12 @@ fn render_project_tabs(
     for (idx, project) in projects.iter().enumerate() {
         let label = project_tab_label(idx, project);
         let style = if idx == active_project_idx {
-            ds(dimmed).fg(BG1).bg(BLUE).add_modifier(Modifier::BOLD)
+            ds(dimmed)
+                .fg(theme.bg1)
+                .bg(theme.blue)
+                .add_modifier(Modifier::BOLD)
         } else {
-            ds(dimmed).fg(FG).bg(BG2)
+            ds(dimmed).fg(theme.fg).bg(theme.bg2)
         };
         spans.push(Span::styled(label, style));
         spans.push(Span::raw(" "));

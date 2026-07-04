@@ -5,18 +5,17 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Clear, Paragraph},
 };
-use unicode_width::UnicodeWidthStr;
 
-use crate::app::CreateProjectState;
-use crate::ui::theme::Theme;
+use crate::app::SettingsState;
+use crate::ui::theme::{Theme, builtin_themes};
 
-pub fn render_create_project(f: &mut Frame, area: Rect, theme: &Theme, state: &CreateProjectState) {
-    let dialog_width = ((area.width as u32 * 40 / 100) as u16)
-        .max(44)
+pub fn render_settings(f: &mut Frame, area: Rect, theme: &Theme, state: &SettingsState) {
+    let themes = builtin_themes();
+    let dialog_width = ((area.width as u32 * 42 / 100) as u16)
+        .max(42)
         .min(area.width.saturating_sub(4));
-    let error_rows: u16 = if state.error.is_some() { 1 } else { 0 };
-    let dialog_height = 9u16 + error_rows;
-
+    let content_height = 8u16 + themes.len() as u16;
+    let dialog_height = content_height.min(area.height.saturating_sub(2)).max(10);
     let dialog_area = centered_rect(dialog_width, dialog_height, area);
 
     f.render_widget(Clear, dialog_area);
@@ -33,9 +32,9 @@ pub fn render_create_project(f: &mut Frame, area: Rect, theme: &Theme, state: &C
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
-            Constraint::Length(error_rows),
+            Constraint::Length(themes.len() as u16),
             Constraint::Length(1),
-            Constraint::Min(0),
+            Constraint::Length(1),
         ])
         .split(dialog_area);
 
@@ -43,7 +42,7 @@ pub fn render_create_project(f: &mut Frame, area: Rect, theme: &Theme, state: &C
         Paragraph::new(Line::from(vec![
             Span::raw("   "),
             Span::styled(
-                "New project",
+                "Settings",
                 Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
             ),
         ]))
@@ -51,40 +50,45 @@ pub fn render_create_project(f: &mut Frame, area: Rect, theme: &Theme, state: &C
         rows[1],
     );
 
-    let value_width = rows[3].width.saturating_sub(12) as usize;
-    let name = state.name.value.as_str();
-    let name_display = truncate_left(name, value_width);
-
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::raw("   "),
-            Span::styled("Name", Style::default().fg(theme.gray)),
-            Span::raw("  "),
+            Span::styled("Theme", Style::default().fg(theme.gray)),
             Span::styled(
-                if name.is_empty() {
-                    "type a project name..."
-                } else {
-                    name_display.as_str()
-                },
-                if name.is_empty() {
-                    Style::default().fg(theme.bg2)
-                } else {
-                    Style::default().fg(theme.fg)
-                },
+                "  preview updates immediately",
+                Style::default().fg(theme.bg2),
             ),
         ]))
         .style(Style::default().bg(theme.bg1)),
         rows[3],
     );
 
-    if let Some(error) = &state.error {
+    // Blank spacer after the section title.
+    let list_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(vec![Constraint::Length(1); themes.len()])
+        .split(rows[5]);
+    for (idx, builtin) in themes.iter().enumerate() {
+        let is_selected = idx == state.selected_idx;
+        let marker = if is_selected { "●" } else { "○" };
+        let label_style = if is_selected {
+            Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.gray)
+        };
+        let marker_style = if is_selected {
+            Style::default().fg(theme.blue).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.bg2)
+        };
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::raw("   "),
-                Span::styled(error, Style::default().fg(theme.red)),
+                Span::styled(format!("{marker} "), marker_style),
+                Span::styled(builtin.label, label_style),
             ]))
             .style(Style::default().bg(theme.bg1)),
-            rows[5],
+            list_rows[idx],
         );
     }
 
@@ -92,7 +96,7 @@ pub fn render_create_project(f: &mut Frame, area: Rect, theme: &Theme, state: &C
         Paragraph::new(Line::from(vec![
             Span::raw("   "),
             Span::styled(
-                " Create ",
+                " Save ",
                 Style::default()
                     .bg(theme.blue)
                     .fg(theme.fg)
@@ -110,40 +114,8 @@ pub fn render_create_project(f: &mut Frame, area: Rect, theme: &Theme, state: &C
             Span::styled(" esc", Style::default().fg(theme.gray)),
         ]))
         .style(Style::default().bg(theme.bg1)),
-        rows[6],
+        rows[7],
     );
-
-    let displayed_start = truncate_left_start(name, value_width);
-    let cursor = previous_char_boundary(name, state.name.cursor.min(name.len()));
-    let cursor_offset = cursor.saturating_sub(displayed_start);
-    let cursor_width = UnicodeWidthStr::width(&name[displayed_start..][..cursor_offset]);
-    let cursor_x = (rows[3].x + 9 + cursor_width as u16)
-        .min(dialog_area.x + dialog_area.width.saturating_sub(1));
-    f.set_cursor_position((cursor_x, rows[3].y));
-}
-
-fn truncate_left(s: &str, max: usize) -> String {
-    let start = truncate_left_start(s, max);
-    s[start..].to_string()
-}
-
-fn truncate_left_start(s: &str, max: usize) -> usize {
-    if max == 0 {
-        return s.len();
-    }
-    if s.len() <= max {
-        0
-    } else {
-        previous_char_boundary(s, s.len() - max)
-    }
-}
-
-fn previous_char_boundary(s: &str, mut idx: usize) -> usize {
-    idx = idx.min(s.len());
-    while idx > 0 && !s.is_char_boundary(idx) {
-        idx -= 1;
-    }
-    idx
 }
 
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
