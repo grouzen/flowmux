@@ -1,0 +1,54 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="wash" x1="0" y1="0" x2="1200" y2="630" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F6F3EC" />
+      <stop offset="0.55" stop-color="#F1ECE2" />
+      <stop offset="1" stop-color="#F6F3EC" />
+    </linearGradient>
+    <linearGradient id="panel" x1="730" y1="74" x2="1124" y2="556" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#11110F" stop-opacity="0.03" />
+      <stop offset="1" stop-color="#11110F" stop-opacity="0.08" />
+    </linearGradient>
+    <filter id="softShadow" x="0" y="0" width="1200" height="630" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="18" stdDeviation="30" flood-color="#11110F" flood-opacity="0.08" />
+    </filter>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#wash)" />
+
+  <g stroke="#E5DFD4">
+    <line x1="96" y1="0" x2="96" y2="630" />
+    <line x1="192" y1="0" x2="192" y2="630" />
+    <line x1="288" y1="0" x2="288" y2="630" />
+    <line x1="384" y1="0" x2="384" y2="630" />
+    <line x1="480" y1="0" x2="480" y2="630" />
+    <line x1="576" y1="0" x2="576" y2="630" />
+    <line x1="672" y1="0" x2="672" y2="630" />
+    <line x1="768" y1="0" x2="768" y2="630" />
+    <line x1="864" y1="0" x2="864" y2="630" />
+    <line x1="960" y1="0" x2="960" y2="630" />
+    <line x1="1056" y1="0" x2="1056" y2="630" />
+    <line x1="1152" y1="0" x2="1152" y2="630" />
+  </g>
+
+  <g stroke="#EEE8DE">
+    <line x1="0" y1="112" x2="1200" y2="112" />
+    <line x1="0" y1="224" x2="1200" y2="224" />
+    <line x1="0" y1="336" x2="1200" y2="336" />
+    <line x1="0" y1="448" x2="1200" y2="448" />
+    <line x1="0" y1="560" x2="1200" y2="560" />
+  </g>
+
+  <rect x="72" y="72" width="1056" height="486" rx="28" fill="#FBFAF6" stroke="#DDD7CB" />
+  <rect x="104" y="104" width="8" height="422" rx="4" fill="#7E3F2A" />
+
+  <text x="144" y="148" fill="#777065" font-family="'DejaVu Sans Mono', monospace" font-size="20" font-weight="700" letter-spacing="0.18em">FLOWMUX</text>
+
+  <text x="144" y="230" fill="#11110F" font-family="'DejaVu Sans', sans-serif" font-size="72" font-weight="700">Where agent</text>
+  <text x="144" y="304" fill="#11110F" font-family="'DejaVu Sans', sans-serif" font-size="72" font-weight="700">chaos becomes</text>
+  <text x="144" y="378" fill="#11110F" font-family="'DejaVu Sans', sans-serif" font-size="72" font-weight="700">flow.</text>
+
+  <text x="144" y="505" fill="#4D4941" font-family="'DejaVu Sans Mono', monospace" font-size="22" font-weight="400">terminal-native AI agent multiplexer</text>
+
+  <image href="../brand/flowmux-mark.png" x="856" y="231" width="200" height="200" preserveAspectRatio="xMidYMid meet" />
+</svg>
