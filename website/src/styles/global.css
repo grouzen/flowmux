@@ -212,6 +212,13 @@ h1 {
   letter-spacing: 0;
 }
 
+.tagline {
+  margin: 0 0 14px;
+  color: var(--ink);
+  font-size: 1.55rem;
+  line-height: 1.35;
+}
+
 h2 {
   margin-bottom: 18px;
   font-size: 2.8rem;
