@@ -10,6 +10,8 @@ const {
   title = 'Flowmux - terminal-native AI agent multiplexer',
   description = 'Flowmux is a terminal-native AI agent multiplexer for running, tracking, and switching between multiple CLI agents from one keyboard-first dashboard.',
 } = Astro.props;
+
+const socialImage = new URL('/assets/social/flowmux-social-card.png', Astro.site).toString();
 ---
 
 <!doctype html>
@@ -22,11 +24,13 @@ const {
     <meta property="og:type" content="website" />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
-    <meta property="og:image" content="/assets/flowmux-demo.gif" />
+    <meta property="og:image" content={socialImage} />
+    <meta property="og:image:alt" content="Flowmux social preview card with the Flowmux logo and the slogan Where agent chaos becomes flow." />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
-    <meta name="twitter:image" content="/assets/flowmux-demo.gif" />
+    <meta name="twitter:image" content={socialImage} />
+    <meta name="twitter:image:alt" content="Flowmux social preview card with the Flowmux logo and the slogan Where agent chaos becomes flow." />
     <link rel="icon" type="image/png" href="/assets/brand/flowmux-mark.png" />
     <script is:inline>
       const storedTheme = localStorage.getItem('flowmux-theme');
