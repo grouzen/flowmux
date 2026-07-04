@@ -260,6 +260,26 @@ async fn main() -> Result<()> {
                                 blink_waiting,
                             );
                         }
+                        app::AppState::StartupGuide(guide) => {
+                            let visible_indices = app.visible_agent_indices();
+                            ui::dashboard::render_dashboard(
+                                f,
+                                area,
+                                &app.agents,
+                                &visible_indices,
+                                Some(app.selected),
+                                &app.config.projects,
+                                app.active_project_idx,
+                                &app.card_scroll,
+                                &mut app.card_response_heights,
+                                &mut app.card_response_widths,
+                                true,
+                                status_counts,
+                                blink_running,
+                                blink_waiting,
+                            );
+                            ui::startup_guide::render_startup_guide(f, area, guide);
+                        }
                         app::AppState::AgentView(idx) => {
                             if let Some(entry) = app.agents.get(*idx) {
                                 ui::agent_view::render_agent_view(

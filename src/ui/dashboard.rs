@@ -592,6 +592,8 @@ fn render_keybindings_bar(
     spans.push(Span::raw(" "));
     push_keybind(&mut spans, "enter", "open", dimmed);
     spans.push(Span::raw(" "));
+    push_keybind(&mut spans, "?", "help", dimmed);
+    spans.push(Span::raw(" "));
     push_keybind(&mut spans, "q", "quit", dimmed);
 
     // Right: agent status counts (leading space separates from middle chunk; trailing space before brand)

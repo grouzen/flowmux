@@ -217,6 +217,28 @@ pub struct RemoveProjectState {
     pub confirm_remove_agents: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct StartupGuideState {
+    pub page: usize,
+    pub persist_on_close: bool,
+}
+
+impl StartupGuideState {
+    fn first_run() -> Self {
+        Self {
+            page: 0,
+            persist_on_close: true,
+        }
+    }
+
+    fn reopened() -> Self {
+        Self {
+            page: 0,
+            persist_on_close: false,
+        }
+    }
+}
+
 /// State for the git viewer pane view.
 #[derive(Debug, Clone)]
 pub struct GitViewerState {
@@ -332,6 +354,7 @@ impl GitViewerState {
 #[derive(Debug, Clone)]
 pub enum AppState {
     Dashboard,
+    StartupGuide(StartupGuideState),
     CreateAgentDialog,
     CreateProjectDialog,
     AgentView(usize),
@@ -897,12 +920,17 @@ impl App {
         runner: AgentRunner,
         host_colors: HostColors,
     ) -> Self {
+        let show_startup_guide = !runner.global_config().startup_guide_dismissed;
         let (tx, rx) = mpsc::unbounded_channel();
         let card_count = agents.len();
         let mut app = Self {
             agents,
             adapters,
-            state: AppState::Dashboard,
+            state: if show_startup_guide {
+                AppState::StartupGuide(StartupGuideState::first_run())
+            } else {
+                AppState::Dashboard
+            },
             active_project_idx: 0,
             selected: 0,
             dashboard_selected_by_project: std::collections::HashMap::new(),
@@ -1445,6 +1473,66 @@ impl App {
         self.set_active_project_idx(next);
     }
 
+    fn startup_guide_last_page(&self) -> usize {
+        crate::ui::startup_guide::startup_guide_page_count().saturating_sub(1)
+    }
+
+    fn open_startup_guide(&mut self, persist_on_close: bool) {
+        self.state = AppState::StartupGuide(if persist_on_close {
+            StartupGuideState::first_run()
+        } else {
+            StartupGuideState::reopened()
+        });
+        self.dirty = true;
+    }
+
+    fn close_startup_guide(&mut self, persist_on_close: bool) {
+        if persist_on_close {
+            let global_config = self.runner.global_config_mut();
+            if !global_config.startup_guide_dismissed {
+                global_config.startup_guide_dismissed = true;
+                let _ = global_config.save();
+            }
+        }
+        self.state = AppState::Dashboard;
+        self.dirty = true;
+    }
+
+    fn handle_startup_guide_key(&mut self, key: KeyEvent, state: StartupGuideState) -> bool {
+        let last_page = self.startup_guide_last_page();
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                self.close_startup_guide(state.persist_on_close);
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                if let AppState::StartupGuide(ref mut guide) = self.state {
+                    guide.page = guide.page.saturating_sub(1);
+                }
+                self.dirty = true;
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                if let AppState::StartupGuide(ref mut guide) = self.state {
+                    guide.page = guide.page.saturating_add(1).min(last_page);
+                }
+                self.dirty = true;
+            }
+            KeyCode::Home => {
+                if let AppState::StartupGuide(ref mut guide) = self.state {
+                    guide.page = 0;
+                }
+                self.dirty = true;
+            }
+            KeyCode::End => {
+                if let AppState::StartupGuide(ref mut guide) = self.state {
+                    guide.page = last_page;
+                }
+                self.dirty = true;
+            }
+            _ => {}
+        }
+        true
+    }
+
     fn switch_to_project_by_digit(&mut self, digit: char) {
         let idx = match digit {
             '1'..='9' => digit as usize - '1' as usize,
@@ -1749,6 +1837,22 @@ impl App {
         }
 
         match &self.state {
+            AppState::StartupGuide(_) => match mouse.kind {
+                MouseEventKind::ScrollUp => {
+                    if let AppState::StartupGuide(ref mut guide) = self.state {
+                        guide.page = guide.page.saturating_sub(1);
+                    }
+                    self.dirty = true;
+                }
+                MouseEventKind::ScrollDown => {
+                    let last_page = self.startup_guide_last_page();
+                    if let AppState::StartupGuide(ref mut guide) = self.state {
+                        guide.page = guide.page.saturating_add(1).min(last_page);
+                    }
+                    self.dirty = true;
+                }
+                _ => {}
+            },
             AppState::AgentView(idx) => {
                 let idx = *idx;
                 self.handle_agent_view_mouse(mouse, idx);
@@ -2044,6 +2148,10 @@ impl App {
     async fn handle_key(&mut self, key: KeyEvent) -> bool {
         match &self.state.clone() {
             AppState::Dashboard => self.handle_dashboard_key(key),
+            AppState::StartupGuide(state) => {
+                let state = state.clone();
+                self.handle_startup_guide_key(key, state)
+            }
             AppState::AgentView(idx) => {
                 let idx = *idx;
                 self.handle_agent_view_key(key, idx).await
@@ -2122,6 +2230,7 @@ impl App {
         let selected_visible = self.selected_visible_position(&visible_indices);
         match key.code {
             KeyCode::Char('q') => return false,
+            KeyCode::Char('?') => self.open_startup_guide(false),
             KeyCode::Tab => self.cycle_projects(),
             KeyCode::Char(digit @ ('0'..='9')) => self.switch_to_project_by_digit(digit),
             KeyCode::Char('n') => {
@@ -3304,28 +3413,20 @@ impl App {
                 | CreateField::InitializeSubmodules => {}
             },
 
-            KeyCode::Left => {
-                if self.create_state.focus == CreateField::Name {
-                    self.create_state.move_name_cursor_left();
-                }
+            KeyCode::Left if self.create_state.focus == CreateField::Name => {
+                self.create_state.move_name_cursor_left();
             }
 
-            KeyCode::Right => {
-                if self.create_state.focus == CreateField::Name {
-                    self.create_state.move_name_cursor_right();
-                }
+            KeyCode::Right if self.create_state.focus == CreateField::Name => {
+                self.create_state.move_name_cursor_right();
             }
 
-            KeyCode::Home => {
-                if self.create_state.focus == CreateField::Name {
-                    self.create_state.move_name_cursor_home();
-                }
+            KeyCode::Home if self.create_state.focus == CreateField::Name => {
+                self.create_state.move_name_cursor_home();
             }
 
-            KeyCode::End => {
-                if self.create_state.focus == CreateField::Name {
-                    self.create_state.move_name_cursor_end();
-                }
+            KeyCode::End if self.create_state.focus == CreateField::Name => {
+                self.create_state.move_name_cursor_end();
             }
 
             KeyCode::Enter => {
@@ -4850,7 +4951,7 @@ mod tests {
         }
     }
 
-    fn test_app_with_global_config(global_config: GlobalConfig) -> App {
+    fn test_app_with_exact_global_config(global_config: GlobalConfig) -> App {
         let runner = AgentRunner::new(
             DiscoveredAgents {
                 claude: None,
@@ -4869,6 +4970,13 @@ mod tests {
             runner,
             HostColors::default(),
         )
+    }
+
+    fn test_app_with_global_config(global_config: GlobalConfig) -> App {
+        test_app_with_exact_global_config(GlobalConfig {
+            startup_guide_dismissed: true,
+            ..global_config
+        })
     }
 
     fn dashboard_mouse_event(kind: MouseEventKind) -> MouseEvent {
@@ -6079,5 +6187,71 @@ mod tests {
                 .selected_dirs
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn app_starts_with_startup_guide_when_not_dismissed() {
+        let app = test_app_with_exact_global_config(GlobalConfig::default());
+
+        assert!(matches!(app.state, AppState::StartupGuide(_)));
+    }
+
+    #[test]
+    fn app_starts_on_dashboard_when_startup_guide_was_dismissed() {
+        let app = test_app_with_exact_global_config(GlobalConfig {
+            startup_guide_dismissed: true,
+            ..GlobalConfig::default()
+        });
+
+        assert!(matches!(app.state, AppState::Dashboard));
+    }
+
+    #[test]
+    fn dashboard_question_mark_reopens_startup_guide() {
+        let mut app = test_app_with_global_config(GlobalConfig {
+            startup_guide_dismissed: true,
+            ..GlobalConfig::default()
+        });
+
+        assert!(matches!(app.state, AppState::Dashboard));
+        assert!(app.handle_dashboard_key(KeyEvent::from(KeyCode::Char('?'))));
+        assert!(matches!(
+            app.state,
+            AppState::StartupGuide(StartupGuideState {
+                persist_on_close: false,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn startup_guide_navigation_saturates_at_page_bounds() {
+        let mut app = test_app_with_exact_global_config(GlobalConfig::default());
+        let last_page = app.startup_guide_last_page();
+
+        app.state = AppState::StartupGuide(StartupGuideState::reopened());
+        for _ in 0..200 {
+            assert!(app.handle_startup_guide_key(
+                KeyEvent::from(KeyCode::Right),
+                StartupGuideState::reopened(),
+            ));
+        }
+
+        match &app.state {
+            AppState::StartupGuide(guide) => assert_eq!(guide.page, last_page),
+            state => panic!("expected startup guide state, got {state:?}"),
+        }
+
+        for _ in 0..200 {
+            assert!(app.handle_startup_guide_key(
+                KeyEvent::from(KeyCode::Left),
+                StartupGuideState::reopened(),
+            ));
+        }
+
+        match &app.state {
+            AppState::StartupGuide(guide) => assert_eq!(guide.page, 0),
+            state => panic!("expected startup guide state, got {state:?}"),
+        }
     }
 }

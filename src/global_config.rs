@@ -25,6 +25,10 @@ pub struct GlobalConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled_agents: Option<Vec<String>>,
 
+    /// Whether the first-run startup guide has been dismissed.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub startup_guide_dismissed: bool,
+
     /// Per-repository remembered copy/symlink directory selections used when
     /// creating git worktrees from the launch-agent dialog.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -43,12 +47,17 @@ fn default_hook_port() -> u16 {
     15100
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 impl Default for GlobalConfig {
     fn default() -> Self {
         Self {
             claude_hook_server_port: default_hook_port(),
             git_viewer: None,
             enabled_agents: None,
+            startup_guide_dismissed: false,
             worktree_directory_presets: BTreeMap::new(),
         }
     }
@@ -147,5 +156,25 @@ mod tests {
             config.git_viewer_parts(),
             Some(("lazygit".to_string(), vec!["--path".to_string()]))
         );
+    }
+
+    #[test]
+    fn startup_guide_dismissed_defaults_to_false_when_missing() {
+        let config: GlobalConfig = toml::from_str("git_viewer = \"lazygit\"").unwrap();
+
+        assert!(!config.startup_guide_dismissed);
+    }
+
+    #[test]
+    fn startup_guide_dismissed_round_trips_through_toml() {
+        let config = GlobalConfig {
+            startup_guide_dismissed: true,
+            ..GlobalConfig::default()
+        };
+
+        let serialized = toml::to_string(&config).unwrap();
+        let parsed: GlobalConfig = toml::from_str(&serialized).unwrap();
+
+        assert!(parsed.startup_guide_dismissed);
     }
 }
