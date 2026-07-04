@@ -141,8 +141,10 @@ pub fn status_count_spans(
     };
 
     let spans = vec![
-        Span::styled(format!(" {} {} running", ICON_RUN, running), running_style),
-        Span::styled(format!(" {} {} waiting", ICON_WAIT, waiting), waiting_style),
+        Span::styled(format!(" {} ", ICON_RUN), base.fg(GREEN)),
+        Span::styled(format!("{} running", running), running_style),
+        Span::styled(format!(" {} ", ICON_WAIT), base.fg(YELLOW)),
+        Span::styled(format!("{} waiting", waiting), waiting_style),
         Span::styled(format!(" {} {} idle ", ICON_IDLE, idle), base.fg(CYAN)),
     ];
 
@@ -155,4 +157,33 @@ pub fn status_count_spans(
     ) as u16;
 
     (spans, width)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_count_spans_only_blinks_running_text_and_count() {
+        let (spans, _) = status_count_spans(3, 2, 1, true, false, false);
+
+        assert_eq!(spans[0].content, format!(" {} ", ICON_RUN));
+        assert_eq!(spans[1].content, "3 running");
+        assert_eq!(spans[0].style.fg, Some(GREEN));
+        assert_eq!(spans[0].style.bg, None);
+        assert_eq!(spans[1].style.fg, Some(BG));
+        assert_eq!(spans[1].style.bg, Some(GREEN));
+    }
+
+    #[test]
+    fn status_count_spans_only_blinks_waiting_text_and_count() {
+        let (spans, _) = status_count_spans(3, 2, 1, false, true, false);
+
+        assert_eq!(spans[2].content, format!(" {} ", ICON_WAIT));
+        assert_eq!(spans[3].content, "2 waiting");
+        assert_eq!(spans[2].style.fg, Some(YELLOW));
+        assert_eq!(spans[2].style.bg, None);
+        assert_eq!(spans[3].style.fg, Some(BG));
+        assert_eq!(spans[3].style.bg, Some(YELLOW));
+    }
 }
