@@ -10,9 +10,11 @@
   <a href="https://flowmux.dev">flowmux.dev</a>
 </p>
 
-# Flowmux
+<p align="center">
+  Where agent chaos becomes flow.
+</p>
 
-Where agent chaos becomes flow.
+# Flowmux
 
 Flowmux is a terminal-native AI agent multiplexer for running, tracking, and switching between multiple CLI agents from one keyboard-first dashboard.
 
