@@ -9,12 +9,16 @@ use ratatui::{
 use crate::app::AgentViewState;
 use crate::host_terminal::HostColors;
 use crate::models::{AgentEntry, AgentStatusCounts};
-use crate::ui::theme::*;
+use crate::ui::theme::{
+    ICON_AGENT, ICON_CTX, ICON_DIR, ICON_MODEL, ICON_TIME, Theme, brand_line, format_tokens,
+    format_uptime, status_count_spans,
+};
 
 #[allow(clippy::too_many_arguments)]
 pub fn render_agent_view(
     f: &mut Frame,
     area: Rect,
+    theme: &Theme,
     state: &AgentViewState,
     agent_entry: &AgentEntry,
     status_counts: AgentStatusCounts,
@@ -37,6 +41,15 @@ pub fn render_agent_view(
     let top_area = chunks[0];
     let content_area = chunks[1];
     let status_area = chunks[2];
+
+    f.render_widget(
+        Block::default().style(Style::default().bg(theme.bg)),
+        top_area,
+    );
+    f.render_widget(
+        Block::default().style(Style::default().bg(theme.bg)),
+        status_area,
+    );
 
     let viewport_height = content_area.height.saturating_sub(2) as usize;
 
@@ -134,12 +147,12 @@ pub fn render_agent_view(
             Span::raw(" "),
             Span::styled(
                 agent_entry.config.name.as_str(),
-                Style::default().fg(FG).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" @ ", Style::default().fg(FG)),
+            Span::styled(" @ ", Style::default().fg(theme.fg)),
             Span::styled(
                 agent_entry.config.project.as_str(),
-                Style::default().fg(FG).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
             ),
             Span::raw(" "),
         ])),
@@ -149,7 +162,7 @@ pub fn render_agent_view(
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             &dir_prefix,
-            Style::default().fg(GRAY),
+            Style::default().fg(theme.gray),
         ))),
         layout[1],
     );
@@ -167,7 +180,10 @@ pub fn render_agent_view(
         .split(layout[2]);
     if is_truncated {
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled("…", Style::default().fg(GRAY)))),
+            Paragraph::new(Line::from(Span::styled(
+                "…",
+                Style::default().fg(theme.gray),
+            ))),
             middle_chunks[0],
         );
     }
@@ -176,7 +192,7 @@ pub fn render_agent_view(
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             &dir_display,
-            Style::default().fg(GRAY),
+            Style::default().fg(theme.gray),
         )))
         .scroll((0, text_scroll)),
         middle_chunks[1],
@@ -185,7 +201,7 @@ pub fn render_agent_view(
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             &right_text,
-            Style::default().fg(GRAY),
+            Style::default().fg(theme.gray),
         ))),
         layout[3],
     );
@@ -243,53 +259,75 @@ pub fn render_agent_view(
     let mut nav_spans: Vec<Span> = vec![
         Span::styled(
             ctrlg_key,
-            Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.fg)
+                .bg(theme.bg2)
+                .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" dashboard", Style::default().fg(FG)),
+        Span::styled(" dashboard", Style::default().fg(theme.fg)),
     ];
     if is_git {
         nav_spans.push(Span::raw(" "));
         nav_spans.push(Span::styled(
             ctrlv_key,
-            Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.fg)
+                .bg(theme.bg2)
+                .add_modifier(Modifier::BOLD),
         ));
-        nav_spans.push(Span::styled(" git", Style::default().fg(FG)));
+        nav_spans.push(Span::styled(" git", Style::default().fg(theme.fg)));
     }
     nav_spans.push(Span::raw(" "));
     nav_spans.push(Span::styled(
         ctrlt_key,
-        Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(theme.fg)
+            .bg(theme.bg2)
+            .add_modifier(Modifier::BOLD),
     ));
-    nav_spans.push(Span::styled(" terminal", Style::default().fg(FG)));
+    nav_spans.push(Span::styled(" terminal", Style::default().fg(theme.fg)));
     nav_spans.push(Span::raw(" "));
     nav_spans.push(Span::styled(
         ctrl_running_key,
-        Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(theme.fg)
+            .bg(theme.bg2)
+            .add_modifier(Modifier::BOLD),
     ));
-    nav_spans.push(Span::styled(" next running", Style::default().fg(FG)));
+    nav_spans.push(Span::styled(" next running", Style::default().fg(theme.fg)));
     nav_spans.push(Span::raw(" "));
     nav_spans.push(Span::styled(
         ctrl_waiting_key,
-        Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(theme.fg)
+            .bg(theme.bg2)
+            .add_modifier(Modifier::BOLD),
     ));
-    nav_spans.push(Span::styled(" next waiting", Style::default().fg(FG)));
+    nav_spans.push(Span::styled(" next waiting", Style::default().fg(theme.fg)));
     nav_spans.push(Span::raw(" "));
     nav_spans.push(Span::styled(
         ctrl_idle_key,
-        Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(theme.fg)
+            .bg(theme.bg2)
+            .add_modifier(Modifier::BOLD),
     ));
-    nav_spans.push(Span::styled(" next idle", Style::default().fg(FG)));
+    nav_spans.push(Span::styled(" next idle", Style::default().fg(theme.fg)));
     nav_spans.push(Span::raw(" "));
     nav_spans.push(Span::styled(
         ctrlb_key,
-        Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(theme.fg)
+            .bg(theme.bg2)
+            .add_modifier(Modifier::BOLD),
     ));
-    nav_spans.push(Span::styled(" prefix", Style::default().fg(FG)));
+    nav_spans.push(Span::styled(" prefix", Style::default().fg(theme.fg)));
 
     // --- Right: PREFIX badge (conditional) + agent statuses + brand ---
-    let (brand, brand_width) = brand_line(false);
+    let (brand, brand_width) = brand_line(theme, false);
 
     let (mut agent_status_spans, status_width) = status_count_spans(
+        theme,
         status_counts.running,
         status_counts.waiting,
         status_counts.idle,
@@ -324,7 +362,7 @@ pub fn render_agent_view(
                 prefix_text,
                 Style::default()
                     .fg(ratatui::style::Color::Black)
-                    .bg(YELLOW)
+                    .bg(theme.yellow)
                     .add_modifier(Modifier::BOLD),
             )])),
             chunks[2],
@@ -374,11 +412,17 @@ pub fn render_agent_view(
     // Stopped overlay
     if state.show_stopped_overlay {
         let has_worktree = agent_entry.config.git_repo_root.is_some();
-        render_stopped_overlay(f, area, has_worktree, state.remove_worktree_on_stop);
+        render_stopped_overlay(theme, f, area, has_worktree, state.remove_worktree_on_stop);
     }
 }
 
-fn render_stopped_overlay(f: &mut Frame, area: Rect, has_worktree: bool, remove_worktree: bool) {
+fn render_stopped_overlay(
+    theme: &Theme,
+    f: &mut Frame,
+    area: Rect,
+    has_worktree: bool,
+    remove_worktree: bool,
+) {
     let overlay_width = ((area.width as u32 * 40 / 100) as u16)
         .max(44)
         .min(area.width);
@@ -390,7 +434,7 @@ fn render_stopped_overlay(f: &mut Frame, area: Rect, has_worktree: bool, remove_
 
     f.render_widget(Clear, overlay_area);
     f.render_widget(
-        Block::default().style(Style::default().bg(BG1)),
+        Block::default().style(Style::default().bg(theme.bg1)),
         overlay_area,
     );
 
@@ -424,10 +468,10 @@ fn render_stopped_overlay(f: &mut Frame, area: Rect, has_worktree: bool, remove_
             Span::raw("   "),
             Span::styled(
                 "Agent stopped",
-                Style::default().fg(RED).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme.red).add_modifier(Modifier::BOLD),
             ),
         ]))
-        .style(Style::default().bg(BG1)),
+        .style(Style::default().bg(theme.bg1)),
         rows[row],
     );
     row += 1;
@@ -439,9 +483,12 @@ fn render_stopped_overlay(f: &mut Frame, area: Rect, has_worktree: bool, remove_
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::raw("   "),
-            Span::styled("The agent process has exited.", Style::default().fg(GRAY)),
+            Span::styled(
+                "The agent process has exited.",
+                Style::default().fg(theme.gray),
+            ),
         ]))
-        .style(Style::default().bg(BG1)),
+        .style(Style::default().bg(theme.bg1)),
         rows[row],
     );
     row += 1;
@@ -453,18 +500,20 @@ fn render_stopped_overlay(f: &mut Frame, area: Rect, has_worktree: bool, remove_
 
         let checkbox = if remove_worktree { "[x]" } else { "[ ]" };
         let checkbox_style = if remove_worktree {
-            Style::default().fg(ORANGE).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(theme.orange)
+                .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(GRAY)
+            Style::default().fg(theme.gray)
         };
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::raw("   "),
                 Span::styled(checkbox, checkbox_style),
-                Span::styled(" Remove git worktree", Style::default().fg(FG)),
-                Span::styled("  space", Style::default().fg(GRAY)),
+                Span::styled(" Remove git worktree", Style::default().fg(theme.fg)),
+                Span::styled("  space", Style::default().fg(theme.gray)),
             ]))
-            .style(Style::default().bg(BG1)),
+            .style(Style::default().bg(theme.bg1)),
             rows[row],
         );
         row += 1;
@@ -480,25 +529,31 @@ fn render_stopped_overlay(f: &mut Frame, area: Rect, has_worktree: bool, remove_
             Span::styled(
                 " Restart ",
                 Style::default()
-                    .bg(ORANGE)
-                    .fg(FG)
+                    .bg(theme.orange)
+                    .fg(theme.fg)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" r", Style::default().fg(GRAY)),
+            Span::styled(" r", Style::default().fg(theme.gray)),
             Span::raw("   "),
             Span::styled(
                 " Remove ",
-                Style::default().bg(RED).fg(FG).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .bg(theme.red)
+                    .fg(theme.fg)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" d", Style::default().fg(GRAY)),
+            Span::styled(" d", Style::default().fg(theme.gray)),
             Span::raw("   "),
             Span::styled(
                 " Dashboard ",
-                Style::default().bg(BG2).fg(FG).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .bg(theme.bg2)
+                    .fg(theme.fg)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" ctrl-g", Style::default().fg(GRAY)),
+            Span::styled(" ctrl-g", Style::default().fg(theme.gray)),
         ]))
-        .style(Style::default().bg(BG1)),
+        .style(Style::default().bg(theme.bg1)),
         rows[row],
     );
 }

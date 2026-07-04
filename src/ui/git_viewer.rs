@@ -3,18 +3,19 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Block, Paragraph},
 };
 
 use crate::app::GitViewerState;
 use crate::host_terminal::HostColors;
 use crate::models::{AgentEntry, AgentStatusCounts};
-use crate::ui::theme::*;
+use crate::ui::theme::{ICON_DIR, Theme, brand_line, status_count_spans};
 
 #[allow(clippy::too_many_arguments)]
 pub fn render_git_viewer(
     f: &mut Frame,
     area: Rect,
+    theme: &Theme,
     state: &GitViewerState,
     agent_entry: &AgentEntry,
     status_counts: AgentStatusCounts,
@@ -36,6 +37,15 @@ pub fn render_git_viewer(
     let top_area = chunks[0];
     let content_area = chunks[1];
     let status_area = chunks[2];
+
+    f.render_widget(
+        Block::default().style(Style::default().bg(theme.bg)),
+        top_area,
+    );
+    f.render_widget(
+        Block::default().style(Style::default().bg(theme.bg)),
+        status_area,
+    );
 
     let viewport_height = content_area.height.saturating_sub(2) as usize;
     let visible_text =
@@ -69,18 +79,18 @@ pub fn render_git_viewer(
         Span::raw(" "),
         Span::styled(
             agent_entry.config.name.as_str(),
-            Style::default().fg(FG).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" @ ", Style::default().fg(FG)),
+        Span::styled(" @ ", Style::default().fg(theme.fg)),
         Span::styled(
             agent_entry.config.project.as_str(),
-            Style::default().fg(FG).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
-        Span::styled("git viewer", Style::default().fg(GRAY)),
+        Span::styled("git viewer", Style::default().fg(theme.gray)),
         Span::raw(" "),
-        Span::styled(format!("{} ", ICON_DIR), Style::default().fg(GRAY)),
-        Span::styled(dir_display.as_str(), Style::default().fg(GRAY)),
+        Span::styled(format!("{} ", ICON_DIR), Style::default().fg(theme.gray)),
+        Span::styled(dir_display.as_str(), Style::default().fg(theme.gray)),
     ];
     f.render_widget(Paragraph::new(Line::from(top_spans)), top_area);
 
@@ -98,26 +108,36 @@ pub fn render_git_viewer(
     let nav_spans: Vec<Span> = vec![
         Span::styled(
             ctrlv_key,
-            Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.fg)
+                .bg(theme.bg2)
+                .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" agent", Style::default().fg(FG)),
+        Span::styled(" agent", Style::default().fg(theme.fg)),
         Span::raw(" "),
         Span::styled(
             ctrlg_key,
-            Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.fg)
+                .bg(theme.bg2)
+                .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" dashboard", Style::default().fg(FG)),
+        Span::styled(" dashboard", Style::default().fg(theme.fg)),
         Span::raw(" "),
         Span::styled(
             ctrlb_key,
-            Style::default().fg(FG).bg(BG2).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.fg)
+                .bg(theme.bg2)
+                .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" prefix", Style::default().fg(FG)),
+        Span::styled(" prefix", Style::default().fg(theme.fg)),
     ];
 
-    let (brand, brand_width) = brand_line(false);
+    let (brand, brand_width) = brand_line(theme, false);
 
     let (mut agent_status_spans, status_width) = status_count_spans(
+        theme,
         status_counts.running,
         status_counts.waiting,
         status_counts.idle,
@@ -152,7 +172,7 @@ pub fn render_git_viewer(
                 prefix_text,
                 Style::default()
                     .fg(ratatui::style::Color::Black)
-                    .bg(YELLOW)
+                    .bg(theme.yellow)
                     .add_modifier(Modifier::BOLD),
             )])),
             chunks[2],

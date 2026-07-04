@@ -29,6 +29,11 @@ pub struct GlobalConfig {
     #[serde(default, skip_serializing_if = "is_false")]
     pub startup_guide_dismissed: bool,
 
+    /// Selected UI theme id for Flowmux chrome.
+    /// When unset or invalid, Flowmux falls back to Gruvbox Dark.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+
     /// Per-repository remembered copy/symlink directory selections used when
     /// creating git worktrees from the launch-agent dialog.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -58,6 +63,7 @@ impl Default for GlobalConfig {
             git_viewer: None,
             enabled_agents: None,
             startup_guide_dismissed: false,
+            theme: None,
             worktree_directory_presets: BTreeMap::new(),
         }
     }
@@ -176,5 +182,10 @@ mod tests {
         let parsed: GlobalConfig = toml::from_str(&serialized).unwrap();
 
         assert!(parsed.startup_guide_dismissed);
+    }
+
+    #[test]
+    fn default_theme_is_unset() {
+        assert_eq!(GlobalConfig::default().theme, None);
     }
 }

@@ -6,11 +6,12 @@ use ratatui::{
     widgets::{Block, Clear, Paragraph},
 };
 
-use crate::ui::theme::*;
+use crate::ui::theme::Theme;
 
 pub fn render_remove_project(
     f: &mut Frame,
     area: Rect,
+    theme: &Theme,
     project_name: &str,
     agent_count: usize,
     confirm_remove_agents: bool,
@@ -30,7 +31,7 @@ pub fn render_remove_project(
 
     f.render_widget(Clear, dialog_area);
     f.render_widget(
-        Block::default().style(Style::default().bg(BG1)),
+        Block::default().style(Style::default().bg(theme.bg1)),
         dialog_area,
     );
 
@@ -58,10 +59,10 @@ pub fn render_remove_project(
             Span::raw("   "),
             Span::styled(
                 "Remove project",
-                Style::default().fg(RED).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme.red).add_modifier(Modifier::BOLD),
             ),
         ]))
-        .style(Style::default().bg(BG1)),
+        .style(Style::default().bg(theme.bg1)),
         rows[1],
     );
 
@@ -76,9 +77,9 @@ pub fn render_remove_project(
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::raw("   "),
-            Span::styled(summary, Style::default().fg(FG)),
+            Span::styled(summary, Style::default().fg(theme.fg)),
         ]))
-        .style(Style::default().bg(BG1)),
+        .style(Style::default().bg(theme.bg1)),
         rows[3],
     );
 
@@ -90,41 +91,49 @@ pub fn render_remove_project(
                 Span::styled(
                     checkbox,
                     if confirm_remove_agents {
-                        Style::default().fg(ORANGE).add_modifier(Modifier::BOLD)
+                        Style::default()
+                            .fg(theme.orange)
+                            .add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(GRAY)
+                        Style::default().fg(theme.gray)
                     },
                 ),
                 Span::styled(
                     " Stop and remove all agents on this dashboard",
-                    Style::default().fg(FG),
+                    Style::default().fg(theme.fg),
                 ),
-                Span::styled("  space", Style::default().fg(GRAY)),
+                Span::styled("  space", Style::default().fg(theme.gray)),
             ]))
-            .style(Style::default().bg(BG1)),
+            .style(Style::default().bg(theme.bg1)),
             rows[5],
         );
     }
 
     let confirm_style = if agent_count == 0 || confirm_remove_agents {
-        Style::default().bg(RED).fg(FG).add_modifier(Modifier::BOLD)
+        Style::default()
+            .bg(theme.red)
+            .fg(theme.fg)
+            .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().bg(BG2).fg(GRAY)
+        Style::default().bg(theme.bg2).fg(theme.gray)
     };
     let actions_row = if agent_count > 0 { rows[7] } else { rows[5] };
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::raw("   "),
             Span::styled(" Remove ", confirm_style),
-            Span::styled(" y / enter", Style::default().fg(GRAY)),
+            Span::styled(" y / enter", Style::default().fg(theme.gray)),
             Span::raw("   "),
             Span::styled(
                 " Cancel ",
-                Style::default().bg(BG2).fg(FG).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .bg(theme.bg2)
+                    .fg(theme.fg)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" n / esc", Style::default().fg(GRAY)),
+            Span::styled(" n / esc", Style::default().fg(theme.gray)),
         ]))
-        .style(Style::default().bg(BG1)),
+        .style(Style::default().bg(theme.bg1)),
         actions_row,
     );
 }

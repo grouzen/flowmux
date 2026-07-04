@@ -5,6 +5,7 @@ pub mod dashboard;
 pub mod git_viewer;
 pub mod remove_agent;
 pub mod remove_project;
+pub mod settings;
 pub mod startup_guide;
 pub mod terminal_view;
 pub mod theme;

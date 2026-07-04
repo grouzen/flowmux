@@ -8,7 +8,7 @@ use super::{
     ghostty_buffer_symbol_into, ghostty_cell_style, ghostty_reset_cell,
 };
 
-use crate::ui::theme::GRAY;
+use crate::ui::theme::default_theme;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SelectionRange {
@@ -332,7 +332,7 @@ pub fn render_pane_content(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Plain)
-        .border_style(Style::default().fg(GRAY));
+        .border_style(Style::default().fg(default_theme().theme.gray));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);

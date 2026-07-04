@@ -9,7 +9,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{CreateAgentState, CreateField, MAX_DIR_VISIBLE, RelativeDirSelector};
 use crate::models::AgentType;
-use crate::ui::theme::*;
+use crate::ui::theme::{ICON_AGENT, ICON_ERR, Theme};
 
 // ---------------------------------------------------------------------------
 // Layout constants
@@ -26,7 +26,7 @@ const LABEL_WIDTH: u16 = (LEFT_PAD + 10) as u16; // 13
 // Public entry point
 // ---------------------------------------------------------------------------
 
-pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) {
+pub fn render_create_agent(f: &mut Frame, area: Rect, theme: &Theme, state: &CreateAgentState) {
     // 40% of terminal width, minimum 48, leave at least 4 cols margin
     let modal_width = ((area.width as u32 * 40 / 100) as u16)
         .max(48)
@@ -34,7 +34,7 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
     let error_lines = state
         .error
         .as_deref()
-        .map(|err| wrap_error_lines(err, modal_width))
+        .map(|err| wrap_error_lines(theme, err, modal_width))
         .unwrap_or_default();
 
     let visible_dir_rows = state.dir_matches.len().min(MAX_DIR_VISIBLE) as u16;
@@ -92,7 +92,10 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
     let modal_area = centered_rect(modal_width, modal_height, area);
 
     f.render_widget(Clear, modal_area);
-    f.render_widget(Block::default().style(Style::default().bg(BG1)), modal_area);
+    f.render_widget(
+        Block::default().style(Style::default().bg(theme.bg1)),
+        modal_area,
+    );
 
     // Build layout constraints
     let mut constraints: Vec<Constraint> = vec![
@@ -162,10 +165,10 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
             Span::raw(left_pad()),
             Span::styled(
                 "Launch agent",
-                Style::default().fg(FG).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
             ),
         ]))
-        .style(Style::default().bg(BG1)),
+        .style(Style::default().bg(theme.bg1)),
         rows[row],
     );
     row += 1;
@@ -178,6 +181,7 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
     render_field_row(
         f,
         rows[row],
+        theme,
         "Name",
         &state.name,
         "type a name...",
@@ -227,6 +231,7 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
     render_field_row(
         f,
         rows[row],
+        theme,
         "Directory",
         &dir_display,
         "type a path...",
@@ -250,9 +255,9 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::raw(label_pad()),
-                Span::styled("Suggested", Style::default().fg(CYAN)),
+                Span::styled("Suggested", Style::default().fg(theme.cyan)),
             ]))
-            .style(Style::default().bg(BG1)),
+            .style(Style::default().bg(theme.bg1)),
             rows[row],
         );
         row += 1;
@@ -292,23 +297,32 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
                     Span::raw("          "),
                     Span::styled(
                         format!(" ● {:<width$}", display, width = name_width),
-                        Style::default().fg(BG).bg(FG).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(theme.bg)
+                            .bg(theme.fg)
+                            .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(" enter", Style::default().fg(GRAY).bg(BG1)),
-                    Span::styled(scrollbar_char.to_string(), Style::default().fg(BG2).bg(BG1)),
+                    Span::styled(" enter", Style::default().fg(theme.gray).bg(theme.bg1)),
+                    Span::styled(
+                        scrollbar_char.to_string(),
+                        Style::default().fg(theme.bg2).bg(theme.bg1),
+                    ),
                 ])
             } else {
                 Line::from(vec![
                     Span::raw("          "),
                     Span::styled(
                         format!("   {:<width$}", display, width = name_width),
-                        Style::default().fg(GRAY),
+                        Style::default().fg(theme.gray),
                     ),
-                    Span::styled(scrollbar_char.to_string(), Style::default().fg(BG2).bg(BG1)),
+                    Span::styled(
+                        scrollbar_char.to_string(),
+                        Style::default().fg(theme.bg2).bg(theme.bg1),
+                    ),
                 ])
             };
             f.render_widget(
-                Paragraph::new(line).style(Style::default().bg(BG1)),
+                Paragraph::new(line).style(Style::default().bg(theme.bg1)),
                 rows[row],
             );
             row += 1;
@@ -323,18 +337,18 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
         let wt_focused = state.focus == CreateField::CreateWorktree;
         let checkbox = if state.create_worktree { "[x]" } else { "[ ]" };
         let label_style = if wt_focused {
-            Style::default().fg(FG).add_modifier(Modifier::BOLD)
+            Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(GRAY)
+            Style::default().fg(theme.gray)
         };
         let checkbox_style = if state.create_worktree {
             if wt_focused {
-                Style::default().fg(CYAN).add_modifier(Modifier::BOLD)
+                Style::default().fg(theme.cyan).add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(CYAN)
+                Style::default().fg(theme.cyan)
             }
         } else {
-            Style::default().fg(GRAY)
+            Style::default().fg(theme.gray)
         };
         f.render_widget(
             Paragraph::new(Line::from(vec![
@@ -343,10 +357,10 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
                 Span::styled(" Create git worktree", label_style),
                 Span::styled(
                     "  space",
-                    Style::default().fg(if wt_focused { GRAY } else { BG2 }),
+                    Style::default().fg(if wt_focused { theme.gray } else { theme.bg2 }),
                 ),
             ]))
-            .style(Style::default().bg(BG1)),
+            .style(Style::default().bg(theme.bg1)),
             rows[row],
         );
         row += 1;
@@ -356,6 +370,7 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
         f,
         &rows,
         row,
+        theme,
         "Copy directories",
         state.copy_directories_enabled,
         &state.copy_directories,
@@ -366,6 +381,7 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
         f,
         &rows,
         row,
+        theme,
         "Symlink directories",
         state.symlink_directories_enabled,
         &state.symlink_directories,
@@ -382,18 +398,18 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
             "[ ]"
         };
         let label_style = if focused {
-            Style::default().fg(FG).add_modifier(Modifier::BOLD)
+            Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(GRAY)
+            Style::default().fg(theme.gray)
         };
         let checkbox_style = if state.initialize_submodules {
             if focused {
-                Style::default().fg(CYAN).add_modifier(Modifier::BOLD)
+                Style::default().fg(theme.cyan).add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(CYAN)
+                Style::default().fg(theme.cyan)
             }
         } else {
-            Style::default().fg(GRAY)
+            Style::default().fg(theme.gray)
         };
         f.render_widget(
             Paragraph::new(Line::from(vec![
@@ -402,10 +418,10 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
                 Span::styled(" Initialize submodules", label_style),
                 Span::styled(
                     "  space",
-                    Style::default().fg(if focused { GRAY } else { BG2 }),
+                    Style::default().fg(if focused { theme.gray } else { theme.bg2 }),
                 ),
             ]))
-            .style(Style::default().bg(BG1)),
+            .style(Style::default().bg(theme.bg1)),
             rows[row],
         );
         row += 1;
@@ -415,21 +431,21 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
     row += 1;
     let agent_focused = state.focus == CreateField::AgentType;
     let label_style = if agent_focused {
-        Style::default().fg(FG)
+        Style::default().fg(theme.fg)
     } else {
-        Style::default().fg(GRAY)
+        Style::default().fg(theme.gray)
     };
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::raw(left_pad()),
             Span::styled("Agent", label_style),
         ]))
-        .style(Style::default().bg(BG1)),
+        .style(Style::default().bg(theme.bg1)),
         rows[row],
     );
     row += 1;
 
-    render_agent_type_list(f, &rows[row..row + agent_rows as usize], state);
+    render_agent_type_list(f, &rows[row..row + agent_rows as usize], theme, state);
     row += agent_rows as usize;
 
     // blank
@@ -438,7 +454,7 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
     // Error row
     if !error_lines.is_empty() {
         f.render_widget(
-            Paragraph::new(Text::from(error_lines)).style(Style::default().bg(BG1)),
+            Paragraph::new(Text::from(error_lines)).style(Style::default().bg(theme.bg1)),
             rows[row],
         );
         row += 1;
@@ -452,19 +468,22 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, state: &CreateAgentState) 
             Span::styled(
                 " Launch ",
                 Style::default()
-                    .bg(ORANGE)
-                    .fg(FG)
+                    .bg(theme.orange)
+                    .fg(theme.fg)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" enter", Style::default().fg(GRAY)),
+            Span::styled(" enter", Style::default().fg(theme.gray)),
             Span::raw("   "),
             Span::styled(
                 " Cancel ",
-                Style::default().bg(BG2).fg(FG).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .bg(theme.bg2)
+                    .fg(theme.fg)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" esc", Style::default().fg(GRAY)),
+            Span::styled(" esc", Style::default().fg(theme.gray)),
         ]))
-        .style(Style::default().bg(BG1)),
+        .style(Style::default().bg(theme.bg1)),
         rows[row],
     );
 }
@@ -481,7 +500,7 @@ fn agent_type_label(t: &AgentType) -> &'static str {
     }
 }
 
-fn render_agent_type_list(f: &mut Frame, areas: &[Rect], state: &CreateAgentState) {
+fn render_agent_type_list(f: &mut Frame, areas: &[Rect], theme: &Theme, state: &CreateAgentState) {
     let focused = state.focus == CreateField::AgentType;
     let types = &state.available_types;
 
@@ -492,10 +511,10 @@ fn render_agent_type_list(f: &mut Frame, areas: &[Rect], state: &CreateAgentStat
                     Span::raw(label_pad()),
                     Span::styled(
                         format!("{} opencode", ICON_AGENT),
-                        Style::default().fg(GREEN),
+                        Style::default().fg(theme.green),
                     ),
                 ]))
-                .style(Style::default().bg(BG1)),
+                .style(Style::default().bg(theme.bg1)),
                 *area,
             );
         }
@@ -508,11 +527,13 @@ fn render_agent_type_list(f: &mut Frame, areas: &[Rect], state: &CreateAgentStat
         let radio = if selected { "◉" } else { "○" };
 
         let style = if selected && focused {
-            Style::default().fg(GREEN).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(theme.green)
+                .add_modifier(Modifier::BOLD)
         } else if selected {
-            Style::default().fg(GREEN)
+            Style::default().fg(theme.green)
         } else {
-            Style::default().fg(GRAY)
+            Style::default().fg(theme.gray)
         };
 
         f.render_widget(
@@ -520,7 +541,7 @@ fn render_agent_type_list(f: &mut Frame, areas: &[Rect], state: &CreateAgentStat
                 Span::raw(label_pad()),
                 Span::styled(format!("{} {}", radio, agent_type_label(t)), style),
             ]))
-            .style(Style::default().bg(BG1)),
+            .style(Style::default().bg(theme.bg1)),
             *area,
         );
     }
@@ -533,6 +554,7 @@ fn render_agent_type_list(f: &mut Frame, areas: &[Rect], state: &CreateAgentStat
 fn render_field_row(
     f: &mut Frame,
     area: Rect,
+    theme: &Theme,
     label: &str,
     value: &str,
     placeholder: &str,
@@ -547,26 +569,26 @@ fn render_field_row(
 
     let spans: Vec<Span> = if focused {
         vec![
-            Span::styled(label_text, Style::default().fg(FG)),
+            Span::styled(label_text, Style::default().fg(theme.fg)),
             Span::styled(
                 displayed,
-                Style::default().fg(FG).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
             ),
         ]
     } else if value.is_empty() {
         vec![
-            Span::styled(label_text, Style::default().fg(GRAY)),
-            Span::styled(placeholder, Style::default().fg(BG2)),
+            Span::styled(label_text, Style::default().fg(theme.gray)),
+            Span::styled(placeholder, Style::default().fg(theme.bg2)),
         ]
     } else {
         vec![
-            Span::styled(label_text, Style::default().fg(GRAY)),
-            Span::styled(displayed, Style::default().fg(GRAY)),
+            Span::styled(label_text, Style::default().fg(theme.gray)),
+            Span::styled(displayed, Style::default().fg(theme.gray)),
         ]
     };
 
     f.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(BG1)),
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.bg1)),
         area,
     );
 }
@@ -630,6 +652,7 @@ fn render_selector_section(
     f: &mut Frame,
     rows: &[Rect],
     mut row: usize,
+    theme: &Theme,
     label: &str,
     enabled: bool,
     selector: &RelativeDirSelector,
@@ -645,17 +668,17 @@ fn render_selector_section(
     let checkbox = if enabled { "[x]" } else { "[ ]" };
     let checkbox_style = if enabled {
         if focused {
-            Style::default().fg(CYAN).add_modifier(Modifier::BOLD)
+            Style::default().fg(theme.cyan).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(CYAN)
+            Style::default().fg(theme.cyan)
         }
     } else {
-        Style::default().fg(GRAY)
+        Style::default().fg(theme.gray)
     };
     let label_style = if focused {
-        Style::default().fg(FG).add_modifier(Modifier::BOLD)
+        Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(GRAY)
+        Style::default().fg(theme.gray)
     };
     f.render_widget(
         Paragraph::new(Line::from(vec![
@@ -664,10 +687,10 @@ fn render_selector_section(
             Span::styled(format!(" {label}"), label_style),
             Span::styled(
                 "  space",
-                Style::default().fg(if focused { GRAY } else { BG2 }),
+                Style::default().fg(if focused { theme.gray } else { theme.bg2 }),
             ),
         ]))
-        .style(Style::default().bg(BG1)),
+        .style(Style::default().bg(theme.bg1)),
         rows[row],
     );
     row += 1;
@@ -683,6 +706,7 @@ fn render_selector_section(
         render_selector_value_row(
             f,
             rows[row],
+            theme,
             &format!("./{selected}"),
             false,
             focused,
@@ -698,7 +722,15 @@ fn render_selector_section(
             selector.current_display()
         };
         let candidate_row = rows[row];
-        render_selector_value_row(f, candidate_row, &candidate_display, true, focused, false);
+        render_selector_value_row(
+            f,
+            candidate_row,
+            theme,
+            &candidate_display,
+            true,
+            focused,
+            false,
+        );
         let val_width = candidate_row.width.saturating_sub(LABEL_WIDTH + 3);
         let displayed_len = candidate_display.len().min(val_width as usize) as u16;
         let cx = (candidate_row.x + LABEL_WIDTH + displayed_len)
@@ -735,23 +767,32 @@ fn render_selector_section(
                     Span::raw("          "),
                     Span::styled(
                         format!(" ● {:<width$}", suggestion, width = name_width),
-                        Style::default().fg(BG).bg(FG).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(theme.bg)
+                            .bg(theme.fg)
+                            .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(" enter", Style::default().fg(GRAY).bg(BG1)),
-                    Span::styled(scrollbar_char.to_string(), Style::default().fg(BG2).bg(BG1)),
+                    Span::styled(" enter", Style::default().fg(theme.gray).bg(theme.bg1)),
+                    Span::styled(
+                        scrollbar_char.to_string(),
+                        Style::default().fg(theme.bg2).bg(theme.bg1),
+                    ),
                 ])
             } else {
                 Line::from(vec![
                     Span::raw("          "),
                     Span::styled(
                         format!("   {:<width$}", suggestion, width = name_width),
-                        Style::default().fg(GRAY),
+                        Style::default().fg(theme.gray),
                     ),
-                    Span::styled(scrollbar_char.to_string(), Style::default().fg(BG2).bg(BG1)),
+                    Span::styled(
+                        scrollbar_char.to_string(),
+                        Style::default().fg(theme.bg2).bg(theme.bg1),
+                    ),
                 ])
             };
             f.render_widget(
-                Paragraph::new(line).style(Style::default().bg(BG1)),
+                Paragraph::new(line).style(Style::default().bg(theme.bg1)),
                 rows[row],
             );
             row += 1;
@@ -764,6 +805,7 @@ fn render_selector_section(
 fn render_selector_value_row(
     f: &mut Frame,
     area: Rect,
+    theme: &Theme,
     value: &str,
     is_current: bool,
     focused: bool,
@@ -771,12 +813,12 @@ fn render_selector_value_row(
 ) {
     let style = if is_current {
         if focused {
-            Style::default().fg(FG).add_modifier(Modifier::BOLD)
+            Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(FG)
+            Style::default().fg(theme.fg)
         }
     } else {
-        Style::default().fg(GRAY)
+        Style::default().fg(theme.gray)
     };
 
     f.render_widget(
@@ -789,10 +831,10 @@ fn render_selector_value_row(
                 } else {
                     ""
                 },
-                Style::default().fg(GRAY),
+                Style::default().fg(theme.gray),
             ),
         ]))
-        .style(Style::default().bg(BG1)),
+        .style(Style::default().bg(theme.bg1)),
         area,
     );
 }
@@ -833,7 +875,7 @@ fn label_pad() -> &'static str {
     "             " // 13 spaces
 }
 
-fn wrap_error_lines(error: &str, modal_width: u16) -> Vec<Line<'static>> {
+fn wrap_error_lines(theme: &Theme, error: &str, modal_width: u16) -> Vec<Line<'static>> {
     let icon_prefix = format!("{}{} ", left_pad(), ICON_ERR);
     let icon_prefix_width = UnicodeWidthStr::width(icon_prefix.as_str());
     let indent = " ".repeat(icon_prefix_width);
@@ -850,13 +892,13 @@ fn wrap_error_lines(error: &str, modal_width: u16) -> Vec<Line<'static>> {
             if idx == 0 {
                 Line::from(vec![
                     Span::raw(left_pad()),
-                    Span::styled(format!("{} ", ICON_ERR), Style::default().fg(RED)),
-                    Span::styled(text, Style::default().fg(RED)),
+                    Span::styled(format!("{} ", ICON_ERR), Style::default().fg(theme.red)),
+                    Span::styled(text, Style::default().fg(theme.red)),
                 ])
             } else {
                 Line::from(vec![
                     Span::raw(indent.clone()),
-                    Span::styled(text, Style::default().fg(RED)),
+                    Span::styled(text, Style::default().fg(theme.red)),
                 ])
             }
         })
@@ -944,7 +986,14 @@ mod tests {
         let backend = TestBackend::new(width, height);
         let mut terminal = RatatuiTerminal::new(backend).unwrap();
         terminal
-            .draw(|frame| render_create_agent(frame, Rect::new(0, 0, width, height), state))
+            .draw(|frame| {
+                render_create_agent(
+                    frame,
+                    Rect::new(0, 0, width, height),
+                    &crate::ui::theme::default_theme().theme,
+                    state,
+                )
+            })
             .unwrap();
         terminal.backend().buffer().clone()
     }

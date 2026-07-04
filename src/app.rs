@@ -13,6 +13,9 @@ use crate::models::{AgentEntry, AgentMeta, AgentStatus, AgentStatusCounts, Agent
 use crate::runner::AgentRunner;
 use crate::tmux;
 use crate::ui::dashboard::{PROJECT_TABS_HEIGHT, grid_layout, project_tab_label};
+use crate::ui::theme::{
+    Theme, theme_by_id, theme_by_index, theme_id_or_default, theme_index_by_id,
+};
 
 // ---------------------------------------------------------------------------
 // StatusNotification — blink tracking for status bar
@@ -239,6 +242,12 @@ impl StartupGuideState {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct SettingsState {
+    pub selected_idx: usize,
+    pub committed_theme_id: String,
+}
+
 /// State for the git viewer pane view.
 #[derive(Debug, Clone)]
 pub struct GitViewerState {
@@ -357,6 +366,7 @@ pub enum AppState {
     StartupGuide(StartupGuideState),
     CreateAgentDialog,
     CreateProjectDialog,
+    SettingsDialog(SettingsState),
     AgentView(usize),
     RemoveAgentDialog(RemoveAgentState),
     RemoveProjectDialog(RemoveProjectState),
@@ -887,6 +897,8 @@ pub struct App {
     pub terminal_panes: std::collections::HashMap<usize, String>,
     pub create_state: CreateAgentState,
     pub create_project_state: CreateProjectState,
+    pub active_theme_id: String,
+    pub preview_theme_id: Option<String>,
     pub tx: UnboundedSender<Event>,
     pub rx: UnboundedReceiver<Event>,
     last_dashboard_left_click: Option<(usize, std::time::Instant)>,
@@ -923,6 +935,8 @@ impl App {
         let show_startup_guide = !runner.global_config().startup_guide_dismissed;
         let (tx, rx) = mpsc::unbounded_channel();
         let card_count = agents.len();
+        let active_theme_id =
+            theme_id_or_default(runner.global_config().theme.as_deref()).to_string();
         let mut app = Self {
             agents,
             adapters,
@@ -942,6 +956,8 @@ impl App {
             terminal_panes: std::collections::HashMap::new(),
             create_state: CreateAgentState::default(),
             create_project_state: CreateProjectState::default(),
+            active_theme_id,
+            preview_theme_id: None,
             tx,
             rx,
             last_dashboard_left_click: None,
@@ -967,6 +983,51 @@ impl App {
             .get(self.active_project_idx)
             .map(String::as_str)
             .unwrap_or(DEFAULT_PROJECT_NAME)
+    }
+
+    pub fn theme(&self) -> &'static Theme {
+        let id = self
+            .preview_theme_id
+            .as_deref()
+            .unwrap_or(&self.active_theme_id);
+        &theme_by_id(id).unwrap_or(theme_by_index(0)).theme
+    }
+
+    fn set_theme_preview_by_id(&mut self, theme_id: &str) {
+        self.preview_theme_id = Some(theme_id_or_default(Some(theme_id)).to_string());
+        self.dirty = true;
+    }
+
+    fn open_settings_dialog(&mut self) {
+        let committed_theme_id = self.active_theme_id.clone();
+        self.preview_theme_id = Some(committed_theme_id.clone());
+        self.state = AppState::SettingsDialog(SettingsState {
+            selected_idx: theme_index_by_id(&committed_theme_id),
+            committed_theme_id,
+        });
+        self.dirty = true;
+    }
+
+    fn apply_selected_theme(&mut self, selected_idx: usize) {
+        let selected_theme = theme_by_index(selected_idx);
+        let selected_id = selected_theme.id.to_string();
+        self.active_theme_id = selected_id.clone();
+        self.preview_theme_id = None;
+        self.runner.global_config_mut().theme = Some(selected_id);
+    }
+
+    fn confirm_settings_dialog(&mut self, state: SettingsState) {
+        self.apply_selected_theme(state.selected_idx);
+        let _ = self.runner.global_config().save();
+        self.state = AppState::Dashboard;
+        self.dirty = true;
+    }
+
+    fn cancel_settings_dialog(&mut self, state: SettingsState) {
+        self.active_theme_id = theme_id_or_default(Some(&state.committed_theme_id)).to_string();
+        self.preview_theme_id = None;
+        self.state = AppState::Dashboard;
+        self.dirty = true;
     }
 
     fn clear_pane_copy_interaction(&mut self) {
@@ -1011,9 +1072,9 @@ impl App {
         self.copy_feedback.as_ref().and_then(|feedback| {
             (std::time::Instant::now() < feedback.expires_at).then(|| {
                 let color = if feedback.success {
-                    crate::ui::theme::GREEN
+                    self.theme().green
                 } else {
-                    crate::ui::theme::RED
+                    self.theme().red
                 };
                 (format!(" {} ", feedback.message), color)
             })
@@ -2152,6 +2213,7 @@ impl App {
                 let state = state.clone();
                 self.handle_startup_guide_key(key, state)
             }
+            AppState::SettingsDialog(state) => self.handle_settings_key(key, state.clone()),
             AppState::AgentView(idx) => {
                 let idx = *idx;
                 self.handle_agent_view_key(key, idx).await
@@ -2251,6 +2313,9 @@ impl App {
                 self.create_state = cs;
                 self.load_create_state_worktree_presets();
                 self.state = AppState::CreateAgentDialog;
+            }
+            KeyCode::Char('S') => {
+                self.open_settings_dialog();
             }
             KeyCode::Char('p') => {
                 self.create_project_state = CreateProjectState::default();
@@ -2401,6 +2466,33 @@ impl App {
                 if let Some(s) = self.card_scroll.get_mut(self.selected) {
                     *s = s.saturating_sub(5);
                     self.dirty = true;
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
+    fn handle_settings_key(&mut self, key: KeyEvent, state: SettingsState) -> bool {
+        match key.code {
+            KeyCode::Esc => self.cancel_settings_dialog(state),
+            KeyCode::Enter => self.confirm_settings_dialog(state),
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let AppState::SettingsDialog(ref mut settings) = self.state
+                    && settings.selected_idx > 0
+                {
+                    settings.selected_idx -= 1;
+                    let theme_id = theme_by_index(settings.selected_idx).id.to_string();
+                    self.set_theme_preview_by_id(&theme_id);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let AppState::SettingsDialog(ref mut settings) = self.state
+                    && settings.selected_idx + 1 < crate::ui::theme::builtin_themes().len()
+                {
+                    settings.selected_idx += 1;
+                    let theme_id = theme_by_index(settings.selected_idx).id.to_string();
+                    self.set_theme_preview_by_id(&theme_id);
                 }
             }
             _ => {}
@@ -6253,5 +6345,80 @@ mod tests {
             AppState::StartupGuide(guide) => assert_eq!(guide.page, 0),
             state => panic!("expected startup guide state, got {state:?}"),
         }
+    }
+
+    #[test]
+    fn app_defaults_to_gruvbox_dark_when_global_theme_missing_or_invalid() {
+        let app = test_app_with_global_config(GlobalConfig::default());
+        assert_eq!(app.active_theme_id, "gruvbox-dark");
+
+        let invalid = test_app_with_global_config(GlobalConfig {
+            theme: Some("missing-theme".into()),
+            ..GlobalConfig::default()
+        });
+        assert_eq!(invalid.active_theme_id, "gruvbox-dark");
+    }
+
+    #[test]
+    fn opening_settings_seeds_selection_and_preview_theme() {
+        let mut app = test_app_with_global_config(GlobalConfig {
+            theme: Some("tokyo-night".into()),
+            ..GlobalConfig::default()
+        });
+
+        app.open_settings_dialog();
+
+        let AppState::SettingsDialog(state) = &app.state else {
+            panic!("expected settings dialog");
+        };
+        assert_eq!(state.committed_theme_id, "tokyo-night");
+        assert_eq!(app.preview_theme_id.as_deref(), Some("tokyo-night"));
+        assert_eq!(state.selected_idx, theme_index_by_id("tokyo-night"));
+    }
+
+    #[test]
+    fn settings_cancel_restores_committed_theme_without_persisting() {
+        let mut app = test_app_with_global_config(GlobalConfig {
+            theme: Some("gruvbox-dark".into()),
+            ..GlobalConfig::default()
+        });
+        app.open_settings_dialog();
+
+        if let AppState::SettingsDialog(ref mut state) = app.state {
+            state.selected_idx = theme_index_by_id("solarized-dark");
+        }
+        app.set_theme_preview_by_id("solarized-dark");
+
+        let state = match &app.state {
+            AppState::SettingsDialog(state) => state.clone(),
+            _ => panic!("expected settings dialog"),
+        };
+        app.cancel_settings_dialog(state);
+
+        assert!(matches!(app.state, AppState::Dashboard));
+        assert_eq!(app.active_theme_id, "gruvbox-dark");
+        assert_eq!(app.preview_theme_id, None);
+        assert_eq!(
+            app.runner.global_config().theme.as_deref(),
+            Some("gruvbox-dark")
+        );
+    }
+
+    #[test]
+    fn applying_selected_theme_updates_active_and_global_config() {
+        let mut app = test_app_with_global_config(GlobalConfig {
+            theme: Some("gruvbox-dark".into()),
+            ..GlobalConfig::default()
+        });
+        app.preview_theme_id = Some("catppuccin-latte".into());
+
+        app.apply_selected_theme(theme_index_by_id("catppuccin-latte"));
+
+        assert_eq!(app.active_theme_id, "catppuccin-latte");
+        assert_eq!(app.preview_theme_id, None);
+        assert_eq!(
+            app.runner.global_config().theme.as_deref(),
+            Some("catppuccin-latte")
+        );
     }
 }
