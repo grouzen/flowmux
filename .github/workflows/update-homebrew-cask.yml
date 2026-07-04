@@ -74,7 +74,7 @@ jobs:
           printf 'sha256=%s\n' "$sha256" >> "$GITHUB_OUTPUT"
 
       - name: Check out homebrew tap
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: grouzen/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
