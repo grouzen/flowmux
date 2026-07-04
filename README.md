@@ -8,6 +8,8 @@
 
 # Flowmux
 
+Where agent chaos becomes flow.
+
 Flowmux is a terminal-native AI agent multiplexer for running, tracking, and switching between multiple CLI agents from one keyboard-first dashboard.
 
 It is built for people who want fast hotkeys, a clean grid view of active work, tmux-backed persistence, and real terminal sessions instead of wrapped agent UIs.
