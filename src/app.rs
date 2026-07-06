@@ -10,7 +10,7 @@ use crate::config::{AgentKind, Config, DEFAULT_PROJECT_NAME, MAX_PROJECTS};
 use crate::global_config::WorktreeDirectoryPreset;
 use crate::host_terminal::HostColors;
 use crate::models::{AgentEntry, AgentMeta, AgentStatus, AgentStatusCounts, AgentType};
-use crate::runner::AgentRunner;
+use crate::runner::{self, AgentRunner};
 use crate::tmux;
 use crate::ui::dashboard::{PROJECT_TABS_HEIGHT, grid_layout, project_tab_label};
 use crate::ui::theme::{
@@ -483,10 +483,19 @@ pub enum CreateField {
     Name,
     Directory,
     CreateWorktree,
+    WorktreeFromBranch,
+    WorktreeBaseBranch,
     CopyDirectories,
     SymlinkDirectories,
     InitializeSubmodules,
     AgentType,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WorktreeBaseMode {
+    #[default]
+    Head,
+    Branch,
 }
 
 /// Maximum number of directory suggestions visible at once in the list.
@@ -599,6 +608,13 @@ pub struct CreateAgentState {
     /// Whether to create a git worktree for this agent.
     /// Only meaningful (and shown in the UI) when `git_repo_root.is_some()`.
     pub create_worktree: bool,
+    pub worktree_base_mode: WorktreeBaseMode,
+    pub available_branch_refs: Vec<String>,
+    pub worktree_base_branch_filter: TextInputState,
+    pub selected_worktree_base_branch: Option<String>,
+    pub worktree_base_branch_matches: Vec<String>,
+    pub worktree_base_branch_selected_idx: usize,
+    pub worktree_base_branch_scroll_offset: usize,
     pub has_git_submodules: bool,
     pub initialize_submodules: bool,
     pub copy_directories_enabled: bool,
@@ -623,6 +639,13 @@ impl Default for CreateAgentState {
             selected_type_idx: 0,
             git_repo_root: None,
             create_worktree: false,
+            worktree_base_mode: WorktreeBaseMode::Head,
+            available_branch_refs: Vec::new(),
+            worktree_base_branch_filter: TextInputState::default(),
+            selected_worktree_base_branch: None,
+            worktree_base_branch_matches: Vec::new(),
+            worktree_base_branch_selected_idx: 0,
+            worktree_base_branch_scroll_offset: 0,
             has_git_submodules: false,
             initialize_submodules: true,
             copy_directories_enabled: false,
@@ -677,6 +700,14 @@ impl CreateAgentState {
 
     pub fn worktree_selectors_visible(&self) -> bool {
         self.git_repo_root.is_some() && self.create_worktree
+    }
+
+    pub fn worktree_branch_fields_visible(&self) -> bool {
+        self.worktree_selectors_visible() && self.worktree_base_mode == WorktreeBaseMode::Branch
+    }
+
+    pub fn worktree_branch_selected(&self) -> bool {
+        self.selected_worktree_base_branch.is_some()
     }
 
     pub fn initialize_submodules_visible(&self) -> bool {
@@ -739,6 +770,13 @@ impl CreateAgentState {
         // Re-detect git root for the current (confirmed) directory.
         self.detect_git_repo();
         self.clear_worktree_selections();
+        self.reset_worktree_branch_state();
+        self.available_branch_refs = self
+            .git_repo_root
+            .as_ref()
+            .map(|repo_root| crate::git::list_branch_refs(repo_root))
+            .unwrap_or_default();
+        self.refresh_worktree_base_branch_matches();
     }
 
     pub fn refresh_worktree_selector_matches(&mut self) {
@@ -747,11 +785,37 @@ impl CreateAgentState {
         self.symlink_directories.refresh_matches(&base_dir);
     }
 
+    pub fn refresh_worktree_base_branch_matches(&mut self) {
+        let prefix = self.worktree_base_branch_filter.value.trim();
+        self.worktree_base_branch_matches = self
+            .available_branch_refs
+            .iter()
+            .filter(|name| prefix.is_empty() || name.starts_with(prefix))
+            .cloned()
+            .collect();
+        self.worktree_base_branch_selected_idx = self
+            .worktree_base_branch_selected_idx
+            .min(self.worktree_base_branch_matches.len().saturating_sub(1));
+        self.worktree_base_branch_scroll_offset = self
+            .worktree_base_branch_scroll_offset
+            .min(self.worktree_base_branch_selected_idx);
+    }
+
     fn clear_worktree_selections(&mut self) {
         self.copy_directories_enabled = false;
         self.symlink_directories_enabled = false;
         self.copy_directories.clear_all();
         self.symlink_directories.clear_all();
+    }
+
+    fn reset_worktree_branch_state(&mut self) {
+        self.worktree_base_mode = WorktreeBaseMode::Head;
+        self.available_branch_refs.clear();
+        self.worktree_base_branch_filter = TextInputState::default();
+        self.selected_worktree_base_branch = None;
+        self.worktree_base_branch_matches.clear();
+        self.worktree_base_branch_selected_idx = 0;
+        self.worktree_base_branch_scroll_offset = 0;
     }
 
     fn selector_mut(&mut self, field: &CreateField) -> Option<&mut RelativeDirSelector> {
@@ -847,7 +911,12 @@ impl CreateAgentState {
         self.has_git_submodules = new_root
             .as_ref()
             .is_some_and(|repo_root| crate::git::repo_has_submodules(repo_root));
+        self.available_branch_refs = new_root
+            .as_ref()
+            .map(|repo_root| crate::git::list_branch_refs(repo_root))
+            .unwrap_or_default();
         self.git_repo_root = new_root;
+        self.refresh_worktree_base_branch_matches();
     }
 }
 
@@ -3412,6 +3481,7 @@ impl App {
                     &current_focus,
                     self.create_state.git_repo_root.is_some(),
                     self.create_state.create_worktree,
+                    self.create_state.worktree_branch_fields_visible(),
                     self.create_state.has_git_submodules,
                 );
                 self.create_state.error = None;
@@ -3455,6 +3525,19 @@ impl App {
                         }
                     }
                 }
+                CreateField::WorktreeBaseBranch => {
+                    let n = self.create_state.worktree_base_branch_matches.len();
+                    if n > 0 {
+                        let new_idx = self
+                            .create_state
+                            .worktree_base_branch_selected_idx
+                            .saturating_sub(1);
+                        self.create_state.worktree_base_branch_selected_idx = new_idx;
+                        if new_idx < self.create_state.worktree_base_branch_scroll_offset {
+                            self.create_state.worktree_base_branch_scroll_offset = new_idx;
+                        }
+                    }
+                }
                 CreateField::AgentType => {
                     let n = self.create_state.available_types.len();
                     if n > 0 {
@@ -3464,6 +3547,7 @@ impl App {
                 }
                 CreateField::Name
                 | CreateField::CreateWorktree
+                | CreateField::WorktreeFromBranch
                 | CreateField::InitializeSubmodules => {}
             },
             KeyCode::Down => match self.create_state.focus {
@@ -3493,6 +3577,21 @@ impl App {
                         }
                     }
                 }
+                CreateField::WorktreeBaseBranch => {
+                    let n = self.create_state.worktree_base_branch_matches.len();
+                    if n > 0 {
+                        let new_idx =
+                            (self.create_state.worktree_base_branch_selected_idx + 1).min(n - 1);
+                        self.create_state.worktree_base_branch_selected_idx = new_idx;
+                        if new_idx
+                            >= self.create_state.worktree_base_branch_scroll_offset
+                                + MAX_DIR_VISIBLE
+                        {
+                            self.create_state.worktree_base_branch_scroll_offset =
+                                new_idx + 1 - MAX_DIR_VISIBLE;
+                        }
+                    }
+                }
                 CreateField::AgentType => {
                     let n = self.create_state.available_types.len();
                     if n > 0 {
@@ -3502,6 +3601,7 @@ impl App {
                 }
                 CreateField::Name
                 | CreateField::CreateWorktree
+                | CreateField::WorktreeFromBranch
                 | CreateField::InitializeSubmodules => {}
             },
 
@@ -3509,16 +3609,40 @@ impl App {
                 self.create_state.move_name_cursor_left();
             }
 
+            KeyCode::Left if self.create_state.focus == CreateField::WorktreeBaseBranch => {
+                if !self.create_state.worktree_branch_selected() {
+                    self.create_state.worktree_base_branch_filter.move_left();
+                }
+            }
+
             KeyCode::Right if self.create_state.focus == CreateField::Name => {
                 self.create_state.move_name_cursor_right();
+            }
+
+            KeyCode::Right if self.create_state.focus == CreateField::WorktreeBaseBranch => {
+                if !self.create_state.worktree_branch_selected() {
+                    self.create_state.worktree_base_branch_filter.move_right();
+                }
             }
 
             KeyCode::Home if self.create_state.focus == CreateField::Name => {
                 self.create_state.move_name_cursor_home();
             }
 
+            KeyCode::Home if self.create_state.focus == CreateField::WorktreeBaseBranch => {
+                if !self.create_state.worktree_branch_selected() {
+                    self.create_state.worktree_base_branch_filter.move_home();
+                }
+            }
+
             KeyCode::End if self.create_state.focus == CreateField::Name => {
                 self.create_state.move_name_cursor_end();
+            }
+
+            KeyCode::End if self.create_state.focus == CreateField::WorktreeBaseBranch => {
+                if !self.create_state.worktree_branch_selected() {
+                    self.create_state.worktree_base_branch_filter.move_end();
+                }
             }
 
             KeyCode::Enter => {
@@ -3540,6 +3664,33 @@ impl App {
                         self.create_state.refresh_dir_matches();
                         self.load_create_state_worktree_presets();
                     }
+                } else if self.create_state.focus == CreateField::WorktreeBaseBranch {
+                    if self.create_state.worktree_branch_selected() {
+                        self.create_state.focus = next_create_field(
+                            &CreateField::WorktreeBaseBranch,
+                            self.create_state.git_repo_root.is_some(),
+                            self.create_state.create_worktree,
+                            self.create_state.worktree_branch_fields_visible(),
+                            self.create_state.has_git_submodules,
+                        );
+                        self.create_state.error = None;
+                    } else if let Some(branch) = self
+                        .create_state
+                        .worktree_base_branch_matches
+                        .get(self.create_state.worktree_base_branch_selected_idx)
+                        .cloned()
+                    {
+                        self.create_state.selected_worktree_base_branch = Some(branch);
+                        self.create_state.worktree_base_branch_filter = TextInputState::default();
+                        self.create_state.focus = next_create_field(
+                            &CreateField::WorktreeBaseBranch,
+                            self.create_state.git_repo_root.is_some(),
+                            self.create_state.create_worktree,
+                            self.create_state.worktree_branch_fields_visible(),
+                            self.create_state.has_git_submodules,
+                        );
+                        self.create_state.error = None;
+                    }
                 } else if matches!(
                     self.create_state.focus,
                     CreateField::CopyDirectories | CreateField::SymlinkDirectories
@@ -3558,15 +3709,42 @@ impl App {
                     let dir = self.create_state.directory.clone();
                     let project = self.active_project_name().to_string();
                     let agent_type = self.create_state.selected_agent_type();
-                    let create_worktree = self.create_state.create_worktree
-                        && self.create_state.git_repo_root.is_some();
-                    let initialize_submodules =
-                        create_worktree && self.create_state.initialize_submodules_visible();
-                    let git_repo_root = self
-                        .create_state
-                        .git_repo_root
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().to_string());
+                    let worktree = if self.create_state.create_worktree {
+                        let Some(repo_root) = self.create_state.git_repo_root.as_ref() else {
+                            self.create_state.error =
+                                Some("git worktree requested outside a git repository".into());
+                            return true;
+                        };
+                        let branch_name = crate::git::sanitize_branch_name(&name);
+                        if let Err(err) = crate::git::validate_local_branch_name(&branch_name) {
+                            self.create_state.error = Some(err.to_string());
+                            return true;
+                        }
+                        let start_point = if self.create_state.worktree_base_mode
+                            == WorktreeBaseMode::Branch
+                        {
+                            let Some(base_ref) =
+                                self.create_state.selected_worktree_base_branch.as_deref()
+                            else {
+                                self.create_state.error = Some("base branch is required".into());
+                                return true;
+                            };
+                            runner::WorktreeStartPoint::Ref(base_ref.to_string())
+                        } else {
+                            runner::WorktreeStartPoint::Head
+                        };
+                        Some(runner::WorktreeRequest {
+                            repo_root: repo_root.to_string_lossy().to_string(),
+                            branch_name: branch_name.to_string(),
+                            start_point,
+                            initialize_submodules: self
+                                .create_state
+                                .initialize_submodules_visible()
+                                && self.create_state.initialize_submodules,
+                        })
+                    } else {
+                        None
+                    };
                     let copy_directories = if self.create_state.copy_directories_enabled {
                         self.create_state.copy_directories.selected_dirs.clone()
                     } else {
@@ -3584,9 +3762,7 @@ impl App {
                             &dir,
                             &project,
                             agent_type,
-                            create_worktree,
-                            git_repo_root.as_deref(),
-                            initialize_submodules,
+                            worktree,
                             copy_directories,
                             symlink_directories,
                         )
@@ -3629,6 +3805,16 @@ impl App {
                         self.create_state.refresh_dir_matches();
                         self.load_create_state_worktree_presets();
                     }
+                    CreateField::WorktreeBaseBranch => {
+                        if self.create_state.worktree_branch_selected() {
+                            self.create_state.selected_worktree_base_branch = None;
+                        } else {
+                            self.create_state
+                                .worktree_base_branch_filter
+                                .ctrl_w_delete();
+                        }
+                        self.create_state.refresh_worktree_base_branch_matches();
+                    }
                     CreateField::CopyDirectories | CreateField::SymlinkDirectories => {
                         let focus = self.create_state.focus.clone();
                         if self.create_state.selector_enabled(&focus) {
@@ -3646,6 +3832,7 @@ impl App {
                     }
                     CreateField::AgentType
                     | CreateField::CreateWorktree
+                    | CreateField::WorktreeFromBranch
                     | CreateField::InitializeSubmodules => {}
                 }
             }
@@ -3665,6 +3852,16 @@ impl App {
                         self.create_state.refresh_dir_matches();
                         self.load_create_state_worktree_presets();
                     }
+                    CreateField::WorktreeBaseBranch => {
+                        if self.create_state.worktree_branch_selected() {
+                            self.create_state.selected_worktree_base_branch = None;
+                        } else {
+                            self.create_state
+                                .worktree_base_branch_filter
+                                .ctrl_w_delete();
+                        }
+                        self.create_state.refresh_worktree_base_branch_matches();
+                    }
                     CreateField::CopyDirectories | CreateField::SymlinkDirectories => {
                         let focus = self.create_state.focus.clone();
                         if self.create_state.selector_enabled(&focus) {
@@ -3682,6 +3879,7 @@ impl App {
                     }
                     CreateField::AgentType
                     | CreateField::CreateWorktree
+                    | CreateField::WorktreeFromBranch
                     | CreateField::InitializeSubmodules => {}
                 }
             }
@@ -3712,6 +3910,21 @@ impl App {
                         }
                         self.create_state.refresh_dir_matches();
                         self.load_create_state_worktree_presets();
+                    }
+                    CreateField::WorktreeBaseBranch => {
+                        if self.create_state.worktree_branch_selected() {
+                            self.create_state.selected_worktree_base_branch = None;
+                        } else {
+                            self.create_state.worktree_base_branch_filter.backspace();
+                        }
+                        self.create_state.refresh_worktree_base_branch_matches();
+                    }
+                    CreateField::WorktreeFromBranch => {
+                        if self.create_state.worktree_branch_selected() {
+                            self.create_state.selected_worktree_base_branch = None;
+                            self.create_state.refresh_worktree_base_branch_matches();
+                            self.create_state.error = None;
+                        }
                     }
                     CreateField::CopyDirectories | CreateField::SymlinkDirectories => {
                         let focus = self.create_state.focus.clone();
@@ -3745,6 +3958,12 @@ impl App {
                         self.create_state.dir_filter.push(c);
                         self.create_state.refresh_dir_matches();
                         self.load_create_state_worktree_presets();
+                    }
+                    CreateField::WorktreeBaseBranch => {
+                        if !self.create_state.worktree_branch_selected() {
+                            self.create_state.worktree_base_branch_filter.insert_char(c);
+                            self.create_state.refresh_worktree_base_branch_matches();
+                        }
                     }
                     CreateField::CopyDirectories | CreateField::SymlinkDirectories => {
                         let focus = self.create_state.focus.clone();
@@ -3789,14 +4008,42 @@ impl App {
                                 self.create_state.refresh_worktree_selector_matches();
                             } else if matches!(
                                 self.create_state.focus,
-                                CreateField::CopyDirectories | CreateField::SymlinkDirectories
+                                CreateField::WorktreeFromBranch
+                                    | CreateField::WorktreeBaseBranch
+                                    | CreateField::CopyDirectories
+                                    | CreateField::SymlinkDirectories
                             ) {
+                                self.create_state.worktree_base_mode = WorktreeBaseMode::Head;
+                                self.create_state.worktree_base_branch_filter =
+                                    TextInputState::default();
+                                self.create_state.selected_worktree_base_branch = None;
+                                self.create_state.refresh_worktree_base_branch_matches();
                                 self.create_state.focus = next_create_field(
                                     &CreateField::CreateWorktree,
                                     self.create_state.git_repo_root.is_some(),
                                     self.create_state.create_worktree,
+                                    self.create_state.worktree_branch_fields_visible(),
                                     self.create_state.has_git_submodules,
                                 );
+                            }
+                        }
+                    }
+                    CreateField::WorktreeFromBranch => {
+                        if c == ' ' && self.create_state.worktree_selectors_visible() {
+                            self.create_state.worktree_base_mode =
+                                if self.create_state.worktree_base_mode == WorktreeBaseMode::Head {
+                                    WorktreeBaseMode::Branch
+                                } else {
+                                    WorktreeBaseMode::Head
+                                };
+                            if self.create_state.worktree_base_mode == WorktreeBaseMode::Head {
+                                self.create_state.worktree_base_branch_filter =
+                                    TextInputState::default();
+                                self.create_state.selected_worktree_base_branch = None;
+                            }
+                            self.create_state.refresh_worktree_base_branch_matches();
+                            if self.create_state.worktree_base_mode == WorktreeBaseMode::Branch {
+                                self.create_state.focus = CreateField::WorktreeBaseBranch;
                             }
                         }
                     }
@@ -4010,7 +4257,10 @@ impl App {
                         agent_config.git_repo_root.as_deref(),
                     )
                 {
-                    let branch = crate::git::sanitize_branch_name(&agent_config.name);
+                    let branch = agent_config
+                        .git_worktree_branch
+                        .clone()
+                        .unwrap_or_else(|| crate::git::sanitize_branch_name(&agent_config.name));
                     // Non-fatal: log error but continue removal.
                     if let Err(e) = crate::git::remove_worktree(
                         std::path::Path::new(repo_root),
@@ -4928,6 +5178,7 @@ fn next_create_field(
     current: &CreateField,
     has_git_repo: bool,
     create_worktree: bool,
+    worktree_from_branch: bool,
     has_git_submodules: bool,
 ) -> CreateField {
     match current {
@@ -4941,11 +5192,19 @@ fn next_create_field(
         }
         CreateField::CreateWorktree => {
             if create_worktree {
-                CreateField::CopyDirectories
+                CreateField::WorktreeFromBranch
             } else {
                 CreateField::AgentType
             }
         }
+        CreateField::WorktreeFromBranch => {
+            if worktree_from_branch {
+                CreateField::WorktreeBaseBranch
+            } else {
+                CreateField::CopyDirectories
+            }
+        }
+        CreateField::WorktreeBaseBranch => CreateField::CopyDirectories,
         CreateField::CopyDirectories => CreateField::SymlinkDirectories,
         CreateField::SymlinkDirectories => {
             if has_git_submodules {
@@ -5035,6 +5294,8 @@ mod tests {
                     session_id: None,
                 },
                 git_repo_root: None,
+                git_worktree_branch: None,
+                git_worktree_base_ref: None,
             },
             meta: AgentMeta {
                 status,
@@ -5094,6 +5355,8 @@ mod tests {
                         session_id: None,
                     },
                     git_repo_root: None,
+                    git_worktree_branch: None,
+                    git_worktree_base_ref: None,
                 },
                 meta: AgentMeta::default(),
             },
@@ -5108,6 +5371,8 @@ mod tests {
                         session_id: None,
                     },
                     git_repo_root: None,
+                    git_worktree_branch: None,
+                    git_worktree_base_ref: None,
                 },
                 meta: AgentMeta::default(),
             },
@@ -5123,6 +5388,8 @@ mod tests {
                         transcript_path: None,
                     },
                     git_repo_root: None,
+                    git_worktree_branch: None,
+                    git_worktree_base_ref: None,
                 },
                 meta: AgentMeta::default(),
             },
@@ -6020,27 +6287,35 @@ mod tests {
     #[test]
     fn next_create_field_skips_worktree_selectors_when_disabled() {
         assert_eq!(
-            next_create_field(&CreateField::CreateWorktree, true, false, false),
+            next_create_field(&CreateField::CreateWorktree, true, false, false, false),
             CreateField::AgentType
         );
         assert_eq!(
-            next_create_field(&CreateField::CreateWorktree, true, true, true),
+            next_create_field(&CreateField::CreateWorktree, true, true, false, true),
+            CreateField::WorktreeFromBranch
+        );
+        assert_eq!(
+            next_create_field(&CreateField::WorktreeFromBranch, true, true, false, true),
             CreateField::CopyDirectories
         );
         assert_eq!(
-            next_create_field(&CreateField::SymlinkDirectories, true, true, true),
+            next_create_field(&CreateField::WorktreeFromBranch, true, true, true, true),
+            CreateField::WorktreeBaseBranch
+        );
+        assert_eq!(
+            next_create_field(&CreateField::SymlinkDirectories, true, true, false, true),
             CreateField::InitializeSubmodules
         );
         assert_eq!(
-            next_create_field(&CreateField::InitializeSubmodules, true, true, true),
+            next_create_field(&CreateField::InitializeSubmodules, true, true, false, true),
             CreateField::AgentType
         );
         assert_eq!(
-            next_create_field(&CreateField::SymlinkDirectories, true, true, false),
+            next_create_field(&CreateField::SymlinkDirectories, true, true, false, false),
             CreateField::AgentType
         );
         assert_eq!(
-            next_create_field(&CreateField::Directory, false, false, false),
+            next_create_field(&CreateField::Directory, false, false, false, false),
             CreateField::AgentType
         );
     }
@@ -6193,6 +6468,104 @@ mod tests {
         assert_eq!(app.create_state.focus, CreateField::AgentType);
     }
 
+    #[tokio::test]
+    async fn enabling_start_from_branch_moves_focus_to_branch_selector() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.create_state = CreateAgentState {
+            focus: CreateField::WorktreeFromBranch,
+            git_repo_root: Some(std::env::temp_dir()),
+            create_worktree: true,
+            available_branch_refs: vec!["origin/teammate".into()],
+            available_types: vec![AgentType::Codex],
+            ..CreateAgentState::default()
+        };
+
+        app.handle_create_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE))
+            .await;
+
+        assert_eq!(
+            app.create_state.worktree_base_mode,
+            WorktreeBaseMode::Branch
+        );
+        assert_eq!(app.create_state.focus, CreateField::WorktreeBaseBranch);
+        assert_eq!(
+            app.create_state.worktree_base_branch_matches,
+            vec!["origin/teammate"]
+        );
+    }
+
+    #[tokio::test]
+    async fn selecting_branch_advances_focus_and_hides_suggestions() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.create_state = CreateAgentState {
+            focus: CreateField::WorktreeBaseBranch,
+            git_repo_root: Some(std::env::temp_dir()),
+            create_worktree: true,
+            worktree_base_mode: WorktreeBaseMode::Branch,
+            available_branch_refs: vec!["origin/teammate".into()],
+            worktree_base_branch_matches: vec!["origin/teammate".into()],
+            available_types: vec![AgentType::Codex],
+            ..CreateAgentState::default()
+        };
+
+        app.handle_create_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+
+        assert_eq!(
+            app.create_state.selected_worktree_base_branch.as_deref(),
+            Some("origin/teammate")
+        );
+        assert_eq!(app.create_state.worktree_base_branch_filter.value, "");
+        assert_eq!(app.create_state.focus, CreateField::CopyDirectories);
+    }
+
+    #[tokio::test]
+    async fn backspace_on_start_from_branch_clears_selected_branch() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.create_state = CreateAgentState {
+            focus: CreateField::WorktreeFromBranch,
+            git_repo_root: Some(std::env::temp_dir()),
+            create_worktree: true,
+            worktree_base_mode: WorktreeBaseMode::Branch,
+            available_branch_refs: vec!["origin/teammate".into()],
+            selected_worktree_base_branch: Some("origin/teammate".into()),
+            available_types: vec![AgentType::Codex],
+            ..CreateAgentState::default()
+        };
+        app.create_state.refresh_worktree_base_branch_matches();
+
+        app.handle_create_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE))
+            .await;
+
+        assert!(app.create_state.selected_worktree_base_branch.is_none());
+        assert_eq!(
+            app.create_state.worktree_base_branch_matches,
+            vec!["origin/teammate"]
+        );
+    }
+
+    #[tokio::test]
+    async fn backspace_on_selected_branch_row_clears_entire_branch() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.create_state = CreateAgentState {
+            focus: CreateField::WorktreeBaseBranch,
+            git_repo_root: Some(std::env::temp_dir()),
+            create_worktree: true,
+            worktree_base_mode: WorktreeBaseMode::Branch,
+            available_branch_refs: vec!["origin/teammate".into()],
+            selected_worktree_base_branch: Some("origin/teammate".into()),
+            available_types: vec![AgentType::Codex],
+            ..CreateAgentState::default()
+        };
+        app.create_state.refresh_worktree_base_branch_matches();
+
+        app.handle_create_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE))
+            .await;
+
+        assert!(app.create_state.selected_worktree_base_branch.is_none());
+        assert_eq!(app.create_state.focus, CreateField::WorktreeBaseBranch);
+    }
+
     #[test]
     fn create_agent_state_defaults_to_initializing_submodules() {
         let state = CreateAgentState::default();
@@ -6210,6 +6583,26 @@ mod tests {
 
         state.has_git_submodules = true;
         assert!(state.initialize_submodules_visible());
+    }
+
+    #[test]
+    fn refresh_worktree_base_branch_matches_keeps_remote_refs_beyond_first_ten() {
+        let mut state = CreateAgentState {
+            available_branch_refs: (0..12)
+                .map(|i| format!("local-{i:02}"))
+                .chain(std::iter::once("origin/teammate-branch".to_string()))
+                .collect(),
+            ..CreateAgentState::default()
+        };
+
+        state.refresh_worktree_base_branch_matches();
+
+        assert_eq!(state.worktree_base_branch_matches.len(), 13);
+        assert!(
+            state
+                .worktree_base_branch_matches
+                .contains(&"origin/teammate-branch".to_string())
+        );
     }
 
     #[test]
