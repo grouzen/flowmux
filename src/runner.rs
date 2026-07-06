@@ -376,12 +376,18 @@ fn prepare_worktree_directory(
         .join(git::repo_id(repo_root_path))
         .join(&worktree.branch_name);
 
-    let (start_point, use_existing, stored_base_ref) = match &worktree.start_point {
-        WorktreeStartPoint::Head => (
-            git::WorktreeStartPoint::Head,
-            git::branch_exists(repo_root_path, &worktree.branch_name),
-            None,
-        ),
+    let (use_existing, stored_base_ref) = match &worktree.start_point {
+        WorktreeStartPoint::Head => {
+            let default_ref = git::default_branch_ref(repo_root_path).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "could not determine repository default branch; configure a remote HEAD or use 'Start from branch'"
+                )
+            })?;
+            (
+                git::branch_exists(repo_root_path, &worktree.branch_name),
+                Some(default_ref),
+            )
+        }
         WorktreeStartPoint::Ref(start_point) => {
             if git::branch_exists(repo_root_path, &worktree.branch_name) {
                 bail!(
@@ -390,12 +396,16 @@ fn prepare_worktree_directory(
                 );
             }
             (
-                git::WorktreeStartPoint::Ref(start_point),
                 false,
                 Some(start_point.clone()),
             )
         }
     };
+
+    let start_point = stored_base_ref
+        .as_deref()
+        .map(git::WorktreeStartPoint::Ref)
+        .unwrap_or(git::WorktreeStartPoint::Head);
 
     git::create_worktree(
         repo_root_path,
@@ -879,5 +889,43 @@ mod tests {
             "from teammate\n"
         );
         assert_eq!(stored.unwrap().base_ref.as_deref(), Some("teammate/work"));
+    }
+
+    #[test]
+    fn prepare_worktree_directory_head_mode_uses_default_branch_not_current_feature_branch() {
+        let temp = TestDir::new("default-branch");
+        let repo_root = init_test_repo(&temp);
+        let remote_root = temp.path.join("remote.git");
+        let worktrees_base = temp.path.join("worktrees");
+
+        std::fs::create_dir_all(&remote_root).unwrap();
+        run_git(&remote_root, &["init", "--bare"]);
+
+        let remote_str = remote_root.to_string_lossy().to_string();
+        run_git(&repo_root, &["remote", "add", "origin", &remote_str]);
+        run_git(&repo_root, &["push", "-u", "origin", "HEAD:main"]);
+        run_git(&remote_root, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        run_git(&repo_root, &["fetch", "origin"]);
+
+        std::fs::write(repo_root.join("feature-only.txt"), "feature\n").unwrap();
+        run_git(&repo_root, &["add", "feature-only.txt"]);
+        run_git(&repo_root, &["commit", "-m", "feature"]);
+
+        let branch_name = "helper/from-default";
+        let (worktree_dir, stored) = prepare_worktree_directory(
+            repo_root.to_str().unwrap(),
+            Some(WorktreeRequest {
+                repo_root: repo_root.to_string_lossy().to_string(),
+                branch_name: branch_name.to_string(),
+                start_point: WorktreeStartPoint::Head,
+                initialize_submodules: false,
+            }),
+            &worktrees_base,
+            WorktreeMaterialization::default(),
+        )
+        .unwrap();
+
+        assert!(!Path::new(&worktree_dir).join("feature-only.txt").exists());
+        assert_eq!(stored.unwrap().base_ref.as_deref(), Some("origin/main"));
     }
 }

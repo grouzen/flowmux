@@ -142,6 +142,60 @@ pub fn validate_local_branch_name(branch: &str) -> Result<()> {
     Ok(())
 }
 
+/// Resolve the repository's default branch ref.
+///
+/// Preference order:
+/// - `refs/remotes/origin/HEAD`
+/// - any `refs/remotes/*/HEAD`
+/// - local `main`
+/// - local `master`
+/// - current local HEAD branch
+pub fn default_branch_ref(repo_root: &Path) -> Option<String> {
+    let repo = Repository::open(repo_root).ok()?;
+
+    if let Some(target) = symbolic_ref_target(&repo, "refs/remotes/origin/HEAD") {
+        return Some(target);
+    }
+
+    let refs = repo.references().ok()?;
+    for reference in refs.flatten() {
+        let Some(name) = reference.name() else {
+            continue;
+        };
+        if !name.starts_with("refs/remotes/") || !name.ends_with("/HEAD") {
+            continue;
+        }
+        if let Some(target) = reference.symbolic_target() {
+            return normalize_ref_name(target);
+        }
+    }
+
+    if repo.find_branch("main", git2::BranchType::Local).is_ok() {
+        return Some("main".to_string());
+    }
+    if repo.find_branch("master", git2::BranchType::Local).is_ok() {
+        return Some("master".to_string());
+    }
+
+    repo.head()
+        .ok()?
+        .shorthand()
+        .filter(|name| *name != "HEAD")
+        .map(str::to_string)
+}
+
+fn symbolic_ref_target(repo: &Repository, name: &str) -> Option<String> {
+    let reference = repo.find_reference(name).ok()?;
+    let target = reference.symbolic_target()?;
+    normalize_ref_name(target)
+}
+
+fn normalize_ref_name(name: &str) -> Option<String> {
+    name.strip_prefix("refs/remotes/")
+        .or_else(|| name.strip_prefix("refs/heads/"))
+        .map(str::to_string)
+}
+
 /// Returns `true` when the repo defines at least one submodule in `.gitmodules`.
 pub fn repo_has_submodules(repo_root: &Path) -> bool {
     let gitmodules = repo_root.join(".gitmodules");
@@ -377,5 +431,28 @@ mod tests {
         assert!(validate_local_branch_name("  ").is_err());
         assert!(validate_local_branch_name("bad branch").is_err());
         assert!(validate_local_branch_name("trailing.").is_err());
+    }
+
+    #[test]
+    fn default_branch_ref_prefers_remote_head() {
+        let repo_root = init_test_repo("default-branch-ref");
+        let remote_root =
+            std::env::temp_dir().join(format!("flowmux-git-remote-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&remote_root).unwrap();
+        run_git(&remote_root, &["init", "--bare"]);
+
+        let remote_str = remote_root.to_string_lossy().to_string();
+        run_git(&repo_root, &["remote", "add", "origin", &remote_str]);
+        run_git(&repo_root, &["push", "-u", "origin", "HEAD:main"]);
+        run_git(&remote_root, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        run_git(&repo_root, &["fetch", "origin"]);
+
+        assert_eq!(
+            default_branch_ref(&repo_root).as_deref(),
+            Some("origin/main")
+        );
+
+        let _ = std::fs::remove_dir_all(repo_root);
+        let _ = std::fs::remove_dir_all(remote_root);
     }
 }
