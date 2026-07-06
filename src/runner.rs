@@ -41,6 +41,27 @@ pub struct WorktreeMaterialization {
     pub symlink_directories: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorktreeStartPoint {
+    Head,
+    Ref(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeRequest {
+    pub repo_root: String,
+    pub branch_name: String,
+    pub start_point: WorktreeStartPoint,
+    pub initialize_submodules: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct StoredWorktree {
+    repo_root: String,
+    branch_name: String,
+    base_ref: Option<String>,
+}
+
 impl WorktreeMaterialization {
     pub fn is_empty(&self) -> bool {
         self.copy_directories.is_empty() && self.symlink_directories.is_empty()
@@ -153,21 +174,16 @@ impl AgentRunner {
         dir: &str,
         project: &str,
         agent_type: AgentType,
-        create_worktree: bool,
-        git_repo_root: Option<&str>,
-        initialize_submodules: bool,
+        worktree: Option<WorktreeRequest>,
         copy_directories: Vec<String>,
         symlink_directories: Vec<String>,
     ) -> Result<(AgentConfig, Box<dyn AgentAdapter>)> {
         // --------------- Git worktree setup --------------------------------
         // If worktree creation is requested and we have a git repo root, set
         // up the worktree now and use its path as the effective working dir.
-        let (effective_dir, stored_repo_root) = prepare_worktree_directory(
-            name,
+        let (effective_dir, stored_worktree) = prepare_worktree_directory(
             dir,
-            create_worktree,
-            git_repo_root,
-            initialize_submodules,
+            worktree,
             &self.worktrees_base,
             WorktreeMaterialization {
                 copy_directories,
@@ -189,7 +205,11 @@ impl AgentRunner {
                         port: adapter.port,
                         session_id: None,
                     },
-                    git_repo_root: stored_repo_root,
+                    git_repo_root: stored_worktree.as_ref().map(|wt| wt.repo_root.clone()),
+                    git_worktree_branch: stored_worktree.as_ref().map(|wt| wt.branch_name.clone()),
+                    git_worktree_base_ref: stored_worktree
+                        .as_ref()
+                        .and_then(|wt| wt.base_ref.clone()),
                 };
                 Ok((config, Box::new(adapter)))
             }
@@ -223,7 +243,11 @@ impl AgentRunner {
                         session_id: None,
                         transcript_path: None,
                     },
-                    git_repo_root: stored_repo_root,
+                    git_repo_root: stored_worktree.as_ref().map(|wt| wt.repo_root.clone()),
+                    git_worktree_branch: stored_worktree.as_ref().map(|wt| wt.branch_name.clone()),
+                    git_worktree_base_ref: stored_worktree
+                        .as_ref()
+                        .and_then(|wt| wt.base_ref.clone()),
                 };
                 Ok((config, Box::new(adapter)))
             }
@@ -240,7 +264,11 @@ impl AgentRunner {
                         port: adapter.port,
                         session_id: None,
                     },
-                    git_repo_root: stored_repo_root,
+                    git_repo_root: stored_worktree.as_ref().map(|wt| wt.repo_root.clone()),
+                    git_worktree_branch: stored_worktree.as_ref().map(|wt| wt.branch_name.clone()),
+                    git_worktree_base_ref: stored_worktree
+                        .as_ref()
+                        .and_then(|wt| wt.base_ref.clone()),
                 };
                 Ok((config, Box::new(adapter)))
             }
@@ -332,35 +360,60 @@ impl AgentRunner {
 }
 
 fn prepare_worktree_directory(
-    name: &str,
     dir: &str,
-    create_worktree: bool,
-    git_repo_root: Option<&str>,
-    initialize_submodules: bool,
+    worktree: Option<WorktreeRequest>,
     worktrees_base: &Path,
     materialization: WorktreeMaterialization,
-) -> Result<(String, Option<String>)> {
-    if !create_worktree {
-        return Ok((dir.to_owned(), None));
-    }
-
-    let Some(repo_root) = git_repo_root else {
+) -> Result<(String, Option<StoredWorktree>)> {
+    let Some(worktree) = worktree else {
         return Ok((dir.to_owned(), None));
     };
 
-    let branch = git::sanitize_branch_name(name);
-    let repo_root_path = Path::new(repo_root);
+    git::validate_local_branch_name(&worktree.branch_name)?;
+
+    let repo_root_path = Path::new(&worktree.repo_root);
     let wt_path = worktrees_base
         .join(git::repo_id(repo_root_path))
-        .join(&branch);
-    let use_existing = git::branch_exists(repo_root_path, &branch);
+        .join(&worktree.branch_name);
 
-    git::create_worktree(repo_root_path, &wt_path, &branch, use_existing)?;
+    let (start_point, use_existing, stored_base_ref) = match &worktree.start_point {
+        WorktreeStartPoint::Head => (
+            git::WorktreeStartPoint::Head,
+            git::branch_exists(repo_root_path, &worktree.branch_name),
+            None,
+        ),
+        WorktreeStartPoint::Ref(start_point) => {
+            if git::branch_exists(repo_root_path, &worktree.branch_name) {
+                bail!(
+                    "branch {} already exists locally; choose a different new branch name",
+                    worktree.branch_name
+                );
+            }
+            (
+                git::WorktreeStartPoint::Ref(start_point),
+                false,
+                Some(start_point.clone()),
+            )
+        }
+    };
+
+    git::create_worktree(
+        repo_root_path,
+        &wt_path,
+        &worktree.branch_name,
+        start_point,
+        use_existing,
+    )?;
 
     if let Err(error) =
         materialize_worktree_directories(repo_root_path, Path::new(dir), &wt_path, &materialization)
     {
-        return match git::remove_worktree(repo_root_path, &wt_path, &branch, !use_existing) {
+        return match git::remove_worktree(
+            repo_root_path,
+            &wt_path,
+            &worktree.branch_name,
+            !use_existing,
+        ) {
             Ok(()) => Err(error),
             Err(cleanup_error) => Err(error.context(format!(
                 "failed to roll back git worktree {:?}: {}",
@@ -369,8 +422,15 @@ fn prepare_worktree_directory(
         };
     }
 
-    if initialize_submodules && let Err(error) = git::initialize_submodules(&wt_path) {
-        return match git::remove_worktree(repo_root_path, &wt_path, &branch, !use_existing) {
+    if worktree.initialize_submodules
+        && let Err(error) = git::initialize_submodules(&wt_path)
+    {
+        return match git::remove_worktree(
+            repo_root_path,
+            &wt_path,
+            &worktree.branch_name,
+            !use_existing,
+        ) {
             Ok(()) => Err(error),
             Err(cleanup_error) => Err(error.context(format!(
                 "failed to roll back git worktree {:?}: {}",
@@ -381,7 +441,11 @@ fn prepare_worktree_directory(
 
     Ok((
         wt_path.to_string_lossy().to_string(),
-        Some(repo_root.to_owned()),
+        Some(StoredWorktree {
+            repo_root: worktree.repo_root,
+            branch_name: worktree.branch_name,
+            base_ref: stored_base_ref,
+        }),
     ))
 }
 
@@ -566,6 +630,15 @@ mod tests {
             .any(|line| line.starts_with(&path_str))
     }
 
+    fn worktree_request(repo_root: &Path, branch_name: &str) -> WorktreeRequest {
+        WorktreeRequest {
+            repo_root: repo_root.to_string_lossy().to_string(),
+            branch_name: branch_name.to_string(),
+            start_point: WorktreeStartPoint::Head,
+            initialize_submodules: false,
+        }
+    }
+
     #[test]
     fn materialize_worktree_directories_maps_into_selected_subdir() {
         let temp = TestDir::new("materialize");
@@ -675,12 +748,10 @@ mod tests {
 
         std::fs::create_dir_all(&selected_dir).unwrap();
 
+        let branch = git::sanitize_branch_name("agent rollback");
         let err = prepare_worktree_directory(
-            "agent rollback",
             selected_dir.to_str().unwrap(),
-            true,
-            Some(repo_root.to_str().unwrap()),
-            false,
+            Some(worktree_request(&repo_root, &branch)),
             &worktrees_base,
             WorktreeMaterialization {
                 copy_directories: vec!["missing".into()],
@@ -689,7 +760,6 @@ mod tests {
         )
         .unwrap_err();
 
-        let branch = git::sanitize_branch_name("agent rollback");
         let worktree_path = worktrees_base.join(git::repo_id(&repo_root)).join(&branch);
 
         assert!(err.to_string().contains("does not exist"));
@@ -710,11 +780,8 @@ mod tests {
         run_git(&repo_root, &["branch", &branch]);
 
         let err = prepare_worktree_directory(
-            "existing branch",
             selected_dir.to_str().unwrap(),
-            true,
-            Some(repo_root.to_str().unwrap()),
-            false,
+            Some(worktree_request(&repo_root, &branch)),
             &worktrees_base,
             WorktreeMaterialization {
                 copy_directories: vec!["missing".into()],
@@ -763,12 +830,13 @@ mod tests {
         );
         run_git(&repo_root, &["commit", "-am", "add submodule"]);
 
+        let branch = git::sanitize_branch_name("agent with submodules");
         let (worktree_dir, _) = prepare_worktree_directory(
-            "agent with submodules",
             repo_root.to_str().unwrap(),
-            true,
-            Some(repo_root.to_str().unwrap()),
-            true,
+            Some(WorktreeRequest {
+                initialize_submodules: true,
+                ..worktree_request(&repo_root, &branch)
+            }),
             &worktrees_base,
             WorktreeMaterialization::default(),
         )
@@ -779,5 +847,37 @@ mod tests {
             std::fs::read_to_string(submodule_file).unwrap(),
             "submodule\n"
         );
+    }
+
+    #[test]
+    fn prepare_worktree_directory_creates_branch_from_selected_base_ref() {
+        let temp = TestDir::new("base-ref");
+        let repo_root = init_test_repo(&temp);
+        let worktrees_base = temp.path.join("worktrees");
+
+        std::fs::write(repo_root.join("feature.txt"), "from teammate\n").unwrap();
+        run_git(&repo_root, &["add", "feature.txt"]);
+        run_git(&repo_root, &["commit", "-m", "feature work"]);
+        run_git(&repo_root, &["branch", "teammate/work"]);
+
+        let branch_name = "helper/branch";
+        let (worktree_dir, stored) = prepare_worktree_directory(
+            repo_root.to_str().unwrap(),
+            Some(WorktreeRequest {
+                repo_root: repo_root.to_string_lossy().to_string(),
+                branch_name: branch_name.to_string(),
+                start_point: WorktreeStartPoint::Ref("teammate/work".into()),
+                initialize_submodules: false,
+            }),
+            &worktrees_base,
+            WorktreeMaterialization::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(Path::new(&worktree_dir).join("feature.txt")).unwrap(),
+            "from teammate\n"
+        );
+        assert_eq!(stored.unwrap().base_ref.as_deref(), Some("teammate/work"));
     }
 }

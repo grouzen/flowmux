@@ -51,6 +51,13 @@ pub struct AgentConfig {
     /// Required for `git worktree remove` and branch deletion on agent removal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_repo_root: Option<String>,
+    /// Local branch checked out in the worktree, when Flowmux created one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_worktree_branch: Option<String>,
+    /// Base ref used to create the local worktree branch, if it did not come
+    /// from the repository's current HEAD.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_worktree_base_ref: Option<String>,
 }
 
 impl AgentConfig {
@@ -243,6 +250,8 @@ mod tests {
                     session_id: Some("s1".into()),
                 },
                 git_repo_root: None,
+                git_worktree_branch: None,
+                git_worktree_base_ref: None,
             },
             AgentConfig {
                 name: "cl".into(),
@@ -255,6 +264,8 @@ mod tests {
                     transcript_path: Some("/tmp/t.jsonl".into()),
                 },
                 git_repo_root: Some("/tmp/repo".into()),
+                git_worktree_branch: Some("cl-help".into()),
+                git_worktree_base_ref: Some("origin/feature".into()),
             },
             AgentConfig {
                 name: "cx".into(),
@@ -266,6 +277,8 @@ mod tests {
                     session_id: Some("thread-1".into()),
                 },
                 git_repo_root: None,
+                git_worktree_branch: None,
+                git_worktree_base_ref: None,
             },
         ];
 
@@ -293,6 +306,14 @@ mod tests {
         assert!(matches!(back.agents[1].kind, AgentKind::Claude { .. }));
         assert_eq!(back.agents[1].session_id(), None);
         assert_eq!(back.agents[1].project, "work");
+        assert_eq!(
+            back.agents[1].git_worktree_branch.as_deref(),
+            Some("cl-help")
+        );
+        assert_eq!(
+            back.agents[1].git_worktree_base_ref.as_deref(),
+            Some("origin/feature")
+        );
 
         assert!(matches!(
             back.agents[2].kind,
@@ -316,6 +337,8 @@ mod tests {
                         session_id: None,
                     },
                     git_repo_root: None,
+                    git_worktree_branch: None,
+                    git_worktree_base_ref: None,
                 },
                 AgentConfig {
                     name: "cl".into(),
@@ -328,6 +351,8 @@ mod tests {
                         transcript_path: None,
                     },
                     git_repo_root: None,
+                    git_worktree_branch: None,
+                    git_worktree_base_ref: None,
                 },
             ],
             session_name: "flowmux".into(),
@@ -341,5 +366,25 @@ mod tests {
         );
         assert_eq!(config.agents[0].project, "Default");
         assert_eq!(config.agents[1].project, "Default");
+    }
+
+    #[test]
+    fn agent_config_defaults_missing_git_worktree_metadata() {
+        let config: AgentConfig = toml::from_str(
+            r#"
+name = "agent"
+pane = "flowmux:1.0"
+directory = "/tmp/worktree"
+project = "Default"
+agent_type = "codex"
+port = 9000
+git_repo_root = "/tmp/repo"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.git_repo_root.as_deref(), Some("/tmp/repo"));
+        assert_eq!(config.git_worktree_branch, None);
+        assert_eq!(config.git_worktree_base_ref, None);
     }
 }

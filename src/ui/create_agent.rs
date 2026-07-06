@@ -7,7 +7,9 @@ use ratatui::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{CreateAgentState, CreateField, MAX_DIR_VISIBLE, RelativeDirSelector};
+use crate::app::{
+    CreateAgentState, CreateField, MAX_DIR_VISIBLE, RelativeDirSelector, WorktreeBaseMode,
+};
 use crate::models::AgentType;
 use crate::ui::theme::{ICON_AGENT, ICON_ERR, Theme};
 
@@ -46,6 +48,28 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, theme: &Theme, state: &Cre
 
     // Worktree checkbox: shown when the directory is inside a git repo.
     let worktree_rows: u16 = if state.git_repo_root.is_some() { 2 } else { 0 }; // blank + checkbox
+    let branch_mode_rows: u16 = if state.worktree_selectors_visible() {
+        2
+    } else {
+        0
+    };
+    let base_branch_matches_rows = state
+        .worktree_base_branch_matches
+        .len()
+        .min(MAX_DIR_VISIBLE) as u16;
+    let base_branch_rows: u16 = if state.worktree_branch_fields_visible() {
+        1 + 1
+            + if state.focus != CreateField::WorktreeBaseBranch
+                || state.worktree_branch_selected()
+                || state.worktree_base_branch_matches.is_empty()
+            {
+                0
+            } else {
+                1 + base_branch_matches_rows
+            }
+    } else {
+        0
+    };
     let copy_rows = selector_section_rows(
         &state.copy_directories,
         state.copy_directories_enabled,
@@ -77,6 +101,8 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, theme: &Theme, state: &Cre
         + 1
         + dir_section_rows
         + worktree_rows
+        + branch_mode_rows
+        + base_branch_rows
         + copy_rows
         + symlink_rows
         + initialize_submodules_rows
@@ -117,6 +143,23 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, theme: &Theme, state: &Cre
     if state.git_repo_root.is_some() {
         constraints.push(Constraint::Length(1)); // blank gap
         constraints.push(Constraint::Length(1)); // checkbox
+    }
+    if state.worktree_selectors_visible() {
+        constraints.push(Constraint::Length(1)); // blank gap
+        constraints.push(Constraint::Length(1)); // branch-mode checkbox
+    }
+    if state.worktree_branch_fields_visible() {
+        constraints.push(Constraint::Length(1)); // blank gap
+        constraints.push(Constraint::Length(1)); // base branch input
+        if state.focus == CreateField::WorktreeBaseBranch
+            && !state.worktree_branch_selected()
+            && !state.worktree_base_branch_matches.is_empty()
+        {
+            constraints.push(Constraint::Length(1)); // blank gap
+            for _ in 0..base_branch_matches_rows {
+                constraints.push(Constraint::Length(1));
+            }
+        }
     }
     push_selector_constraints(
         &mut constraints,
@@ -366,6 +409,160 @@ pub fn render_create_agent(f: &mut Frame, area: Rect, theme: &Theme, state: &Cre
         row += 1;
     }
 
+    if state.worktree_selectors_visible() {
+        row += 1;
+
+        let focused = state.focus == CreateField::WorktreeFromBranch;
+        let enabled = state.worktree_base_mode == WorktreeBaseMode::Branch;
+        let checkbox = if enabled { "[x]" } else { "[ ]" };
+        let label_style = if focused {
+            Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.gray)
+        };
+        let checkbox_style = if enabled {
+            if focused {
+                Style::default().fg(theme.cyan).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.cyan)
+            }
+        } else {
+            Style::default().fg(theme.gray)
+        };
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::raw(label_pad()),
+                Span::styled(checkbox, checkbox_style),
+                Span::styled(" Start from branch", label_style),
+                Span::styled(
+                    "  space",
+                    Style::default().fg(if focused { theme.gray } else { theme.bg2 }),
+                ),
+            ]))
+            .style(Style::default().bg(theme.bg1)),
+            rows[row],
+        );
+        row += 1;
+    }
+
+    if state.worktree_branch_fields_visible() {
+        row += 1;
+
+        let base_branch_focused = state.focus == CreateField::WorktreeBaseBranch;
+        if state.worktree_branch_selected() {
+            render_selector_value_row(
+                f,
+                rows[row],
+                theme,
+                state
+                    .selected_worktree_base_branch
+                    .as_deref()
+                    .unwrap_or_default(),
+                false,
+                base_branch_focused,
+                base_branch_focused,
+            );
+        } else {
+            render_simple_field_row(
+                f,
+                rows[row],
+                theme,
+                &state.worktree_base_branch_filter.value,
+                "origin/teammate-branch",
+                base_branch_focused,
+            );
+            if base_branch_focused {
+                let val_width = rows[row]
+                    .width
+                    .saturating_sub(LABEL_WIDTH)
+                    .saturating_sub(RIGHT_PAD as u16);
+                let displayed_start = truncate_left_start(
+                    &state.worktree_base_branch_filter.value,
+                    val_width as usize,
+                );
+                let cursor = previous_char_boundary(
+                    &state.worktree_base_branch_filter.value,
+                    state
+                        .worktree_base_branch_filter
+                        .cursor
+                        .min(state.worktree_base_branch_filter.value.len()),
+                );
+                let cursor_offset = cursor.saturating_sub(displayed_start);
+                let cursor_width = UnicodeWidthStr::width(
+                    &state.worktree_base_branch_filter.value[displayed_start..][..cursor_offset],
+                );
+                let cx = (rows[row].x + LABEL_WIDTH + cursor_width as u16)
+                    .min(modal_area.x + modal_area.width.saturating_sub(1));
+                f.set_cursor_position((cx, rows[row].y));
+            }
+        }
+        row += 1;
+
+        if base_branch_focused
+            && !state.worktree_branch_selected()
+            && !state.worktree_base_branch_matches.is_empty()
+        {
+            row += 1;
+            let total = state.worktree_base_branch_matches.len();
+            let offset = state.worktree_base_branch_scroll_offset;
+            let visible_count = base_branch_matches_rows as usize;
+            let needs_scrollbar = total > MAX_DIR_VISIBLE;
+
+            for vi in 0..visible_count {
+                let abs_idx = offset + vi;
+                let Some(branch) = state.worktree_base_branch_matches.get(abs_idx) else {
+                    break;
+                };
+
+                let selected =
+                    abs_idx == state.worktree_base_branch_selected_idx && base_branch_focused;
+                let scrollbar_char = if needs_scrollbar {
+                    scrollbar_char(vi, visible_count, offset, total)
+                } else {
+                    ' '
+                };
+                let content_width = rows[row].width.saturating_sub(11) as usize;
+                let hint_width = if selected { 6 } else { 0 };
+                let name_width = content_width.saturating_sub(3 + hint_width);
+
+                let line = if selected {
+                    Line::from(vec![
+                        Span::raw("          "),
+                        Span::styled(
+                            format!(" ● {:<width$}", branch, width = name_width),
+                            Style::default()
+                                .fg(theme.bg)
+                                .bg(theme.fg)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" enter", Style::default().fg(theme.gray).bg(theme.bg1)),
+                        Span::styled(
+                            scrollbar_char.to_string(),
+                            Style::default().fg(theme.bg2).bg(theme.bg1),
+                        ),
+                    ])
+                } else {
+                    Line::from(vec![
+                        Span::raw("          "),
+                        Span::styled(
+                            format!("   {:<width$}", branch, width = name_width),
+                            Style::default().fg(theme.gray),
+                        ),
+                        Span::styled(
+                            scrollbar_char.to_string(),
+                            Style::default().fg(theme.bg2).bg(theme.bg1),
+                        ),
+                    ])
+                };
+                f.render_widget(
+                    Paragraph::new(line).style(Style::default().bg(theme.bg1)),
+                    rows[row],
+                );
+                row += 1;
+            }
+        }
+    }
+
     row = render_selector_section(
         f,
         &rows,
@@ -583,6 +780,46 @@ fn render_field_row(
     } else {
         vec![
             Span::styled(label_text, Style::default().fg(theme.gray)),
+            Span::styled(displayed, Style::default().fg(theme.gray)),
+        ]
+    };
+
+    f.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.bg1)),
+        area,
+    );
+}
+
+fn render_simple_field_row(
+    f: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    value: &str,
+    placeholder: &str,
+    focused: bool,
+) {
+    let val_width = area
+        .width
+        .saturating_sub(LABEL_WIDTH)
+        .saturating_sub(RIGHT_PAD as u16);
+    let displayed = truncate_left(value, val_width as usize);
+
+    let spans: Vec<Span> = if focused {
+        vec![
+            Span::raw(label_pad()),
+            Span::styled(
+                displayed,
+                Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
+            ),
+        ]
+    } else if value.is_empty() {
+        vec![
+            Span::raw(label_pad()),
+            Span::styled(placeholder, Style::default().fg(theme.bg2)),
+        ]
+    } else {
+        vec![
+            Span::raw(label_pad()),
             Span::styled(displayed, Style::default().fg(theme.gray)),
         ]
     };
@@ -1116,6 +1353,28 @@ mod tests {
             !text
                 .lines()
                 .any(|line| line.contains("./target") && line.contains("backspace"))
+        );
+    }
+
+    #[test]
+    fn render_create_agent_shows_backspace_hint_for_selected_branch() {
+        let state = CreateAgentState {
+            name: "agent-1".into(),
+            directory: "/tmp/repo".into(),
+            focus: CreateField::WorktreeBaseBranch,
+            git_repo_root: Some("/tmp/repo".into()),
+            create_worktree: true,
+            worktree_base_mode: WorktreeBaseMode::Branch,
+            selected_worktree_base_branch: Some("origin/teammate".into()),
+            ..CreateAgentState::default()
+        };
+
+        let buffer = render_buffer(&state, 90, 28);
+        let text = buffer_text(&buffer);
+
+        assert!(
+            text.lines()
+                .any(|line| line.contains("origin/teammate") && line.contains("backspace"))
         );
     }
 
