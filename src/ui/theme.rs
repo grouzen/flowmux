@@ -192,6 +192,14 @@ pub fn format_uptime(ms: u64) -> String {
     }
 }
 
+pub fn selected_border_color(theme: &Theme) -> Color {
+    theme.blue
+}
+
+pub fn inactive_border_color(theme: &Theme) -> Color {
+    theme.bg2
+}
+
 pub fn brand_line(theme: &Theme, dimmed: bool) -> (Line<'static>, u16) {
     let base = if dimmed {
         Style::default().add_modifier(Modifier::DIM)

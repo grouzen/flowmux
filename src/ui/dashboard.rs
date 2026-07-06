@@ -9,7 +9,8 @@ use ratatui::{
 use crate::models::{AgentEntry, AgentStatus, AgentStatusCounts};
 use crate::ui::theme::{
     ICON_AGENT, ICON_CTX, ICON_DIR, ICON_IDLE, ICON_MODEL, ICON_RUN, ICON_STOP, ICON_TIME,
-    ICON_WAIT, Theme, brand_line, format_tokens, format_uptime, status_count_spans,
+    ICON_WAIT, Theme, brand_line, format_tokens, format_uptime, selected_border_color,
+    status_count_spans,
 };
 
 pub const PROJECT_TABS_HEIGHT: u16 = 1;
@@ -278,7 +279,7 @@ fn render_card(
     dimmed: bool,
 ) -> (u16, u16) {
     let (border_color, title_color) = if is_selected {
-        (theme.blue, theme.blue)
+        (selected_border_color(theme), selected_border_color(theme))
     } else {
         (theme.bg2, theme.fg)
     };

@@ -8,8 +8,6 @@ use super::{
     ghostty_buffer_symbol_into, ghostty_cell_style, ghostty_reset_cell,
 };
 
-use crate::ui::theme::default_theme;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SelectionRange {
     pub start_col: u16,
@@ -53,6 +51,15 @@ impl SelectionRange {
 
         true
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PaneRenderOptions {
+    pub border_color: Color,
+    pub cursor: Option<(u16, u16)>,
+    pub host_fg: Option<(u8, u8, u8)>,
+    pub host_bg: Option<(u8, u8, u8)>,
+    pub selection: Option<SelectionRange>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -324,15 +331,12 @@ pub fn render_pane_content(
     ansi_bytes: &[u8],
     frame: &mut Frame,
     area: Rect,
-    cursor: Option<(u16, u16)>,
-    host_fg: Option<(u8, u8, u8)>,
-    host_bg: Option<(u8, u8, u8)>,
-    selection: Option<SelectionRange>,
+    options: PaneRenderOptions,
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Plain)
-        .border_style(Style::default().fg(default_theme().theme.gray));
+        .border_style(Style::default().fg(options.border_color));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -351,10 +355,10 @@ pub fn render_pane_content(
     };
 
     // Set default colors from host terminal
-    if let Some((r, g, b)) = host_fg {
+    if let Some((r, g, b)) = options.host_fg {
         let _ = terminal.set_default_fg_color(Some(RgbColor { r, g, b }));
     }
-    if let Some((r, g, b)) = host_bg {
+    if let Some((r, g, b)) = options.host_bg {
         let _ = terminal.set_default_bg_color(Some(RgbColor { r, g, b }));
     }
 
@@ -414,7 +418,7 @@ pub fn render_pane_content(
                 cell.reset();
                 cell.set_symbol(symbol);
                 cell.set_style(style);
-                if selection.is_some_and(|range| range.contains(x, y)) {
+                if options.selection.is_some_and(|range| range.contains(x, y)) {
                     cell.set_bg(Color::Rgb(69, 133, 136));
                     cell.set_fg(Color::Rgb(40, 40, 40));
                 }
@@ -436,7 +440,7 @@ pub fn render_pane_content(
         }
     }
 
-    if let Some((cx, cy)) = cursor
+    if let Some((cx, cy)) = options.cursor
         && cx < inner.width
         && cy < inner.height
     {
@@ -546,6 +550,7 @@ mod tests {
         ansi_bytes: &[u8],
         width: u16,
         height: u16,
+        border_color: Color,
         host_fg: Option<(u8, u8, u8)>,
         host_bg: Option<(u8, u8, u8)>,
     ) -> ratatui::buffer::Buffer {
@@ -557,10 +562,13 @@ mod tests {
                     ansi_bytes,
                     frame,
                     Rect::new(0, 0, width, height),
-                    None,
-                    host_fg,
-                    host_bg,
-                    None,
+                    PaneRenderOptions {
+                        border_color,
+                        cursor: None,
+                        host_fg,
+                        host_bg,
+                        selection: None,
+                    },
                 );
             })
             .unwrap();
@@ -571,6 +579,7 @@ mod tests {
         frames: &[&[u8]],
         width: u16,
         height: u16,
+        border_color: Color,
         host_fg: Option<(u8, u8, u8)>,
         host_bg: Option<(u8, u8, u8)>,
     ) -> ratatui::buffer::Buffer {
@@ -583,10 +592,13 @@ mod tests {
                         ansi_bytes,
                         frame,
                         Rect::new(0, 0, width, height),
-                        None,
-                        host_fg,
-                        host_bg,
-                        None,
+                        PaneRenderOptions {
+                            border_color,
+                            cursor: None,
+                            host_fg,
+                            host_bg,
+                            selection: None,
+                        },
                     );
                 })
                 .unwrap();
@@ -760,7 +772,14 @@ mod tests {
 
     #[test]
     fn test_render_preserves_inverse_host_default_colors() {
-        let buffer = render_buffer(b"\x1b[7mA\x1b[0m", 6, 3, Some((1, 2, 3)), Some((4, 5, 6)));
+        let buffer = render_buffer(
+            b"\x1b[7mA\x1b[0m",
+            6,
+            3,
+            Color::Gray,
+            Some((1, 2, 3)),
+            Some((4, 5, 6)),
+        );
         let cell = &buffer[(1, 1)];
         assert_eq!(cell.symbol(), "A");
         assert_eq!(cell.fg, Color::Rgb(4, 5, 6));
@@ -769,7 +788,14 @@ mod tests {
 
     #[test]
     fn test_render_preserves_invisible_text_and_trailing_background() {
-        let buffer = render_buffer(b"\x1b[41m\x1b[8mA", 7, 3, Some((1, 2, 3)), Some((4, 5, 6)));
+        let buffer = render_buffer(
+            b"\x1b[41m\x1b[8mA",
+            7,
+            3,
+            Color::Gray,
+            Some((1, 2, 3)),
+            Some((4, 5, 6)),
+        );
         let cell = &buffer[(1, 1)];
         assert_eq!(cell.symbol(), "A");
         assert_eq!(cell.fg, cell.bg);
@@ -778,14 +804,21 @@ mod tests {
 
     #[test]
     fn test_render_preserves_wide_cell_tail_behavior() {
-        let buffer = render_buffer("界".as_bytes(), 6, 3, None, None);
+        let buffer = render_buffer("界".as_bytes(), 6, 3, Color::Gray, None, None);
         assert_eq!(buffer[(1, 1)].symbol(), "界");
         assert_eq!(buffer[(2, 1)].symbol(), " ");
     }
 
     #[test]
     fn test_render_ascii_and_empty_cells() {
-        let buffer = render_buffer(b"A", 6, 3, Some((1, 2, 3)), Some((4, 5, 6)));
+        let buffer = render_buffer(
+            b"A",
+            6,
+            3,
+            Color::Gray,
+            Some((1, 2, 3)),
+            Some((4, 5, 6)),
+        );
         assert_eq!(buffer[(1, 1)].symbol(), "A");
         assert_eq!(buffer[(2, 1)].symbol(), " ");
         assert_eq!(buffer[(3, 1)].symbol(), " ");
@@ -797,7 +830,7 @@ mod tests {
 
     #[test]
     fn test_render_handles_crlf_line_breaks() {
-        let buffer = render_buffer(b"A\r\nB", 6, 4, None, None);
+        let buffer = render_buffer(b"A\r\nB", 6, 4, Color::Gray, None, None);
         assert_eq!(buffer[(1, 1)].symbol(), "A");
         assert_eq!(buffer[(1, 2)].symbol(), "B");
         assert_eq!(buffer[(2, 1)].symbol(), " ");
@@ -806,7 +839,7 @@ mod tests {
 
     #[test]
     fn test_render_does_not_double_wrap_full_width_captured_rows() {
-        let buffer = render_buffer(b"1234\r\nZ", 6, 5, None, None);
+        let buffer = render_buffer(b"1234\r\nZ", 6, 5, Color::Gray, None, None);
         assert_eq!(buffer[(1, 1)].symbol(), "1");
         assert_eq!(buffer[(4, 1)].symbol(), "4");
         assert_eq!(buffer[(1, 2)].symbol(), "Z");
@@ -823,10 +856,13 @@ mod tests {
                     b"1234\r\nZ",
                     frame,
                     Rect::new(0, 0, 6, 5),
-                    Some((0, 1)),
-                    None,
-                    None,
-                    None,
+                    PaneRenderOptions {
+                        border_color: Color::Gray,
+                        cursor: Some((0, 1)),
+                        host_fg: None,
+                        host_bg: None,
+                        selection: None,
+                    },
                 );
             })
             .unwrap();
@@ -836,7 +872,7 @@ mod tests {
 
     #[test]
     fn test_render_falls_back_on_malformed_utf8() {
-        let buffer = render_buffer(b"\xffX", 6, 3, None, None);
+        let buffer = render_buffer(b"\xffX", 6, 3, Color::Gray, None, None);
         assert_eq!(buffer[(1, 1)].symbol(), " ");
         assert_eq!(buffer[(2, 1)].symbol(), " ");
         assert_eq!(buffer[(3, 1)].symbol(), " ");
@@ -845,25 +881,25 @@ mod tests {
 
     #[test]
     fn test_render_preserves_combining_graphemes() {
-        let buffer = render_buffer("e\u{301}".as_bytes(), 6, 3, None, None);
+        let buffer = render_buffer("e\u{301}".as_bytes(), 6, 3, Color::Gray, None, None);
         assert_eq!(buffer[(1, 1)].symbol(), "e\u{301}");
         assert_eq!(buffer[(2, 1)].symbol(), " ");
     }
 
     #[test]
     fn test_render_preserves_emoji_and_cjk_wide_cells() {
-        let emoji = render_buffer("😀".as_bytes(), 6, 3, None, None);
+        let emoji = render_buffer("😀".as_bytes(), 6, 3, Color::Gray, None, None);
         assert_eq!(emoji[(1, 1)].symbol(), "😀");
         assert_eq!(emoji[(2, 1)].symbol(), " ");
 
-        let cjk = render_buffer("界".as_bytes(), 6, 3, None, None);
+        let cjk = render_buffer("界".as_bytes(), 6, 3, Color::Gray, None, None);
         assert_eq!(cjk[(1, 1)].symbol(), "界");
         assert_eq!(cjk[(2, 1)].symbol(), " ");
     }
 
     #[test]
     fn test_render_preserves_spacer_head_for_soft_wrapped_wide_cells() {
-        let buffer = render_buffer("abc界".as_bytes(), 6, 4, None, None);
+        let buffer = render_buffer("abc界".as_bytes(), 6, 4, Color::Gray, None, None);
         assert_eq!(buffer[(1, 1)].symbol(), "a");
         assert_eq!(buffer[(2, 1)].symbol(), "b");
         assert_eq!(buffer[(3, 1)].symbol(), "c");
@@ -878,6 +914,7 @@ mod tests {
             b"\x1b[38;2;10;20;30m\x1b[48;2;40;50;60mA\x1b[0m",
             6,
             3,
+            Color::Gray,
             Some((1, 2, 3)),
             Some((4, 5, 6)),
         );
@@ -894,7 +931,7 @@ mod tests {
 
     #[test]
     fn test_render_trailing_spaces_keep_active_background_color() {
-        let buffer = render_buffer(b"\x1b[41mA", 6, 3, None, None);
+        let buffer = render_buffer(b"\x1b[41mA", 6, 3, Color::Gray, None, None);
         assert_eq!(buffer[(1, 1)].symbol(), "A");
         assert_ne!(buffer[(1, 1)].bg, Color::Reset);
         assert_eq!(buffer[(2, 1)].symbol(), " ");
@@ -903,11 +940,19 @@ mod tests {
     }
 
     #[test]
+    fn test_render_uses_requested_border_color() {
+        let buffer = render_buffer(b"A", 6, 3, Color::Blue, None, None);
+        assert_eq!(buffer[(0, 0)].fg, Color::Blue);
+        assert_eq!(buffer[(5, 2)].fg, Color::Blue);
+    }
+
+    #[test]
     fn test_render_clears_stale_content_when_redrawing_shorter_rows() {
         let buffer = render_buffer_sequence(
             &[b"ABCD\r\nWXYZ", b"A"],
             6,
             4,
+            Color::Gray,
             Some((1, 2, 3)),
             Some((4, 5, 6)),
         );
