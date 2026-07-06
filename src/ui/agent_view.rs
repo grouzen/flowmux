@@ -11,7 +11,7 @@ use crate::host_terminal::HostColors;
 use crate::models::{AgentEntry, AgentStatusCounts};
 use crate::ui::theme::{
     ICON_AGENT, ICON_CTX, ICON_DIR, ICON_MODEL, ICON_TIME, Theme, brand_line, format_tokens,
-    format_uptime, status_count_spans,
+    format_uptime, inactive_border_color, status_count_spans,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -73,10 +73,13 @@ pub fn render_agent_view(
         visible_text.as_bytes(),
         f,
         content_area,
-        cursor_position,
-        host_colors.fg,
-        host_colors.bg,
-        selection,
+        crate::ghostty::render::PaneRenderOptions {
+            border_color: inactive_border_color(theme),
+            cursor: cursor_position,
+            host_fg: host_colors.fg,
+            host_bg: host_colors.bg,
+            selection,
+        },
     );
 
     // Status bar

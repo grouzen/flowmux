@@ -9,7 +9,7 @@ use ratatui::{
 use crate::app::GitViewerState;
 use crate::host_terminal::HostColors;
 use crate::models::{AgentEntry, AgentStatusCounts};
-use crate::ui::theme::{ICON_DIR, Theme, brand_line, status_count_spans};
+use crate::ui::theme::{ICON_DIR, Theme, brand_line, inactive_border_color, status_count_spans};
 
 #[allow(clippy::too_many_arguments)]
 pub fn render_git_viewer(
@@ -60,10 +60,13 @@ pub fn render_git_viewer(
         visible_text.as_bytes(),
         f,
         content_area,
-        cursor_position,
-        host_colors.fg,
-        host_colors.bg,
-        selection,
+        crate::ghostty::render::PaneRenderOptions {
+            border_color: inactive_border_color(theme),
+            cursor: cursor_position,
+            host_fg: host_colors.fg,
+            host_bg: host_colors.bg,
+            selection,
+        },
     );
 
     let dir_str = super::dashboard::shellify_dir(&agent_entry.config.directory);
