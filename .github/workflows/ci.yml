@@ -34,7 +34,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -56,7 +56,7 @@ jobs:
           version: 0.15.2
 
       - name: Cache Cargo and build state
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index/
@@ -108,7 +108,7 @@ jobs:
           tar -C dist -czf "dist/flowmux-${version}-${ARTIFACT_NAME}.tar.gz" "$(basename "$package_dir")"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: flowmux-${{ matrix.artifact_name }}
           path: dist/flowmux-*.tar.gz
