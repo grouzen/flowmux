@@ -209,10 +209,10 @@ pub fn repo_has_submodules(repo_root: &Path) -> bool {
 // Worktree creation
 // ---------------------------------------------------------------------------
 
-/// Create a git worktree at `worktree_path` tracking `branch`.
+/// Create a git worktree at `worktree_path` for `branch`.
 ///
 /// - If `use_existing_branch` is `false`, a new branch is created from the
-///   current HEAD of the repo at `repo_root`.
+///   given `start_point` without inheriting upstream tracking from it.
 /// - If `use_existing_branch` is `true`, the worktree is linked to the
 ///   already-existing local branch.
 ///
@@ -231,7 +231,7 @@ pub fn create_worktree(
     }
 
     // Build the git command arguments.
-    // git worktree add [-b <branch>] <path> [<branch>]
+    // git worktree add [--no-track -b <branch>] <path> [<branch>]
     let mut cmd = std::process::Command::new("git");
     cmd.current_dir(repo_root);
 
@@ -242,7 +242,7 @@ pub fn create_worktree(
         cmd.arg(branch);
     } else {
         // Create a new branch and place it in the worktree.
-        cmd.args(["worktree", "add", "-b"]);
+        cmd.args(["worktree", "add", "--no-track", "-b"]);
         cmd.arg(branch);
         cmd.arg(worktree_path);
         if let WorktreeStartPoint::Ref(start_point) = start_point {
