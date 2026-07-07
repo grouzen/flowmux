@@ -395,10 +395,7 @@ fn prepare_worktree_directory(
                     worktree.branch_name
                 );
             }
-            (
-                false,
-                Some(start_point.clone()),
-            )
+            (false, Some(start_point.clone()))
         }
     };
 
@@ -619,6 +616,18 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         String::from_utf8(output.stdout).unwrap()
+    }
+
+    fn git_config_value(repo_root: &Path, key: &str) -> Option<String> {
+        let output = Command::new("git")
+            .current_dir(repo_root)
+            .args(["config", "--get", key])
+            .output()
+            .unwrap();
+        if !output.status.success() {
+            return None;
+        }
+        Some(String::from_utf8(output.stdout).unwrap().trim().to_string())
     }
 
     fn init_test_repo(temp: &TestDir) -> PathBuf {
@@ -863,12 +872,19 @@ mod tests {
     fn prepare_worktree_directory_creates_branch_from_selected_base_ref() {
         let temp = TestDir::new("base-ref");
         let repo_root = init_test_repo(&temp);
+        let remote_root = temp.path.join("remote.git");
         let worktrees_base = temp.path.join("worktrees");
+
+        std::fs::create_dir_all(&remote_root).unwrap();
+        run_git(&remote_root, &["init", "--bare"]);
+        let remote_str = remote_root.to_string_lossy().to_string();
+        run_git(&repo_root, &["remote", "add", "origin", &remote_str]);
 
         std::fs::write(repo_root.join("feature.txt"), "from teammate\n").unwrap();
         run_git(&repo_root, &["add", "feature.txt"]);
         run_git(&repo_root, &["commit", "-m", "feature work"]);
-        run_git(&repo_root, &["branch", "teammate/work"]);
+        run_git(&repo_root, &["push", "origin", "HEAD:teammate/work"]);
+        run_git(&repo_root, &["fetch", "origin"]);
 
         let branch_name = "helper/branch";
         let (worktree_dir, stored) = prepare_worktree_directory(
@@ -876,7 +892,7 @@ mod tests {
             Some(WorktreeRequest {
                 repo_root: repo_root.to_string_lossy().to_string(),
                 branch_name: branch_name.to_string(),
-                start_point: WorktreeStartPoint::Ref("teammate/work".into()),
+                start_point: WorktreeStartPoint::Ref("origin/teammate/work".into()),
                 initialize_submodules: false,
             }),
             &worktrees_base,
@@ -888,7 +904,12 @@ mod tests {
             std::fs::read_to_string(Path::new(&worktree_dir).join("feature.txt")).unwrap(),
             "from teammate\n"
         );
-        assert_eq!(stored.unwrap().base_ref.as_deref(), Some("teammate/work"));
+        assert_eq!(
+            stored.unwrap().base_ref.as_deref(),
+            Some("origin/teammate/work")
+        );
+        assert_eq!(git_config_value(&repo_root, "branch.helper/branch.remote"), None);
+        assert_eq!(git_config_value(&repo_root, "branch.helper/branch.merge"), None);
     }
 
     #[test]
@@ -927,5 +948,13 @@ mod tests {
 
         assert!(!Path::new(&worktree_dir).join("feature-only.txt").exists());
         assert_eq!(stored.unwrap().base_ref.as_deref(), Some("origin/main"));
+        assert_eq!(
+            git_config_value(&repo_root, "branch.helper/from-default.remote"),
+            None
+        );
+        assert_eq!(
+            git_config_value(&repo_root, "branch.helper/from-default.merge"),
+            None
+        );
     }
 }
