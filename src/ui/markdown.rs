@@ -1,8 +1,8 @@
 //! Markdown response layout for dashboard cards.
 //!
 //! `tui-markdown` intentionally does not render GFM tables.  This module keeps
-//! it for every other Markdown construct and substitutes table ranges with
-//! styled, horizontally scrollable terminal tables.
+//! it for every other Markdown construct and substitutes table and fenced-code
+//! ranges with horizontally scrollable terminal blocks.
 
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use ratatui::{
@@ -17,33 +17,34 @@ use unicode_width::UnicodeWidthStr;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ResponseMetrics {
     pub content_height: u16,
-    /// The widest table.  Ordinary prose always wraps to the viewport.
+    /// The widest scrollable block. Ordinary prose always wraps to the viewport.
     pub content_width: u16,
 }
 
 enum ResponseBlock<'a> {
     Prose(Text<'a>),
-    Table(Text<'static>),
+    Overflow(Text<'a>),
 }
 
 impl ResponseBlock<'_> {
     fn height(&self, width: u16) -> u16 {
         match self {
             Self::Prose(text) => wrapped_line_count(text, width),
-            Self::Table(text) => text.height().min(u16::MAX as usize) as u16,
+            Self::Overflow(text) => text.height().min(u16::MAX as usize) as u16,
         }
     }
 
     fn width(&self) -> u16 {
         match self {
             Self::Prose(_) => 0,
-            Self::Table(text) => text.width().min(u16::MAX as usize) as u16,
+            Self::Overflow(text) => text.width().min(u16::MAX as usize) as u16,
         }
     }
 }
 
 /// Renders a model response into `area` and returns the complete virtual
-/// content dimensions.  Only table blocks honor `horizontal_scroll`.
+/// content dimensions. Only table and fenced-code blocks honor
+/// `horizontal_scroll`.
 pub fn render_response(
     f: &mut Frame,
     markdown: &str,
@@ -84,7 +85,7 @@ pub fn render_response(
                         .scroll((block_scroll, 0)),
                     block_area,
                 ),
-                ResponseBlock::Table(text) => f.render_widget(
+                ResponseBlock::Overflow(text) => f.render_widget(
                     Paragraph::new(text.clone())
                         .style(style)
                         .scroll((block_scroll, horizontal_scroll)),
@@ -133,18 +134,31 @@ fn wrapped_line_count(text: &Text<'_>, width: u16) -> u16 {
     })
 }
 
+#[derive(Clone, Copy)]
+enum OverflowKind {
+    Table,
+    CodeBlock,
+}
+
 fn response_blocks(input: &str) -> Vec<ResponseBlock<'_>> {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     let mut ranges = Vec::new();
     let mut table_start = None;
+    let mut code_block_start = None;
 
     for (event, range) in Parser::new_ext(input, options).into_offset_iter() {
         match event {
             Event::Start(Tag::Table(_)) => table_start = Some(range.start),
+            Event::Start(Tag::CodeBlock(_)) => code_block_start = Some(range.start),
             Event::End(TagEnd::Table) => {
                 if let Some(start) = table_start.take() {
-                    ranges.push(start..range.end);
+                    ranges.push((start..range.end, OverflowKind::Table));
+                }
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                if let Some(start) = code_block_start.take() {
+                    ranges.push((start..range.end, OverflowKind::CodeBlock));
                 }
             }
             _ => {}
@@ -155,15 +169,22 @@ fn response_blocks(input: &str) -> Vec<ResponseBlock<'_>> {
         return vec![ResponseBlock::Prose(tui_markdown::from_str(input))];
     }
 
+    ranges.sort_by_key(|(range, _)| range.start);
     let mut blocks = Vec::with_capacity(ranges.len() * 2 + 1);
     let mut cursor = 0;
-    for range in ranges {
+    for (range, kind) in ranges {
         if cursor < range.start {
             blocks.push(ResponseBlock::Prose(tui_markdown::from_str(
                 &input[cursor..range.start],
             )));
         }
-        blocks.push(ResponseBlock::Table(render_table(&input[range.clone()])));
+        let block = match kind {
+            OverflowKind::Table => ResponseBlock::Overflow(render_table(&input[range.clone()])),
+            OverflowKind::CodeBlock => {
+                ResponseBlock::Overflow(tui_markdown::from_str(&input[range.clone()]))
+            }
+        };
+        blocks.push(block);
         cursor = range.end;
     }
     if cursor < input.len() {
@@ -409,5 +430,16 @@ mod tests {
         assert!(initial.starts_with("┌"));
         assert!(!shifted.starts_with("┌"));
         assert!(shifted.contains("First"));
+    }
+
+    #[test]
+    fn renderer_clips_fenced_code_blocks_using_the_horizontal_offset() {
+        let markdown = "```text\n+┌──────────────┬──────────────┐\n+│ source       │ destination  │\n+└──────────────┴──────────────┘\n+```";
+        let metrics = response_metrics(markdown, 12);
+        let initial = render_buffer(markdown, 12, 5, 0);
+        let shifted = render_buffer(markdown, 12, 5, 4);
+
+        assert!(metrics.content_width > 12);
+        assert_ne!(initial, shifted);
     }
 }
