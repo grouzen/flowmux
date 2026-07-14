@@ -212,6 +212,11 @@ h1 {
   letter-spacing: 0;
 }
 
+.hero h1 {
+  max-width: 980px;
+  font-size: clamp(3.35rem, 7vw, 5.8rem);
+}
+
 .tagline {
   margin: 0 0 14px;
   color: var(--ink);
@@ -387,6 +392,37 @@ p {
   margin-top: 48px;
   border-top: 1px solid var(--line);
   border-left: 1px solid var(--line);
+}
+
+.use-case-grid,
+.faq-grid {
+  display: grid;
+  gap: 0;
+  margin-top: 48px;
+  border-top: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+}
+
+.use-case-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.faq-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.use-case-card,
+.faq-item {
+  min-height: 190px;
+  padding: 28px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: rgba(var(--paper-rgb), 0.18);
+}
+
+.use-case-card p,
+.faq-item p {
+  margin-bottom: 0;
 }
 
 .feature-card {
@@ -576,6 +612,14 @@ kbd {
   font-weight: 700;
 }
 
+.install-requirements {
+  margin-top: 18px;
+}
+
+.install-requirements strong {
+  color: var(--ink);
+}
+
 .code-card {
   overflow: auto;
   border: 1px solid var(--line);
@@ -630,6 +674,11 @@ code {
     grid-template-columns: 1fr 1fr;
   }
 
+  .use-case-grid,
+  .faq-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
   .steps {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -675,6 +724,11 @@ code {
   }
 
   .feature-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .use-case-grid,
+  .faq-grid {
     grid-template-columns: 1fr;
   }
 

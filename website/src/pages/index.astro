@@ -37,6 +37,44 @@ const features = [
   },
 ];
 
+const useCases = [
+  {
+    title: 'Implement, test, and review in parallel',
+    body: 'Give each task its own CLI session and optional Git worktree, then keep an eye on every agent from one dashboard.',
+  },
+  {
+    title: 'Keep repositories and tasks separate',
+    body: 'Group work by project, repository, or stream so an active experiment never gets mixed into the work that needs to ship.',
+  },
+  {
+    title: 'Return to long-running work without hunting for panes',
+    body: 'Flowmux stores session state and reconnects to agents after tmux restarts, keeping long-running work easy to resume.',
+  },
+];
+
+const faqs = [
+  {
+    question: 'Does Flowmux replace tmux?',
+    answer: 'No. Flowmux is built on tmux and adds a keyboard-first dashboard for coordinating agent sessions, projects, and worktrees.',
+  },
+  {
+    question: 'Which AI coding agents does Flowmux support?',
+    answer: 'Flowmux auto-detects Claude Code, Codex, and OpenCode installed on your PATH, unless you configure an explicit allowlist.',
+  },
+  {
+    question: 'Does Flowmux wrap or replace my agent CLI?',
+    answer: 'No. Agent, git viewer, and shell views forward input to live tmux panes, so you keep working with the real command-line sessions.',
+  },
+  {
+    question: 'Can each agent use its own Git worktree?',
+    answer: 'Yes. When you create an agent, you can give it an isolated Git worktree and working directory.',
+  },
+  {
+    question: 'What happens after a restart?',
+    answer: 'Flowmux persists session state and can reconnect to agents after tmux restarts, making long-running sessions easier to resume.',
+  },
+];
+
 const installMethods = [
   {
     id: 'script',
@@ -122,11 +160,11 @@ const workflowSteps = [
           <img class="theme-asset theme-asset-light" src="/assets/brand/flowmux-mark.png" alt="" width="1024" height="1024" />
           <img class="theme-asset theme-asset-dark" src="/assets/brand/flowmux-mark-dark.png" alt="" width="1024" height="1024" />
         </div>
-        <p class="eyebrow">Terminal-native AI agent multiplexer</p>
-        <h1>Flowmux</h1>
+        <p class="eyebrow">Flowmux for Claude Code, Codex, and OpenCode</p>
+        <h1>Run multiple AI coding agents from one terminal dashboard.</h1>
         <p class="tagline">Where agent chaos becomes flow.</p>
         <p class="lede">
-          Run, track, and switch between multiple CLI agents from one keyboard-first dashboard with tmux-backed persistence and real terminal sessions.
+          Keep real CLI sessions visible, organized, and resumable with a keyboard-first dashboard, optional Git worktrees, and tmux-backed persistence.
         </p>
         <div class="hero-actions">
           <a class="button primary" href="#install">Install</a>
@@ -171,7 +209,8 @@ const workflowSteps = [
     <section class="section" id="features" aria-labelledby="features-title">
       <div class="section-heading">
         <p class="eyebrow">Why Flowmux</p>
-        <h2 id="features-title">A calm control surface for parallel agent work.</h2>
+        <h2 id="features-title">Keep your agent workflow in the terminal, not behind a wrapper.</h2>
+        <p>Flowmux coordinates real agent CLIs, tmux panes, projects, and Git worktrees while leaving your editor, shell, and Git tools in place.</p>
       </div>
       <div class="feature-grid">
         {features.map((feature) => (
@@ -183,10 +222,25 @@ const workflowSteps = [
       </div>
     </section>
 
+    <section class="section use-cases" aria-labelledby="use-cases-title">
+      <div class="section-heading">
+        <p class="eyebrow">Use cases</p>
+        <h2 id="use-cases-title">Parallel AI coding agents for the work already on your desk.</h2>
+      </div>
+      <div class="use-case-grid">
+        {useCases.map((useCase) => (
+          <article class="use-case-card">
+            <h3>{useCase.title}</h3>
+            <p>{useCase.body}</p>
+          </article>
+        ))}
+      </div>
+    </section>
+
     <section class="workflow" id="workflow" aria-labelledby="workflow-title">
       <div class="section-heading">
         <p class="eyebrow">Typical workflow</p>
-        <h2 id="workflow-title">Separate the work. Watch the grid. Jump to what needs attention.</h2>
+        <h2 id="workflow-title">A repeatable workflow for parallel AI coding agents.</h2>
       </div>
       <ol class="steps">
         {workflowSteps.map((step) => (
@@ -207,7 +261,7 @@ const workflowSteps = [
     <section class="agents-section" id="agents" aria-labelledby="agents-title">
       <div class="section-heading">
         <p class="eyebrow">Supported agents</p>
-        <h2 id="agents-title">Use the CLI agents already in your terminal.</h2>
+        <h2 id="agents-title">One dashboard for the agent CLIs already in your terminal.</h2>
       </div>
       <ul class="agent-list" aria-label="Supported Flowmux agents">
         <li>
@@ -224,7 +278,7 @@ const workflowSteps = [
         </li>
       </ul>
       <p class="section-note">
-        Flowmux auto-detects installed agent CLIs and enables discovered agents by default unless you configure an explicit allowlist.
+        Flowmux auto-detects Claude Code, Codex, and OpenCode on your PATH, then enables discovered agents by default unless you configure an explicit allowlist.
       </p>
     </section>
 
@@ -232,6 +286,7 @@ const workflowSteps = [
       <div>
         <p class="eyebrow">Install</p>
         <p data-install-copy>{installMethods[0].details}</p>
+        <p class="install-requirements"><strong>Requirements:</strong> Linux or macOS, tmux, and at least one supported agent CLI.</p>
         <a class="text-link" href="https://github.com/grouzen/flowmux/releases">Prebuilt Linux and macOS binaries are available on GitHub Releases.</a>
       </div>
       <div class="install-options">
@@ -247,6 +302,21 @@ const workflowSteps = [
             <div class="code-card">
               <pre><code>{method.command}</code></pre>
             </div>
+          </article>
+        ))}
+      </div>
+    </section>
+
+    <section class="section faq" id="faq" aria-labelledby="faq-title">
+      <div class="section-heading">
+        <p class="eyebrow">FAQ</p>
+        <h2 id="faq-title">Answers before you start a parallel agent workflow.</h2>
+      </div>
+      <div class="faq-grid">
+        {faqs.map((faq) => (
+          <article class="faq-item">
+            <h3>{faq.question}</h3>
+            <p>{faq.answer}</p>
           </article>
         ))}
       </div>
