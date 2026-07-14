@@ -7,11 +7,37 @@ interface Props {
 }
 
 const {
-  title = 'Flowmux - terminal-native AI agent multiplexer',
+  title = 'Flowmux | Terminal-native AI agent multiplexer',
   description = 'Flowmux is a terminal-native AI agent multiplexer for running, tracking, and switching between multiple CLI agents from one keyboard-first dashboard.',
 } = Astro.props;
 
-const socialImage = new URL('/assets/social/flowmux-social-card.png', Astro.site).toString();
+const site = Astro.site ?? new URL('https://flowmux.dev');
+const canonicalUrl = new URL(Astro.url.pathname, site);
+const socialImage = new URL('/assets/social/flowmux-social-card.png', site);
+const structuredData = {
+  '@context': 'https://schema.org',
+  '@graph': [
+    {
+      '@type': 'WebSite',
+      name: 'Flowmux',
+      url: site.href,
+      description,
+      inLanguage: 'en',
+    },
+    {
+      '@type': 'SoftwareApplication',
+      name: 'Flowmux',
+      applicationCategory: 'DeveloperApplication',
+      operatingSystem: 'Linux, macOS',
+      description,
+      url: site.href,
+      downloadUrl: 'https://github.com/grouzen/flowmux/releases',
+      sameAs: ['https://github.com/grouzen/flowmux'],
+      isAccessibleForFree: true,
+      image: socialImage.href,
+    },
+  ],
+};
 ---
 
 <!doctype html>
@@ -20,18 +46,27 @@ const socialImage = new URL('/assets/social/flowmux-social-card.png', Astro.site
     <meta charset="UTF-8" />
     <meta name="description" content={description} />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="index, follow, max-image-preview:large" />
     <meta name="theme-color" content="#f6f3ec" />
+    <link rel="canonical" href={canonicalUrl.href} />
     <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Flowmux" />
+    <meta property="og:url" content={canonicalUrl.href} />
+    <meta property="og:locale" content="en_US" />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
-    <meta property="og:image" content={socialImage} />
+    <meta property="og:image" content={socialImage.href} />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
     <meta property="og:image:alt" content="Flowmux social preview card with the Flowmux logo and the slogan Where agent chaos becomes flow." />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
-    <meta name="twitter:image" content={socialImage} />
+    <meta name="twitter:image" content={socialImage.href} />
     <meta name="twitter:image:alt" content="Flowmux social preview card with the Flowmux logo and the slogan Where agent chaos becomes flow." />
     <link rel="icon" type="image/png" href="/assets/brand/flowmux-mark.png" />
+    <script is:inline type="application/ld+json" set:html={JSON.stringify(structuredData)} />
     <script is:inline>
       const storedTheme = localStorage.getItem('flowmux-theme');
       const systemTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
