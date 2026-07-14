@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://flowmux.dev/sitemap.xml
+Sitemap: https://flowmux.dev/sitemap-index.xml

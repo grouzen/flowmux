@@ -5,4 +5,7 @@
   Permissions-Policy: camera=(), microphone=(), geolocation=()
 
 /assets/*
-  Cache-Control: public, max-age=604800, immutable
+  Cache-Control: public, max-age=604800
+
+/_astro/*
+  Cache-Control: public, max-age=31536000, immutable
