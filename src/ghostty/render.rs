@@ -811,14 +811,7 @@ mod tests {
 
     #[test]
     fn test_render_ascii_and_empty_cells() {
-        let buffer = render_buffer(
-            b"A",
-            6,
-            3,
-            Color::Gray,
-            Some((1, 2, 3)),
-            Some((4, 5, 6)),
-        );
+        let buffer = render_buffer(b"A", 6, 3, Color::Gray, Some((1, 2, 3)), Some((4, 5, 6)));
         assert_eq!(buffer[(1, 1)].symbol(), "A");
         assert_eq!(buffer[(2, 1)].symbol(), " ");
         assert_eq!(buffer[(3, 1)].symbol(), " ");

@@ -3,6 +3,7 @@ pub mod create_agent;
 pub mod create_project;
 pub mod dashboard;
 pub mod git_viewer;
+pub mod markdown;
 pub mod remove_agent;
 pub mod remove_project;
 pub mod settings;

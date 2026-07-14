@@ -908,8 +908,14 @@ mod tests {
             stored.unwrap().base_ref.as_deref(),
             Some("origin/teammate/work")
         );
-        assert_eq!(git_config_value(&repo_root, "branch.helper/branch.remote"), None);
-        assert_eq!(git_config_value(&repo_root, "branch.helper/branch.merge"), None);
+        assert_eq!(
+            git_config_value(&repo_root, "branch.helper/branch.remote"),
+            None
+        );
+        assert_eq!(
+            git_config_value(&repo_root, "branch.helper/branch.merge"),
+            None
+        );
     }
 
     #[test]

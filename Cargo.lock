@@ -833,6 +833,7 @@ dependencies = [
  "libc",
  "libghostty-vt",
  "log",
+ "pulldown-cmark",
  "ratatui",
  "regex",
  "reqwest",

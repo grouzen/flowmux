@@ -52,8 +52,11 @@ pub fn render_dashboard(
     projects: &[String],
     active_project_idx: usize,
     card_scroll: &[u16],
+    card_horizontal_scroll: &[u16],
     card_response_heights: &mut Vec<u16>,
     card_response_widths: &mut Vec<u16>,
+    card_response_content_heights: &mut Vec<u16>,
+    card_response_content_widths: &mut Vec<u16>,
     dimmed: bool,
     status_counts: AgentStatusCounts,
     blink_running: bool,
@@ -93,8 +96,11 @@ pub fn render_dashboard(
         visible_indices,
         selected,
         card_scroll,
+        card_horizontal_scroll,
         card_response_heights,
         card_response_widths,
+        card_response_content_heights,
+        card_response_content_widths,
         dimmed,
     );
 }
@@ -137,8 +143,11 @@ fn render_grid(
     visible_indices: &[usize],
     selected: Option<usize>,
     card_scroll: &[u16],
+    card_horizontal_scroll: &[u16],
     card_response_heights: &mut Vec<u16>,
     card_response_widths: &mut Vec<u16>,
+    card_response_content_heights: &mut Vec<u16>,
+    card_response_content_widths: &mut Vec<u16>,
     dimmed: bool,
 ) {
     if visible_indices.is_empty() {
@@ -178,6 +187,12 @@ fn render_grid(
     if card_response_widths.len() < agents.len() {
         card_response_widths.resize(agents.len(), 0);
     }
+    if card_response_content_heights.len() < agents.len() {
+        card_response_content_heights.resize(agents.len(), 0);
+    }
+    if card_response_content_widths.len() < agents.len() {
+        card_response_content_widths.resize(agents.len(), 0);
+    }
 
     for row in 0..rows {
         let col_areas = Layout::default()
@@ -191,17 +206,21 @@ fn render_grid(
 
             if let Some(&agent_idx) = visible_indices.get(slot) {
                 let scroll = card_scroll.get(agent_idx).copied().unwrap_or(0);
-                let (resp_h, resp_w) = render_card(
+                let horizontal_scroll = card_horizontal_scroll.get(agent_idx).copied().unwrap_or(0);
+                let (resp_h, resp_w, content_h, content_w) = render_card(
                     f,
                     cell_area,
                     &agents[agent_idx],
                     selected == Some(agent_idx),
                     theme,
                     scroll,
+                    horizontal_scroll,
                     dimmed,
                 );
                 card_response_heights[agent_idx] = resp_h;
                 card_response_widths[agent_idx] = resp_w;
+                card_response_content_heights[agent_idx] = content_h;
+                card_response_content_widths[agent_idx] = content_w;
             }
             // Empty slots render as blank (no border)
         }
@@ -269,6 +288,7 @@ pub(crate) fn shellify_dir(dir: &str) -> String {
 
 /// Formats a millisecond duration into a human-readable string
 /// (e.g. "3h 12m", "45m", "< 1m").
+#[allow(clippy::too_many_arguments)]
 fn render_card(
     f: &mut Frame,
     area: Rect,
@@ -276,8 +296,9 @@ fn render_card(
     is_selected: bool,
     theme: &Theme,
     response_scroll: u16,
+    response_horizontal_scroll: u16,
     dimmed: bool,
-) -> (u16, u16) {
+) -> (u16, u16, u16, u16) {
     let (border_color, title_color) = if is_selected {
         (selected_border_color(theme), selected_border_color(theme))
     } else {
@@ -310,7 +331,7 @@ fn render_card(
     f.render_widget(block, area);
 
     if raw_inner.height == 0 || raw_inner.width < 2 {
-        return (0, 0);
+        return (0, 0, 0, 0);
     }
 
     let inner = Rect {
@@ -535,7 +556,7 @@ fn render_card(
     // -----------------------------------------------------------------------
 
     let Some(resp_area) = response_area else {
-        return (0, 0);
+        return (0, 0, 0, 0);
     };
 
     // 1-line gap, then content
@@ -547,18 +568,21 @@ fn render_card(
             height: resp_area.height - 1,
         }
     } else {
-        return (0, 0);
+        return (0, 0, 0, 0);
     };
 
     // Render response content
     match &entry.meta.last_model_response {
         Some(response) if !response.is_empty() => {
-            let md_text = tui_markdown::from_str(response);
             let scroll_offset = if is_selected { response_scroll } else { 0 };
-            let para = Paragraph::new(md_text)
-                .wrap(ratatui::widgets::Wrap { trim: false })
-                .scroll((scroll_offset, 0));
-            f.render_widget(para, content_area);
+            let metrics = crate::ui::markdown::render_response(
+                f,
+                response,
+                content_area,
+                scroll_offset,
+                response_horizontal_scroll,
+                ds(dimmed),
+            );
 
             // Scroll hint on selected card
             if is_selected && scroll_offset > 0 {
@@ -571,6 +595,23 @@ fn render_card(
                     .alignment(Alignment::Right);
                 f.render_widget(hint, hint_area);
             }
+            if metrics.content_width > content_area.width {
+                let hint_area = Rect {
+                    y: content_area.y + content_area.height.saturating_sub(1),
+                    height: 1,
+                    ..content_area
+                };
+                let hint = Paragraph::new("◀ Alt+←/→ ▶")
+                    .style(ds(dimmed).fg(theme.gray))
+                    .alignment(Alignment::Right);
+                f.render_widget(hint, hint_area);
+            }
+            return (
+                content_area.height,
+                content_area.width,
+                metrics.content_height,
+                metrics.content_width,
+            );
         }
         _ => {
             let hint_top = content_area.height.saturating_sub(1) / 2;
@@ -588,7 +629,7 @@ fn render_card(
         }
     }
 
-    (content_area.height, content_area.width)
+    (content_area.height, content_area.width, 0, 0)
 }
 
 // ---------------------------------------------------------------------------
