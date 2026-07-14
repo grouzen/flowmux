@@ -26,7 +26,7 @@ jobs:
             fetch_targets: x86_64-unknown-linux-gnu
             build_script: ./tools/build-release-prefetched-libghostty-vt.sh --target x86_64-unknown-linux-gnu
             package_binary: target/x86_64-unknown-linux-gnu/release/flowmux
-          - runner: macos-latest
+          - runner: macos-15
             artifact_name: universal2-apple-darwin
             primary_target: aarch64-apple-darwin
             install_targets: aarch64-apple-darwin,x86_64-apple-darwin

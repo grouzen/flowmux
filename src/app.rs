@@ -980,13 +980,18 @@ pub struct App {
     agent_view_scroll: Vec<StoredAgentViewScroll>,
     /// Per-card scroll offset for the model response block on the dashboard.
     pub card_scroll: Vec<u16>,
+    /// Per-card horizontal offset for overflowing Markdown tables.
+    pub card_horizontal_scroll: Vec<u16>,
     /// Per-card response viewport height, updated every render frame.
     /// Used to cap scroll so content doesn't scroll past the last line.
     pub card_response_heights: Vec<u16>,
     /// Per-card response content area width, updated every render frame.
-    /// Used together with Paragraph::line_count to compute the true
-    /// wrapped line count for accurate max-scroll calculation.
+    /// Used with the rendered content dimensions to bound both scroll axes.
     pub card_response_widths: Vec<u16>,
+    /// Per-card complete rendered response height, updated every render frame.
+    pub card_response_content_heights: Vec<u16>,
+    /// Per-card widest rendered table, updated every render frame.
+    pub card_response_content_widths: Vec<u16>,
     /// Host terminal default colors (fg/bg), probed once at startup via OSC 10/11.
     /// Used as the default bg/fg for ghostty cells without explicit colors.
     pub host_colors: HostColors,
@@ -1036,8 +1041,11 @@ impl App {
             dirty: true, // force initial draw
             agent_view_scroll: vec![StoredAgentViewScroll::default(); card_count],
             card_scroll: vec![0u16; card_count],
+            card_horizontal_scroll: vec![0u16; card_count],
             card_response_heights: vec![0u16; card_count],
             card_response_widths: vec![0u16; card_count],
+            card_response_content_heights: vec![0u16; card_count],
+            card_response_content_widths: vec![0u16; card_count],
             host_colors,
             notification: StatusNotification::default(),
         };
@@ -1913,9 +1921,14 @@ impl App {
             MouseEventKind::ScrollUp => {
                 if let Some(slot) = self.dashboard_slot_at(mouse.column, mouse.row)
                     && let Some(global_idx) = self.visible_agent_indices().get(slot).copied()
-                    && let Some(s) = self.card_scroll.get_mut(global_idx)
                 {
-                    *s = s.saturating_sub(1);
+                    if mouse.modifiers.contains(KeyModifiers::SHIFT) {
+                        if let Some(s) = self.card_horizontal_scroll.get_mut(global_idx) {
+                            *s = s.saturating_sub(3);
+                        }
+                    } else if let Some(s) = self.card_scroll.get_mut(global_idx) {
+                        *s = s.saturating_sub(1);
+                    }
                     self.dirty = true;
                 }
             }
@@ -1924,32 +1937,38 @@ impl App {
                     let Some(global_idx) = self.visible_agent_indices().get(slot).copied() else {
                         return;
                     };
-                    let viewport_h = self
-                        .card_response_heights
-                        .get(global_idx)
-                        .copied()
-                        .unwrap_or(1)
-                        .max(1);
-                    let content_w = self
-                        .card_response_widths
-                        .get(global_idx)
-                        .copied()
-                        .unwrap_or(80)
-                        .max(1);
-                    let max_scroll = self
-                        .agents
-                        .get(global_idx)
-                        .and_then(|e| e.meta.last_model_response.as_deref())
-                        .map(|r| {
-                            let text = tui_markdown::from_str(r);
-                            let total = wrapped_line_count(&text, content_w);
-                            total.saturating_sub(viewport_h)
-                        })
-                        .unwrap_or(0);
-                    if let Some(s) = self.card_scroll.get_mut(global_idx) {
-                        *s = s.saturating_add(1).min(max_scroll);
-                        self.dirty = true;
+                    if mouse.modifiers.contains(KeyModifiers::SHIFT) {
+                        let viewport_w = self
+                            .card_response_widths
+                            .get(global_idx)
+                            .copied()
+                            .unwrap_or(0);
+                        let content_w = self
+                            .card_response_content_widths
+                            .get(global_idx)
+                            .copied()
+                            .unwrap_or(0);
+                        if let Some(s) = self.card_horizontal_scroll.get_mut(global_idx) {
+                            *s = s
+                                .saturating_add(3)
+                                .min(content_w.saturating_sub(viewport_w));
+                        }
+                    } else if let Some(s) = self.card_scroll.get_mut(global_idx) {
+                        let viewport_h = self
+                            .card_response_heights
+                            .get(global_idx)
+                            .copied()
+                            .unwrap_or(0);
+                        let content_h = self
+                            .card_response_content_heights
+                            .get(global_idx)
+                            .copied()
+                            .unwrap_or(0);
+                        *s = s
+                            .saturating_add(1)
+                            .min(content_h.saturating_sub(viewport_h));
                     }
+                    self.dirty = true;
                 }
             }
             _ => {}
@@ -2324,10 +2343,23 @@ impl App {
         }
         self.swap_terminal_pane_ownership(self.selected, target);
         self.card_scroll.swap(self.selected, target);
+        if self.card_horizontal_scroll.len() > self.selected.max(target) {
+            self.card_horizontal_scroll.swap(self.selected, target);
+        }
         let max_idx = self.selected.max(target);
         if self.card_response_heights.len() > max_idx {
             self.card_response_heights.swap(self.selected, target);
+        }
+        if self.card_response_widths.len() > max_idx {
             self.card_response_widths.swap(self.selected, target);
+        }
+        if self.card_response_content_heights.len() > max_idx {
+            self.card_response_content_heights
+                .swap(self.selected, target);
+        }
+        if self.card_response_content_widths.len() > max_idx {
+            self.card_response_content_widths
+                .swap(self.selected, target);
         }
         if let Some(ref mut tv) = self.terminal_view_state {
             if tv.agent_idx == self.selected {
@@ -2461,6 +2493,42 @@ impl App {
                     }
                 }
             }
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
+                let viewport_w = self
+                    .card_response_widths
+                    .get(self.selected)
+                    .copied()
+                    .unwrap_or(0);
+                let content_w = self
+                    .card_response_content_widths
+                    .get(self.selected)
+                    .copied()
+                    .unwrap_or(0);
+                if let Some(s) = self.card_horizontal_scroll.get_mut(self.selected) {
+                    *s = s
+                        .saturating_sub(3)
+                        .min(content_w.saturating_sub(viewport_w));
+                    self.dirty = true;
+                }
+            }
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
+                let viewport_w = self
+                    .card_response_widths
+                    .get(self.selected)
+                    .copied()
+                    .unwrap_or(0);
+                let content_w = self
+                    .card_response_content_widths
+                    .get(self.selected)
+                    .copied()
+                    .unwrap_or(0);
+                if let Some(s) = self.card_horizontal_scroll.get_mut(self.selected) {
+                    *s = s
+                        .saturating_add(3)
+                        .min(content_w.saturating_sub(viewport_w));
+                    self.dirty = true;
+                }
+            }
             // ---------------------------------------------------------------
             // Navigation: arrows / hjkl (with Left/Right row-edge wrapping)
             // ---------------------------------------------------------------
@@ -2509,24 +2577,13 @@ impl App {
                         .card_response_heights
                         .get(self.selected)
                         .copied()
-                        .unwrap_or(1)
-                        .max(1);
-                    let content_w = self
-                        .card_response_widths
+                        .unwrap_or(0);
+                    let content_h = self
+                        .card_response_content_heights
                         .get(self.selected)
                         .copied()
-                        .unwrap_or(80)
-                        .max(1);
-                    let max_scroll = self
-                        .agents
-                        .get(self.selected)
-                        .and_then(|e| e.meta.last_model_response.as_deref())
-                        .map(|r| {
-                            let text = tui_markdown::from_str(r);
-                            let total = wrapped_line_count(&text, content_w);
-                            total.saturating_sub(viewport_h)
-                        })
                         .unwrap_or(0);
+                    let max_scroll = content_h.saturating_sub(viewport_h);
                     *s = s.saturating_add(5).min(max_scroll);
                     self.dirty = true;
                 }
@@ -2571,6 +2628,9 @@ impl App {
 
     fn reset_card_scroll(&mut self) {
         if let Some(s) = self.card_scroll.get_mut(self.selected) {
+            *s = 0;
+        }
+        if let Some(s) = self.card_horizontal_scroll.get_mut(self.selected) {
             *s = 0;
         }
         self.dirty = true;
@@ -2620,6 +2680,9 @@ impl App {
         if self.card_scroll.len() < self.agents.len() {
             self.card_scroll.resize(self.agents.len(), 0);
         }
+        if self.card_horizontal_scroll.len() < self.agents.len() {
+            self.card_horizontal_scroll.resize(self.agents.len(), 0);
+        }
         if self.agent_view_scroll.len() < self.agents.len() {
             self.agent_view_scroll
                 .resize(self.agents.len(), StoredAgentViewScroll::default());
@@ -2629,6 +2692,14 @@ impl App {
         }
         if self.card_response_widths.len() < self.agents.len() {
             self.card_response_widths.resize(self.agents.len(), 0);
+        }
+        if self.card_response_content_heights.len() < self.agents.len() {
+            self.card_response_content_heights
+                .resize(self.agents.len(), 0);
+        }
+        if self.card_response_content_widths.len() < self.agents.len() {
+            self.card_response_content_widths
+                .resize(self.agents.len(), 0);
         }
         if config_dirty {
             let _ = self.config.save();
@@ -3316,11 +3387,20 @@ impl App {
         if removed_idx < self.card_scroll.len() {
             self.card_scroll.remove(removed_idx);
         }
+        if removed_idx < self.card_horizontal_scroll.len() {
+            self.card_horizontal_scroll.remove(removed_idx);
+        }
         if removed_idx < self.card_response_heights.len() {
             self.card_response_heights.remove(removed_idx);
         }
         if removed_idx < self.card_response_widths.len() {
             self.card_response_widths.remove(removed_idx);
+        }
+        if removed_idx < self.card_response_content_heights.len() {
+            self.card_response_content_heights.remove(removed_idx);
+        }
+        if removed_idx < self.card_response_content_widths.len() {
+            self.card_response_content_widths.remove(removed_idx);
         }
 
         let mut reindexed_terminal_panes =
@@ -4417,36 +4497,6 @@ fn matching_agent_indices(agents: &[AgentEntry], status: &AgentStatus) -> Vec<us
 // ---------------------------------------------------------------------------
 // Key → tmux string conversion
 // ---------------------------------------------------------------------------
-
-/// Count the number of visual (wrapped) lines a `Text` will occupy in a
-/// widget of the given `width`.  This is a lightweight approximation: it
-/// sums the display-column widths of each `Line`'s spans and divides by
-/// `width`, rounding up.  Empty logical lines count as one visual line.
-fn wrapped_line_count(text: &ratatui::text::Text, width: u16) -> u16 {
-    if width == 0 {
-        return 0;
-    }
-    let mut count: u16 = 0;
-    for line in text.iter() {
-        let line_width: usize = line
-            .spans
-            .iter()
-            .map(|s| unicode_display_width(s.content.as_ref()))
-            .sum();
-        let rows = if line_width == 0 {
-            1
-        } else {
-            ((line_width as u16).saturating_sub(1) / width) + 1
-        };
-        count = count.saturating_add(rows);
-    }
-    count
-}
-
-fn unicode_display_width(s: &str) -> usize {
-    use unicode_width::UnicodeWidthStr;
-    UnicodeWidthStr::width(s)
-}
 
 fn pane_handles_own_scroll(mouse_active: bool) -> bool {
     mouse_active
@@ -6059,16 +6109,43 @@ mod tests {
             .map(|entry| entry.config.clone())
             .collect();
         app.card_scroll = vec![4, 9, 2];
+        app.card_horizontal_scroll = vec![1, 7, 3];
         app.card_response_heights = vec![11, 12, 13];
         app.card_response_widths = vec![81, 82, 83];
+        app.card_response_content_heights = vec![21, 22, 23];
+        app.card_response_content_widths = vec![91, 92, 93];
 
         tokio::runtime::Runtime::new()
             .unwrap()
             .block_on(app.remove_agent(1, false, false));
 
         assert_eq!(app.card_scroll, vec![4, 2]);
+        assert_eq!(app.card_horizontal_scroll, vec![1, 3]);
         assert_eq!(app.card_response_heights, vec![11, 13]);
         assert_eq!(app.card_response_widths, vec![81, 83]);
+        assert_eq!(app.card_response_content_heights, vec![21, 23]);
+        assert_eq!(app.card_response_content_widths, vec![91, 93]);
+    }
+
+    #[test]
+    fn dashboard_alt_arrows_pan_overflowing_response_tables() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.agents = vec![test_agent("one", "Default", AgentStatus::Idle)];
+        app.adapters = vec![Box::new(NoopAdapter)];
+        app.config.agents = app
+            .agents
+            .iter()
+            .map(|entry| entry.config.clone())
+            .collect();
+        app.card_horizontal_scroll = vec![0];
+        app.card_response_widths = vec![12];
+        app.card_response_content_widths = vec![20];
+
+        app.handle_dashboard_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+        assert_eq!(app.card_horizontal_scroll, vec![3]);
+
+        app.handle_dashboard_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+        assert_eq!(app.card_horizontal_scroll, vec![0]);
     }
 
     #[test]
