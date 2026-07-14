@@ -6,6 +6,7 @@ pub enum AgentType {
     Opencode,
     Claude,
     Codex,
+    Pi,
 }
 
 impl AgentType {
@@ -14,6 +15,7 @@ impl AgentType {
             AgentType::Opencode => "opencode",
             AgentType::Claude => "claude",
             AgentType::Codex => "codex",
+            AgentType::Pi => "pi",
         }
     }
 
@@ -22,6 +24,7 @@ impl AgentType {
             "opencode" => Some(AgentType::Opencode),
             "claude" => Some(AgentType::Claude),
             "codex" => Some(AgentType::Codex),
+            "pi" => Some(AgentType::Pi),
             _ => None,
         }
     }

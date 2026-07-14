@@ -694,6 +694,7 @@ fn agent_type_label(t: &AgentType) -> &'static str {
         AgentType::Opencode => "opencode",
         AgentType::Claude => "claude",
         AgentType::Codex => "codex",
+        AgentType::Pi => "pi",
     }
 }
 

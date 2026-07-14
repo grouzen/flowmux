@@ -15,12 +15,17 @@ pub struct GlobalConfig {
     #[serde(default = "default_hook_port")]
     pub claude_hook_server_port: u16,
 
+    /// Base port for the Pi extension callback server. The first instance
+    /// binds to this port; subsequent instances use the next free port.
+    #[serde(default = "default_pi_hook_port")]
+    pub pi_hook_server_port: u16,
+
     /// Command string for the external git viewer (e.g. "lazygit" or "lazydiff diff").
     /// When unset, Flowmux defaults to `git diff`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_viewer: Option<String>,
 
-    /// List of agent type names to enable (e.g. ["opencode", "claude", "codex"]).
+    /// List of agent type names to enable (e.g. ["opencode", "claude", "codex", "pi"]).
     /// When `None`, all discovered agents are available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled_agents: Option<Vec<String>>,
@@ -52,6 +57,10 @@ fn default_hook_port() -> u16 {
     15100
 }
 
+fn default_pi_hook_port() -> u16 {
+    17100
+}
+
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -60,6 +69,7 @@ impl Default for GlobalConfig {
     fn default() -> Self {
         Self {
             claude_hook_server_port: default_hook_port(),
+            pi_hook_server_port: default_pi_hook_port(),
             git_viewer: None,
             enabled_agents: None,
             startup_guide_dismissed: false,

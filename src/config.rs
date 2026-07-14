@@ -30,6 +30,11 @@ pub enum AgentKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
     },
+    Pi {
+        flowmux_agent_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -67,6 +72,7 @@ impl AgentConfig {
             AgentKind::Opencode { .. } => "opencode",
             AgentKind::Claude { .. } => "claude",
             AgentKind::Codex { .. } => "codex",
+            AgentKind::Pi { .. } => "pi",
         }
     }
 
@@ -76,6 +82,7 @@ impl AgentConfig {
             AgentKind::Opencode { session_id, .. } => session_id.as_deref(),
             AgentKind::Claude { session_id, .. } => session_id.as_deref(),
             AgentKind::Codex { session_id, .. } => session_id.as_deref(),
+            AgentKind::Pi { session_id, .. } => session_id.as_deref(),
         }
     }
 
@@ -85,6 +92,7 @@ impl AgentConfig {
             AgentKind::Opencode { session_id, .. } => *session_id = id,
             AgentKind::Claude { session_id, .. } => *session_id = id,
             AgentKind::Codex { session_id, .. } => *session_id = id,
+            AgentKind::Pi { session_id, .. } => *session_id = id,
         }
     }
 }
@@ -280,6 +288,19 @@ mod tests {
                 git_worktree_branch: None,
                 git_worktree_base_ref: None,
             },
+            AgentConfig {
+                name: "pi".into(),
+                pane: "flowmux:4.0".into(),
+                directory: "/tmp/pi".into(),
+                project: "work".into(),
+                kind: AgentKind::Pi {
+                    flowmux_agent_id: "pi-agent-id".into(),
+                    session_id: Some("pi-session-id".into()),
+                },
+                git_repo_root: None,
+                git_worktree_branch: None,
+                git_worktree_base_ref: None,
+            },
         ];
 
         #[derive(Serialize, Deserialize)]
@@ -320,6 +341,9 @@ mod tests {
             AgentKind::Codex { port: 9100, .. }
         ));
         assert_eq!(back.agents[2].session_id(), Some("thread-1"));
+
+        assert!(matches!(back.agents[3].kind, AgentKind::Pi { .. }));
+        assert_eq!(back.agents[3].session_id(), Some("pi-session-id"));
     }
 
     #[test]
