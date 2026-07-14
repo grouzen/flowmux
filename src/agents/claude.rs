@@ -72,7 +72,7 @@ impl AgentAdapter for ClaudeAdapter {
     async fn get_status(&self) -> AgentStatus {
         let map = self.hook_state.lock().unwrap();
         map.get(&self.flowmux_agent_id)
-            .map(|s| s.status.clone())
+            .map(|s| s.reported_status())
             .unwrap_or(AgentStatus::Unknown)
     }
 
@@ -263,6 +263,7 @@ impl ClaudeRuntime {
         let mut map = self.hook_state.lock().unwrap();
         if let Some(entry) = map.get_mut(id) {
             entry.status = AgentStatus::Idle;
+            entry.pending_stop_until = None;
         }
     }
 }
