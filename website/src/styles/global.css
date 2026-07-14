@@ -612,11 +612,17 @@ kbd {
   font-weight: 700;
 }
 
-.install-requirements {
+.install-requirements,
+.install-free {
   margin-top: 18px;
 }
 
-.install-requirements strong {
+.install-free {
+  margin-top: 8px;
+}
+
+.install-requirements strong,
+.install-free strong {
   color: var(--ink);
 }
 
