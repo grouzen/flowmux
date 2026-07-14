@@ -88,11 +88,13 @@ pub fn branch_exists(repo_root: &Path, branch: &str) -> bool {
 /// or `None` if the path is not inside a git repo or HEAD is detached.
 pub fn current_branch(path: &Path) -> Option<String> {
     let repo = Repository::discover(path).ok()?;
-    repo.head()
-        .ok()?
-        .shorthand()
-        .map(|s| s.to_owned())
-        .filter(|s| s != "HEAD")
+    let head = repo.head().ok()?;
+    let shorthand = head.shorthand().ok()?;
+    if shorthand == "HEAD" {
+        None
+    } else {
+        Some(shorthand.to_owned())
+    }
 }
 
 /// Returns local and remote-tracking branch names suitable for worktree
@@ -159,13 +161,13 @@ pub fn default_branch_ref(repo_root: &Path) -> Option<String> {
 
     let refs = repo.references().ok()?;
     for reference in refs.flatten() {
-        let Some(name) = reference.name() else {
+        let Ok(name) = reference.name() else {
             continue;
         };
         if !name.starts_with("refs/remotes/") || !name.ends_with("/HEAD") {
             continue;
         }
-        if let Some(target) = reference.symbolic_target() {
+        if let Ok(Some(target)) = reference.symbolic_target() {
             return normalize_ref_name(target);
         }
     }
@@ -177,16 +179,18 @@ pub fn default_branch_ref(repo_root: &Path) -> Option<String> {
         return Some("master".to_string());
     }
 
-    repo.head()
-        .ok()?
-        .shorthand()
-        .filter(|name| *name != "HEAD")
-        .map(str::to_string)
+    let head = repo.head().ok()?;
+    let shorthand = head.shorthand().ok()?;
+    if shorthand == "HEAD" {
+        None
+    } else {
+        Some(shorthand.to_string())
+    }
 }
 
 fn symbolic_ref_target(repo: &Repository, name: &str) -> Option<String> {
     let reference = repo.find_reference(name).ok()?;
-    let target = reference.symbolic_target()?;
+    let target = reference.symbolic_target().ok()??;
     normalize_ref_name(target)
 }
 
