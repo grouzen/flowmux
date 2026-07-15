@@ -6,6 +6,7 @@ use crate::agents::AgentAdapter;
 use crate::agents::claude::{ClaudeRuntime, install_hooks};
 use crate::agents::codex::CodexAdapter;
 use crate::agents::opencode::OpenCodeAdapter;
+use crate::agents::pi::PiRuntime;
 use crate::config::{AgentConfig, AgentKind};
 use crate::git;
 use crate::global_config::GlobalConfig;
@@ -27,6 +28,7 @@ pub struct AgentRunner {
     global_config: GlobalConfig,
     session_name: String,
     claude: Option<ClaudeRuntime>,
+    pi: Option<PiRuntime>,
     /// Base directory under which git worktrees are stored.
     /// Populated from the `--git-worktrees-location` CLI arg or a default.
     pub worktrees_base: PathBuf,
@@ -81,6 +83,7 @@ impl AgentRunner {
             global_config,
             session_name,
             claude: None,
+            pi: None,
             worktrees_base,
             enabled_agents,
         }
@@ -97,7 +100,7 @@ impl AgentRunner {
     // -----------------------------------------------------------------------
     /// Returns all agent types whose binaries were found on `$PATH` and that
     /// are enabled (if an explicit enabled list is configured).
-    /// The order is stable: Opencode first, Claude second, Codex third. Future agent types
+    /// The order is stable: Opencode first, Claude second, Codex third, Pi fourth. Future agent types
     /// should be appended here; callers must not hardcode the list.
     pub fn available_agent_types(&self) -> Vec<AgentType> {
         let mut types = Vec::new();
@@ -109,6 +112,9 @@ impl AgentRunner {
         }
         if self.discovered.codex.is_some() {
             types.push(AgentType::Codex);
+        }
+        if self.discovered.pi.is_some() {
+            types.push(AgentType::Pi);
         }
         if let Some(ref enabled) = self.enabled_agents {
             types.retain(|t| enabled.iter().any(|e| e == t.name()));
@@ -124,6 +130,15 @@ impl AgentRunner {
         if self.claude.is_none() {
             self.claude = Some(ClaudeRuntime::start(
                 self.global_config.claude_hook_server_port,
+                self.session_name.clone(),
+            ));
+        }
+    }
+
+    fn ensure_pi(&mut self) {
+        if self.pi.is_none() {
+            self.pi = Some(PiRuntime::start(
+                self.global_config.pi_hook_server_port,
                 self.session_name.clone(),
             ));
         }
@@ -160,6 +175,15 @@ impl AgentRunner {
                 config.directory.clone(),
                 session_id.clone(),
             )),
+            AgentKind::Pi {
+                flowmux_agent_id,
+                session_id,
+            } => {
+                self.ensure_pi();
+                let runtime = self.pi.as_ref().unwrap();
+                runtime.restore(flowmux_agent_id, session_id.clone());
+                Box::new(runtime.make_adapter(flowmux_agent_id.clone()))
+            }
         }
     }
 
@@ -272,6 +296,41 @@ impl AgentRunner {
                 };
                 Ok((config, Box::new(adapter)))
             }
+
+            AgentType::Pi => {
+                self.ensure_pi();
+                let flowmux_agent_id = uuid::Uuid::new_v4().to_string();
+                let window_index = tmux::new_window(&effective_dir, name)?;
+                let pane = format!("{}:{}.0", tmux::session_name(), window_index);
+                let runtime = self.pi.as_ref().unwrap();
+                // Register before launching so Pi's very first lifecycle
+                // callback is not lost to a fast startup race.
+                let adapter = runtime.make_adapter(flowmux_agent_id.clone());
+                let args = vec![
+                    std::ffi::OsString::from("--flowmux-agent-id"),
+                    flowmux_agent_id.clone().into(),
+                    std::ffi::OsString::from("--hook-port"),
+                    runtime.port().to_string().into(),
+                ];
+                tmux::send_literal(&pane, &launch::flowmux_launch_command("pi", &args))?;
+
+                let config = AgentConfig {
+                    name: name.to_owned(),
+                    pane,
+                    directory: effective_dir,
+                    project: project.to_owned(),
+                    kind: AgentKind::Pi {
+                        flowmux_agent_id,
+                        session_id: None,
+                    },
+                    git_repo_root: stored_worktree.as_ref().map(|wt| wt.repo_root.clone()),
+                    git_worktree_branch: stored_worktree.as_ref().map(|wt| wt.branch_name.clone()),
+                    git_worktree_base_ref: stored_worktree
+                        .as_ref()
+                        .and_then(|wt| wt.base_ref.clone()),
+                };
+                Ok((config, Box::new(adapter)))
+            }
         }
     }
 
@@ -353,6 +412,32 @@ impl AgentRunner {
                 {
                     *stored_port = port;
                 }
+                Ok((new_config, Box::new(adapter)))
+            }
+
+            AgentKind::Pi {
+                flowmux_agent_id,
+                session_id,
+            } => {
+                self.ensure_pi();
+                let runtime = self.pi.as_ref().unwrap();
+                runtime.reset_status(flowmux_agent_id);
+                let window_index = tmux::new_window(&config.directory, &config.name)?;
+                let new_pane = format!("{}:{}.0", tmux::session_name(), window_index);
+                let adapter = runtime.make_adapter(flowmux_agent_id.clone());
+                let mut args = vec![
+                    std::ffi::OsString::from("--flowmux-agent-id"),
+                    flowmux_agent_id.clone().into(),
+                    std::ffi::OsString::from("--hook-port"),
+                    runtime.port().to_string().into(),
+                ];
+                if let Some(session_id) = session_id {
+                    args.push(std::ffi::OsString::from("--session-id"));
+                    args.push(session_id.clone().into());
+                }
+                tmux::send_literal(&new_pane, &launch::flowmux_launch_command("pi", &args))?;
+                let mut new_config = config.clone();
+                new_config.pane = new_pane;
                 Ok((new_config, Box::new(adapter)))
             }
         }

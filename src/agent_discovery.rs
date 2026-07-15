@@ -6,6 +6,7 @@ pub struct DiscoveredAgents {
     pub claude: Option<PathBuf>,
     pub codex: Option<PathBuf>,
     pub opencode: Option<PathBuf>,
+    pub pi: Option<PathBuf>,
 }
 
 impl DiscoveredAgents {
@@ -15,6 +16,7 @@ impl DiscoveredAgents {
             claude: which::which("claude").ok(),
             codex: which::which("codex").ok(),
             opencode: which::which("opencode").ok(),
+            pi: which::which("pi").ok(),
         }
     }
 }

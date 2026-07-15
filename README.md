@@ -42,7 +42,7 @@ Flowmux follows a simple Unix-style approach: it coordinates agent sessions, pan
 ### Prerequisites
 
 - `tmux`
-- At least one supported agent CLI: `opencode`, `claude`, or `codex`
+- At least one supported agent CLI: `opencode`, `claude`, `codex`, or `pi`
 - [Rust 1.90+](https://rustup.rs/), [Zig 0.15.x](https://ziglang.org/), and `git` if building from source
 
 ### Launch
@@ -158,7 +158,7 @@ flowmux --tmux-session my-session
 flowmux --git-worktrees-location /path/to/worktrees
 
 # Enable specific agents only
-flowmux --enabled-agents opencode,claude,codex
+flowmux --enabled-agents opencode,claude,codex,pi
 ```
 
 ### CLI Options
@@ -198,6 +198,9 @@ Global config lives at `~/.config/flowmux/config.toml`.
 # Base port for Claude Code hook server (default: 15100)
 claude_hook_server_port = 15100
 
+# Base port for Pi extension callback server (default: 17100)
+pi_hook_server_port = 17100
+
 # External git viewer command (optional)
 # Defaults to "git diff" when omitted or blank
 # Examples: "lazygit", "lazydiff diff"
@@ -205,7 +208,7 @@ git_viewer = "lazygit"
 
 # Whitelist of agent types to enable (optional)
 # When omitted, all discovered agents are available
-enabled_agents = ["opencode", "claude", "codex"]
+enabled_agents = ["opencode", "claude", "codex", "pi"]
 ```
 
 ### Per-Session Configuration
@@ -231,6 +234,7 @@ port = 9000
 - OpenCode
 - Claude Code
 - Codex
+- Pi
 
 Flowmux auto-detects installed agent CLIs and enables discovered agents by default unless `enabled_agents` is set in global config.
 

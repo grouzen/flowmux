@@ -19,6 +19,8 @@ pub enum LaunchCommand {
     Claude(LaunchClaudeArgs),
     /// Internal helper used to launch agent processes behind a compact shell command.
     Codex(LaunchCodexArgs),
+    /// Internal helper used to launch agent processes behind a compact shell command.
+    Pi(LaunchPiArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -41,6 +43,16 @@ pub struct LaunchClaudeArgs {
 pub struct LaunchCodexArgs {
     #[arg(long)]
     pub port: u16,
+    #[arg(long)]
+    pub session_id: Option<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct LaunchPiArgs {
+    #[arg(long)]
+    pub flowmux_agent_id: String,
+    #[arg(long)]
+    pub hook_port: u16,
     #[arg(long)]
     pub session_id: Option<String>,
 }
@@ -72,9 +84,39 @@ pub async fn run(command: LaunchCommand) -> Result<()> {
             exit_with_status(status);
         }
         LaunchCommand::Codex(args) => run_codex(args).await?,
+        LaunchCommand::Pi(args) => run_pi(args)?,
     }
 
     Ok(())
+}
+
+fn run_pi(args: LaunchPiArgs) -> Result<()> {
+    let extension_path = write_pi_extension(&args.flowmux_agent_id, args.hook_port)?;
+    let mut pi = Command::new("pi");
+    pi.arg("--extension").arg(extension_path);
+    if let Some(session_id) = args.session_id {
+        pi.arg("--session").arg(session_id);
+    }
+    let status = spawn_foreground(&mut pi).context("failed to start pi")?;
+    exit_with_status(status);
+}
+
+fn pi_extension_path(flowmux_agent_id: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("flowmux-pi-{flowmux_agent_id}.ts"))
+}
+
+const PI_EXTENSION_TEMPLATE: &str = include_str!("agents/pi/flowmux-extension.ts");
+
+fn write_pi_extension(flowmux_agent_id: &str, hook_port: u16) -> Result<PathBuf> {
+    let endpoint = serde_json::to_string(&format!("http://127.0.0.1:{hook_port}/hook"))?;
+    let agent_id = serde_json::to_string(flowmux_agent_id)?;
+    let source = PI_EXTENSION_TEMPLATE
+        .replace("__FLOWMUX_ENDPOINT__", &endpoint)
+        .replace("__FLOWMUX_AGENT_ID__", &agent_id);
+    let path = pi_extension_path(flowmux_agent_id);
+    std::fs::write(&path, source)
+        .with_context(|| format!("write Pi extension {}", path.display()))?;
+    Ok(path)
 }
 
 pub fn flowmux_launch_command(agent: &str, args: &[OsString]) -> String {
@@ -205,7 +247,7 @@ fn server_pid_path(port: u16) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::flowmux_launch_command;
+    use super::{flowmux_launch_command, write_pi_extension};
     use std::ffi::OsString;
 
     #[test]
@@ -222,5 +264,22 @@ mod tests {
         assert!(command.contains("--tmux-session"));
         assert!(command.contains("--session-id 'thread with spaces'"));
         assert!(command.ends_with('\n'));
+    }
+
+    #[test]
+    fn pi_extension_reports_lifecycle_over_loopback() {
+        let agent_id = format!("test-{}", uuid::Uuid::new_v4());
+        let path = write_pi_extension(&agent_id, 17123).unwrap();
+        let source = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert!(source.contains("pi.on(\"session_start\""));
+        assert!(source.contains("pi.on(\"agent_start\""));
+        assert!(source.contains("pi.on(\"agent_end\""));
+        assert!(source.contains("pi.on(\"session_shutdown\""));
+        assert!(source.contains("http://127.0.0.1:17123/hook"));
+        assert!(source.contains(&agent_id));
+        assert!(!source.contains("__FLOWMUX_ENDPOINT__"));
+        assert!(!source.contains("__FLOWMUX_AGENT_ID__"));
     }
 }

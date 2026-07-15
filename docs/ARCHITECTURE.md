@@ -82,7 +82,7 @@ Flowmux is a terminal-native AI agent multiplexer built in Rust that orchestrate
 Minimal bootstrap that:
 - Parses CLI arguments (`--tmux-session`, `--git-worktrees-location`, `--enabled-agents`)
 - Acquires an exclusive file lock (`/tmp/flowmux-<session>.lock`) to prevent duplicate instances
-- Probes `$PATH` for agent binaries (`opencode`, `claude`, `codex`)
+- Probes `$PATH` for agent binaries (`opencode`, `claude`, `codex`, `pi`)
 - Loads global and per-session configuration
 - Ensures the tmux session exists
 - Auto-resumes dead agent panes (survives tmux restarts)
@@ -176,6 +176,13 @@ trait AgentAdapter: Send + Sync {
 - Reads the rollout path incrementally only for completed-turn duration when
   app-server `Turn.durationMs` is absent
 
+#### Pi Adapter (`agents/pi.rs`)
+
+- Launches Pi with a generated `--extension` file that posts lifecycle callbacks to a loopback Flowmux server.
+- Tracks session ID, model, context usage, first prompt, latest assistant response, and running/idle/stopped state.
+- Restarts with `pi --session <session-id>`.
+- Vanilla Pi does not expose a universal UI-wait event, so V1 intentionally does not infer `WaitingForInput`.
+
 ### 5. tmux Integration (`tmux.rs`)
 
 Thin wrapper around the tmux CLI (`Command`) and `tmux_interface` crate:
@@ -239,6 +246,7 @@ The dashboard uses a **pure grid layout** — no side panels. Project tabs are r
 #### Global (`global_config.rs`)
 - Stored at `~/.config/flowmux/config.toml`
 - `claude_hook_server_port` — base port for the hook server (default: 15100)
+- `pi_hook_server_port` — base port for the Pi extension callback server (default: 17100)
 - `git_viewer` — external git viewer command (e.g. `"lazygit"`)
 - `enabled_agents` — whitelist of agent types
 

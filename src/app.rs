@@ -4858,7 +4858,10 @@ fn sgr_button(btn: MouseButton) -> u8 {
 }
 
 fn uses_captured_scrollback(kind: &AgentKind) -> bool {
-    matches!(kind, AgentKind::Claude { .. } | AgentKind::Codex { .. })
+    matches!(
+        kind,
+        AgentKind::Claude { .. } | AgentKind::Codex { .. } | AgentKind::Pi { .. }
+    )
 }
 
 #[cfg(test)]
@@ -4866,7 +4869,7 @@ mod project_tests {
     use super::*;
 
     #[test]
-    fn claude_and_codex_use_captured_scrollback() {
+    fn claude_codex_and_pi_use_captured_scrollback() {
         assert!(uses_captured_scrollback(&AgentKind::Claude {
             flowmux_agent_id: "claude-test".to_string(),
             session_id: None,
@@ -4874,6 +4877,10 @@ mod project_tests {
         }));
         assert!(uses_captured_scrollback(&AgentKind::Codex {
             port: 16100,
+            session_id: None,
+        }));
+        assert!(uses_captured_scrollback(&AgentKind::Pi {
+            flowmux_agent_id: "pi-test".to_string(),
             session_id: None,
         }));
         assert!(!uses_captured_scrollback(&AgentKind::Opencode {
@@ -5360,6 +5367,7 @@ mod tests {
                 claude: None,
                 codex: None,
                 opencode: None,
+                pi: None,
             },
             global_config,
             "test-session".into(),
