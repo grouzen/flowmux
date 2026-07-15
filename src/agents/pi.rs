@@ -1,5 +1,8 @@
 use std::collections::HashMap;
+use std::fs;
+use std::io::{BufRead, BufReader};
 use std::net::TcpListener as StdTcpListener;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -12,6 +15,7 @@ use serde_json::Value;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use crate::agents::AgentAdapter;
+use crate::model_registry::model_context_window;
 use crate::models::{AgentStatus, ContextInfo};
 
 /// State reported by the Flowmux-owned Pi extension for one interactive Pi process.
@@ -189,6 +193,7 @@ impl PiRuntime {
         if session_id.is_some() {
             entry.session_id = session_id;
         }
+        restore_session_metadata(entry);
         entry.status = AgentStatus::Idle;
     }
 
@@ -197,6 +202,162 @@ impl PiRuntime {
         let entry = state.entry(flowmux_agent_id.to_owned()).or_default();
         entry.status = AgentStatus::Idle;
         entry.work_started_at = None;
+    }
+}
+
+/// Pi writes the durable session transcript itself. Unlike a newly launched
+/// process, an already-running Pi does not emit `session_start` when Flowmux
+/// comes back, so rebuild the card metadata from that transcript on restore.
+fn restore_session_metadata(entry: &mut PiHookState) {
+    let Some(session_id) = entry.session_id.as_deref() else {
+        return;
+    };
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let sessions_dir = home.join(".pi").join("agent").join("sessions");
+    let Some(path) = find_session_file(&sessions_dir, session_id) else {
+        return;
+    };
+    let Ok(file) = fs::File::open(path) else {
+        return;
+    };
+    let mut active_turn_started_at = None;
+    let mut active_turn_last_assistant_at = None;
+    let mut transcript_work_ms = 0;
+
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        let Ok(record) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+
+        match record.get("type").and_then(Value::as_str) {
+            Some("model_change") => {
+                let provider = record.get("provider").and_then(Value::as_str);
+                let model_id = record.get("modelId").and_then(Value::as_str);
+                if let (Some(provider), Some(model_id)) = (provider, model_id) {
+                    entry.model_name = Some(format!("{provider}/{model_id}"));
+                }
+            }
+            Some("message") => restore_message_metadata(entry, &record),
+            _ => {}
+        }
+        restore_work_time_from_message(
+            &record,
+            &mut active_turn_started_at,
+            &mut active_turn_last_assistant_at,
+            &mut transcript_work_ms,
+        );
+    }
+    finish_transcript_turn(
+        active_turn_started_at,
+        active_turn_last_assistant_at,
+        &mut transcript_work_ms,
+    );
+    entry.total_work_ms = transcript_work_ms;
+}
+
+fn find_session_file(root: &Path, session_id: &str) -> Option<PathBuf> {
+    let expected_suffix = format!("_{session_id}.jsonl");
+    let directories = fs::read_dir(root).ok()?;
+    for directory in directories.flatten() {
+        let path = directory.path();
+        if path.is_dir() {
+            let Ok(files) = fs::read_dir(path) else {
+                continue;
+            };
+            for file in files.flatten() {
+                let path = file.path();
+                if path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().ends_with(&expected_suffix))
+                {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn restore_message_metadata(entry: &mut PiHookState, record: &Value) {
+    let Some(message) = record.get("message") else {
+        return;
+    };
+    let Some(text) = message_text(message) else {
+        return;
+    };
+
+    match message.get("role").and_then(Value::as_str) {
+        Some("user") if entry.first_prompt.is_none() => entry.first_prompt = Some(text),
+        Some("assistant") => {
+            entry.last_model_response = Some(text);
+            if let Some(used) = message
+                .get("usage")
+                .and_then(|usage| usage.get("totalTokens"))
+                .and_then(Value::as_u64)
+            {
+                entry.context = Some(ContextInfo {
+                    used,
+                    total: entry.model_name.as_deref().and_then(model_context_window),
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+fn message_text(message: &Value) -> Option<String> {
+    let content = message.get("content")?;
+    if let Some(text) = content.as_str().filter(|text| !text.is_empty()) {
+        return Some(text.to_owned());
+    }
+    let text = content
+        .as_array()?
+        .iter()
+        .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .collect::<String>();
+    (!text.is_empty()).then_some(text)
+}
+
+/// Pi's transcript has no explicit `agent_end` entry. A turn starts with a
+/// user message and finishes at its last assistant message (including tool
+/// loops); the next user message unambiguously closes the prior turn.
+fn restore_work_time_from_message(
+    record: &Value,
+    active_turn_started_at: &mut Option<u64>,
+    active_turn_last_assistant_at: &mut Option<u64>,
+    total_work_ms: &mut u64,
+) {
+    if record.get("type").and_then(Value::as_str) != Some("message") {
+        return;
+    }
+    let Some(message) = record.get("message") else {
+        return;
+    };
+    let timestamp = message.get("timestamp").and_then(Value::as_u64);
+
+    match message.get("role").and_then(Value::as_str) {
+        Some("user") => {
+            finish_transcript_turn(
+                *active_turn_started_at,
+                *active_turn_last_assistant_at,
+                total_work_ms,
+            );
+            *active_turn_started_at = timestamp;
+            *active_turn_last_assistant_at = None;
+        }
+        Some("assistant") if active_turn_started_at.is_some() => {
+            *active_turn_last_assistant_at = timestamp;
+        }
+        _ => {}
+    }
+}
+
+fn finish_transcript_turn(started_at: Option<u64>, ended_at: Option<u64>, total_work_ms: &mut u64) {
+    if let (Some(started_at), Some(ended_at)) = (started_at, ended_at) {
+        *total_work_ms += ended_at.saturating_sub(started_at);
     }
 }
 
@@ -388,5 +549,67 @@ mod tests {
                 .map(|context| (context.used, context.total)),
             Some((42, Some(100)))
         );
+    }
+
+    #[test]
+    fn transcript_messages_restore_card_metadata() {
+        let mut state = PiHookState {
+            model_name: Some("ollama/qwen3.5:9b-pi".to_owned()),
+            ..Default::default()
+        };
+        restore_message_metadata(
+            &mut state,
+            &serde_json::json!({
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "Enable web search"}],
+                }
+            }),
+        );
+        restore_message_metadata(
+            &mut state,
+            &serde_json::json!({
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Use an extension."}],
+                    "usage": {"totalTokens": 1234},
+                }
+            }),
+        );
+
+        assert_eq!(state.first_prompt.as_deref(), Some("Enable web search"));
+        assert_eq!(
+            state.last_model_response.as_deref(),
+            Some("Use an extension.")
+        );
+        assert_eq!(
+            state.context.as_ref().map(|context| context.used),
+            Some(1234)
+        );
+    }
+
+    #[test]
+    fn transcript_work_time_sums_turns_through_the_last_assistant_message() {
+        let mut started_at = None;
+        let mut last_assistant_at = None;
+        let mut total_work_ms = 0;
+        for record in [
+            serde_json::json!({"type": "message", "message": {"role": "user", "timestamp": 100}}),
+            serde_json::json!({"type": "message", "message": {"role": "assistant", "timestamp": 150}}),
+            serde_json::json!({"type": "message", "message": {"role": "toolResult", "timestamp": 200}}),
+            serde_json::json!({"type": "message", "message": {"role": "assistant", "timestamp": 300}}),
+            serde_json::json!({"type": "message", "message": {"role": "user", "timestamp": 1_000}}),
+            serde_json::json!({"type": "message", "message": {"role": "assistant", "timestamp": 1_250}}),
+        ] {
+            restore_work_time_from_message(
+                &record,
+                &mut started_at,
+                &mut last_assistant_at,
+                &mut total_work_ms,
+            );
+        }
+        finish_transcript_turn(started_at, last_assistant_at, &mut total_work_ms);
+
+        assert_eq!(total_work_ms, 450);
     }
 }

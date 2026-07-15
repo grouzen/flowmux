@@ -277,6 +277,9 @@ mod tests {
         assert!(source.contains("pi.on(\"agent_start\""));
         assert!(source.contains("pi.on(\"agent_end\""));
         assert!(source.contains("pi.on(\"session_shutdown\""));
+        assert!(source.contains("setInterval(() => {"));
+        assert!(source.contains("report(\"heartbeat\", lastContext)"));
+        assert!(source.contains("heartbeat.unref?.()"));
         assert!(source.contains("http://127.0.0.1:17123/hook"));
         assert!(source.contains(&agent_id));
         assert!(!source.contains("__FLOWMUX_ENDPOINT__"));
