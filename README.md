@@ -22,7 +22,7 @@ It is built for people who want fast hotkeys, a clean grid view of active work, 
 
 Flowmux follows a simple Unix-style approach: it coordinates agent sessions, panes, projects, and worktrees while leaving your editor, git tools, shell, and terminal habits intact.
 
-![](/docs/demo/screencast.gif)
+https://github.com/user-attachments/assets/66d88e2d-870b-44f4-8ca3-541fefa9ad51
 
 ## Table of Contents
 

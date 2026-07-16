@@ -379,7 +379,8 @@ p {
   font-weight: 700;
 }
 
-.demo-frame img {
+.demo-frame img,
+.demo-frame video {
   display: block;
   width: 100%;
   height: auto;
