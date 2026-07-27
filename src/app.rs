@@ -6,7 +6,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::time::{Duration, interval};
 
 use crate::agents::AgentAdapter;
-use crate::config::{AgentKind, Config, DEFAULT_PROJECT_NAME, MAX_PROJECTS};
+use crate::config::{AgentConfig, AgentKind, Config, DEFAULT_PROJECT_NAME, MAX_PROJECTS};
 use crate::global_config::WorktreeDirectoryPreset;
 use crate::host_terminal::HostColors;
 use crate::models::{AgentEntry, AgentMeta, AgentStatus, AgentStatusCounts, AgentType};
@@ -374,11 +374,41 @@ pub enum AppState {
     TerminalView(TerminalViewState),
 }
 
+/// Startup state for one persisted agent.  Cards are rendered immediately,
+/// while their adapter and initial metadata are restored in the background.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupAgentState {
+    Restoring,
+    Restarting,
+    Ready,
+    Failed,
+}
+
+#[derive(Debug, Clone)]
+pub struct StartupProgress {
+    pub total: usize,
+    pub completed: usize,
+    pub restarted: usize,
+    pub states: Vec<StartupAgentState>,
+    pub finished: bool,
+}
+
+impl StartupProgress {
+    fn new(total: usize) -> Self {
+        Self {
+            total,
+            completed: 0,
+            restarted: 0,
+            states: vec![StartupAgentState::Restoring; total],
+            finished: total == 0,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Event
 // ---------------------------------------------------------------------------
 
-#[derive(Debug)]
 pub enum Event {
     Key(KeyEvent),
     Mouse(MouseEvent),
@@ -387,6 +417,71 @@ pub enum Event {
     AgentViewTick,
     GitViewerTick,
     TerminalViewTick,
+    StartupAgentState {
+        idx: usize,
+        state: StartupAgentState,
+    },
+    StartupAgentComplete {
+        idx: usize,
+        config: AgentConfig,
+        config_changed: bool,
+        adapter: Box<dyn AgentAdapter>,
+        meta: AgentMeta,
+    },
+    StartupAgentFailed {
+        idx: usize,
+        error: String,
+    },
+    StartupFinished {
+        runner: AgentRunner,
+    },
+}
+
+/// A harmless placeholder used until startup restores the real adapter for a
+/// persisted agent.  The dashboard deliberately skips these adapters.
+struct PendingAdapter;
+
+#[async_trait::async_trait]
+impl AgentAdapter for PendingAdapter {
+    async fn get_status(&self) -> AgentStatus {
+        AgentStatus::Unknown
+    }
+
+    async fn get_context(&self) -> Option<crate::models::ContextInfo> {
+        None
+    }
+
+    async fn get_first_prompt(&self) -> Option<String> {
+        None
+    }
+
+    async fn get_last_model_response(&self) -> Option<String> {
+        None
+    }
+
+    async fn get_model_name(&self) -> Option<String> {
+        None
+    }
+
+    async fn get_total_work_ms(&self) -> u64 {
+        0
+    }
+
+    fn get_cached_session_id(&self) -> Option<String> {
+        None
+    }
+}
+
+async fn initial_agent_meta(adapter: &dyn AgentAdapter) -> AgentMeta {
+    AgentMeta {
+        status: adapter.get_status().await,
+        context: adapter.get_context().await,
+        first_prompt: adapter.get_first_prompt().await,
+        last_model_response: adapter.get_last_model_response().await,
+        model_name: adapter.get_model_name().await,
+        total_work_ms: adapter.get_total_work_ms().await,
+        status_changed_at: None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -959,7 +1054,11 @@ pub struct App {
     pub selected: usize,
     dashboard_selected_by_project: std::collections::HashMap<String, usize>,
     pub config: Config,
-    pub runner: AgentRunner,
+    /// Temporarily moved into the background startup worker while persisted
+    /// agents are being restored. It returns when restoration is complete.
+    pub runner: Option<AgentRunner>,
+    pub startup_progress: Option<StartupProgress>,
+    pending_startup_guide_dismissal: bool,
     pub agent_view_state: AgentViewState,
     pub git_viewer_state: Option<GitViewerState>,
     pub terminal_view_state: Option<TerminalViewState>,
@@ -1023,7 +1122,9 @@ impl App {
             selected: 0,
             dashboard_selected_by_project: std::collections::HashMap::new(),
             config,
-            runner,
+            runner: Some(runner),
+            startup_progress: None,
+            pending_startup_guide_dismissal: false,
             agent_view_state: AgentViewState::default(),
             git_viewer_state: None,
             terminal_view_state: None,
@@ -1052,6 +1153,104 @@ impl App {
         app.ensure_project_selection();
         app.reset_notification();
         app
+    }
+
+    /// Construct the first dashboard frame from persisted configuration
+    /// without waiting for agents to launch or metadata to be collected.
+    pub fn new_with_startup_placeholders(
+        config: Config,
+        runner: AgentRunner,
+        host_colors: HostColors,
+    ) -> Self {
+        let count = config.agents.len();
+        let agents = config
+            .agents
+            .iter()
+            .cloned()
+            .map(|config| AgentEntry {
+                config,
+                meta: AgentMeta::default(),
+            })
+            .collect();
+        let adapters = (0..count)
+            .map(|_| Box::new(PendingAdapter) as Box<dyn AgentAdapter>)
+            .collect();
+        let mut app = Self::new(config, agents, adapters, runner, host_colors);
+        app.startup_progress = Some(StartupProgress::new(count));
+        app
+    }
+
+    /// Start restoring persisted agents only after the terminal has entered
+    /// the alternate screen, so a slow agent cannot make Flowmux look frozen.
+    pub fn begin_startup_restore(&mut self) {
+        let Some(progress) = self.startup_progress.as_ref() else {
+            return;
+        };
+        if progress.finished {
+            return;
+        }
+        let Some(runner) = self.runner.take() else {
+            return;
+        };
+        let configs = self.config.agents.clone();
+        let tx = self.tx.clone();
+
+        tokio::spawn(async move {
+            let mut runner = runner;
+            for (idx, saved_config) in configs.into_iter().enumerate() {
+                let restarting = !tmux::is_alive(&saved_config.pane);
+                let _ = tx.send(Event::StartupAgentState {
+                    idx,
+                    state: if restarting {
+                        StartupAgentState::Restarting
+                    } else {
+                        StartupAgentState::Restoring
+                    },
+                });
+
+                let restored = if restarting {
+                    runner.restart(&saved_config).await
+                } else {
+                    Ok((saved_config.clone(), runner.restore(&saved_config)))
+                };
+
+                match restored {
+                    Ok((config, adapter)) => {
+                        let meta = initial_agent_meta(adapter.as_ref()).await;
+                        let _ = tx.send(Event::StartupAgentComplete {
+                            idx,
+                            config,
+                            config_changed: restarting,
+                            adapter,
+                            meta,
+                        });
+                    }
+                    Err(error) => {
+                        let _ = tx.send(Event::StartupAgentFailed {
+                            idx,
+                            error: error.to_string(),
+                        });
+                    }
+                }
+            }
+            let _ = tx.send(Event::StartupFinished { runner });
+        });
+    }
+
+    pub fn startup_state(&self, idx: usize) -> Option<StartupAgentState> {
+        self.startup_progress
+            .as_ref()
+            .and_then(|progress| progress.states.get(idx).copied())
+    }
+
+    fn agent_is_ready(&self, idx: usize) -> bool {
+        !matches!(self.startup_state(idx), Some(state) if state != StartupAgentState::Ready)
+    }
+
+    fn startup_in_progress(&self) -> bool {
+        self.startup_progress
+            .as_ref()
+            .is_some_and(|progress| !progress.finished)
     }
 
     pub fn active_project_name(&self) -> &str {
@@ -1090,12 +1289,16 @@ impl App {
         let selected_id = selected_theme.id.to_string();
         self.active_theme_id = selected_id.clone();
         self.preview_theme_id = None;
-        self.runner.global_config_mut().theme = Some(selected_id);
+        if let Some(runner) = self.runner.as_mut() {
+            runner.global_config_mut().theme = Some(selected_id);
+        }
     }
 
     fn confirm_settings_dialog(&mut self, state: SettingsState) {
         self.apply_selected_theme(state.selected_idx);
-        let _ = self.runner.global_config().save();
+        if let Some(runner) = self.runner.as_ref() {
+            let _ = runner.global_config().save();
+        }
         self.state = AppState::Dashboard;
         self.dirty = true;
     }
@@ -1486,9 +1689,10 @@ impl App {
         let key = repo_root.to_string_lossy().to_string();
         let preset = self
             .runner
-            .global_config()
-            .worktree_directory_presets
-            .get(&key)
+            .as_ref()
+            .map(AgentRunner::global_config)
+            .map(|config| &config.worktree_directory_presets)
+            .and_then(|presets| presets.get(&key))
             .cloned()
             .unwrap_or_default();
 
@@ -1519,7 +1723,10 @@ impl App {
             },
         };
 
-        let global_config = self.runner.global_config_mut();
+        let Some(runner) = self.runner.as_mut() else {
+            return;
+        };
+        let global_config = runner.global_config_mut();
         if preset.copy_directories.is_empty() && preset.symlink_directories.is_empty() {
             global_config.worktree_directory_presets.remove(&key);
         } else {
@@ -1626,10 +1833,14 @@ impl App {
 
     fn close_startup_guide(&mut self, persist_on_close: bool) {
         if persist_on_close {
-            let global_config = self.runner.global_config_mut();
-            if !global_config.startup_guide_dismissed {
-                global_config.startup_guide_dismissed = true;
-                let _ = global_config.save();
+            if let Some(runner) = self.runner.as_mut() {
+                let global_config = runner.global_config_mut();
+                if !global_config.startup_guide_dismissed {
+                    global_config.startup_guide_dismissed = true;
+                    let _ = global_config.save();
+                }
+            } else {
+                self.pending_startup_guide_dismissal = true;
             }
         }
         self.state = AppState::Dashboard;
@@ -1852,6 +2063,79 @@ impl App {
                 }
                 true
             }
+            Event::StartupAgentState { idx, state } => {
+                if let Some(progress) = self.startup_progress.as_mut()
+                    && let Some(slot) = progress.states.get_mut(idx)
+                {
+                    if state == StartupAgentState::Restarting
+                        && *slot != StartupAgentState::Restarting
+                    {
+                        progress.restarted += 1;
+                    }
+                    *slot = state;
+                }
+                self.dirty = true;
+                true
+            }
+            Event::StartupAgentComplete {
+                idx,
+                config,
+                config_changed,
+                adapter,
+                meta,
+            } => {
+                if let Some(progress) = self.startup_progress.as_mut()
+                    && let Some(slot) = progress.states.get_mut(idx)
+                {
+                    *slot = StartupAgentState::Ready;
+                    progress.completed += 1;
+                }
+                if let Some(entry) = self.agents.get_mut(idx) {
+                    entry.config = config.clone();
+                    entry.meta = meta;
+                }
+                if let Some(stored_config) = self.config.agents.get_mut(idx) {
+                    *stored_config = config;
+                }
+                if config_changed {
+                    let _ = self.config.save();
+                }
+                if let Some(slot) = self.adapters.get_mut(idx) {
+                    *slot = adapter;
+                }
+                self.dirty = true;
+                true
+            }
+            Event::StartupAgentFailed { idx, error } => {
+                log::warn!("failed to restore agent at startup: {error}");
+                if let Some(progress) = self.startup_progress.as_mut()
+                    && let Some(slot) = progress.states.get_mut(idx)
+                {
+                    *slot = StartupAgentState::Failed;
+                    progress.completed += 1;
+                }
+                if let Some(entry) = self.agents.get_mut(idx) {
+                    entry.meta.status = AgentStatus::Stopped;
+                }
+                self.dirty = true;
+                true
+            }
+            Event::StartupFinished { mut runner } => {
+                if let Some(progress) = self.startup_progress.as_mut() {
+                    progress.finished = true;
+                }
+                if self.pending_startup_guide_dismissal {
+                    let global_config = runner.global_config_mut();
+                    if !global_config.startup_guide_dismissed {
+                        global_config.startup_guide_dismissed = true;
+                        let _ = global_config.save();
+                    }
+                    self.pending_startup_guide_dismissal = false;
+                }
+                self.runner = Some(runner);
+                self.dirty = true;
+                true
+            }
         }
     }
 
@@ -1868,10 +2152,12 @@ impl App {
         if row >= term_h.saturating_sub(1) {
             return None;
         }
-        if row < PROJECT_TABS_HEIGHT {
+        let startup_height = u16::from(self.startup_in_progress());
+        let grid_start = PROJECT_TABS_HEIGHT.saturating_add(startup_height);
+        if row < grid_start {
             return None;
         }
-        let main_h = term_h.saturating_sub(1).saturating_sub(PROJECT_TABS_HEIGHT);
+        let main_h = term_h.saturating_sub(1).saturating_sub(grid_start);
         let (cols, rows) = grid_layout(n);
         let cell_w = term_w / cols as u16;
         let cell_h = main_h / rows as u16;
@@ -1879,7 +2165,7 @@ impl App {
             return None;
         }
         let c = (col / cell_w).min(cols as u16 - 1) as usize;
-        let grid_row = row.saturating_sub(PROJECT_TABS_HEIGHT);
+        let grid_row = row.saturating_sub(grid_start);
         let r = (grid_row / cell_h).min(rows as u16 - 1) as usize;
         let slot = r * cols + c;
         if slot < n { Some(slot) } else { None }
@@ -2097,6 +2383,9 @@ impl App {
     }
 
     fn handle_agent_view_mouse(&mut self, mouse: MouseEvent, idx: usize) {
+        if !self.agent_is_ready(idx) {
+            return;
+        }
         let uses_captured_scrollback = self
             .agents
             .get(idx)
@@ -2262,7 +2551,7 @@ impl App {
         match &self.state {
             AppState::AgentView(idx) => {
                 let idx = *idx;
-                if self.agent_view_state.show_stopped_overlay {
+                if self.agent_view_state.show_stopped_overlay || !self.agent_is_ready(idx) {
                     return;
                 }
                 if let Some(entry) = self.agents.get(idx) {
@@ -2391,13 +2680,32 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let visible_indices = self.visible_agent_indices();
         let selected_visible = self.selected_visible_position(&visible_indices);
+
+        // Reordering or mutating the saved-agent list while the startup worker
+        // addresses it by index would make completion events unsafe. Navigation
+        // and opening cards stay available throughout restoration.
+        let startup_mutation = matches!(
+            key.code,
+            KeyCode::Char('n') | KeyCode::Char('S') | KeyCode::Char('d')
+        ) || (key.code == KeyCode::Char('p') && !ctrl)
+            || (ctrl
+                && matches!(
+                    key.code,
+                    KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down
+                ));
+        if self.startup_in_progress() && startup_mutation {
+            return true;
+        }
         match key.code {
             KeyCode::Char('q') => return false,
             KeyCode::Char('?') => self.open_startup_guide(false),
             KeyCode::Tab => self.cycle_projects(),
             KeyCode::Char(digit @ ('0'..='9')) => self.switch_to_project_by_digit(digit),
             KeyCode::Char('n') => {
-                let available = self.runner.available_agent_types();
+                let Some(runner) = self.runner.as_ref() else {
+                    return true;
+                };
+                let available = runner.available_agent_types();
                 if available.is_empty() {
                     return true;
                 }
@@ -2641,10 +2949,19 @@ impl App {
     // -----------------------------------------------------------------------
 
     async fn handle_dashboard_tick(&mut self) {
+        // Initial metadata is collected by the startup worker. Deferring the
+        // regular full-card poll until it finishes keeps completion events and
+        // input responsive even for sessions with many persisted agents.
+        if self.startup_in_progress() {
+            return;
+        }
         let len = self.adapters.len();
         let mut config_dirty = false;
 
         for i in 0..len {
+            if !self.agent_is_ready(i) {
+                continue;
+            }
             let status = self.adapters[i].get_status().await;
             let context = self.adapters[i].get_context().await;
             let first_prompt = self.adapters[i].get_first_prompt().await;
@@ -2715,6 +3032,10 @@ impl App {
             AppState::AgentView(i) => *i,
             _ => return,
         };
+
+        if !self.agent_is_ready(idx) {
+            return;
+        }
 
         if let Some(entry) = self.agents.get(idx) {
             let pane = entry.config.pane.clone();
@@ -2851,6 +3172,19 @@ impl App {
     // -----------------------------------------------------------------------
 
     async fn handle_agent_view_key(&mut self, key: KeyEvent, idx: usize) -> bool {
+        if !self.agent_is_ready(idx) {
+            if matches!(self.startup_state(idx), Some(StartupAgentState::Failed))
+                && !self.startup_in_progress()
+                && matches!(key.code, KeyCode::Char('r'))
+            {
+                self.restart_agent(idx).await;
+            } else if key.code == KeyCode::Esc
+                || (key.code == KeyCode::Char('g') && key.modifiers.contains(KeyModifiers::CONTROL))
+            {
+                self.exit_agent_view_to_dashboard();
+            }
+            return true;
+        }
         if matches!(key.code, KeyCode::Esc) && self.active_copy_selection.is_some() {
             self.clear_pane_copy_interaction();
             self.dirty = true;
@@ -3004,7 +3338,11 @@ impl App {
     // -----------------------------------------------------------------------
 
     fn launch_git_viewer(&mut self, agent_idx: usize) {
-        let git_viewer = match self.runner.global_config().git_viewer_parts() {
+        let git_viewer = match self
+            .runner
+            .as_ref()
+            .and_then(|runner| runner.global_config().git_viewer_parts())
+        {
             Some(parts) => parts,
             None => return,
         };
@@ -3835,8 +4173,10 @@ impl App {
                     } else {
                         Vec::new()
                     };
-                    match self
-                        .runner
+                    let Some(runner) = self.runner.as_mut() else {
+                        return true;
+                    };
+                    match runner
                         .create(
                             &name,
                             &dir,
@@ -3858,6 +4198,11 @@ impl App {
                             };
                             self.agents.push(entry);
                             self.adapters.push(adapter);
+                            if let Some(progress) = self.startup_progress.as_mut() {
+                                progress.states.push(StartupAgentState::Ready);
+                                progress.total = progress.states.len();
+                                progress.completed = progress.total;
+                            }
                             self.agent_view_scroll
                                 .push(StoredAgentViewScroll::default());
                             let new_idx = self.agents.len() - 1;
@@ -4423,7 +4768,10 @@ impl App {
             None => return,
         };
 
-        match self.runner.restart(&config).await {
+        let Some(runner) = self.runner.as_mut() else {
+            return;
+        };
+        match runner.restart(&config).await {
             Ok((new_config, new_adapter)) => {
                 // Update persisted config.
                 if let Some(c) = self.config.agents.get_mut(idx) {
@@ -4441,9 +4789,15 @@ impl App {
                 if idx < self.adapters.len() {
                     self.adapters[idx] = new_adapter;
                 }
+                if let Some(progress) = self.startup_progress.as_mut()
+                    && let Some(state) = progress.states.get_mut(idx)
+                {
+                    *state = StartupAgentState::Ready;
+                }
             }
-            Err(_) => {
+            Err(error) => {
                 // Restart failed — leave state as-is (agent stays Stopped).
+                log::warn!("failed to restart agent: {error}");
             }
         }
     }
@@ -5388,6 +5742,65 @@ mod tests {
             startup_guide_dismissed: true,
             ..global_config
         })
+    }
+
+    #[tokio::test]
+    async fn startup_progress_tracks_restarts_and_failures_without_blocking_other_agents() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.startup_progress = Some(StartupProgress::new(2));
+
+        assert!(
+            app.handle_event(Event::StartupAgentState {
+                idx: 0,
+                state: StartupAgentState::Restarting,
+            })
+            .await
+        );
+        assert!(
+            app.handle_event(Event::StartupAgentFailed {
+                idx: 0,
+                error: "agent command exited".into(),
+            })
+            .await
+        );
+
+        let progress = app.startup_progress.as_ref().unwrap();
+        assert_eq!(progress.restarted, 1);
+        assert_eq!(progress.completed, 1);
+        assert_eq!(progress.states[0], StartupAgentState::Failed);
+        assert_eq!(progress.states[1], StartupAgentState::Restoring);
+        assert!(!progress.finished);
+    }
+
+    #[tokio::test]
+    async fn startup_completion_installs_adapter_and_marks_agent_ready() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        let entry = test_agent("alpha", DEFAULT_PROJECT_NAME, AgentStatus::Unknown);
+        app.config.agents = vec![entry.config.clone()];
+        app.agents = vec![entry.clone()];
+        app.adapters = vec![Box::new(PendingAdapter)];
+        app.startup_progress = Some(StartupProgress::new(1));
+
+        let meta = AgentMeta {
+            status: AgentStatus::Idle,
+            model_name: Some("test-model".into()),
+            ..AgentMeta::default()
+        };
+        assert!(
+            app.handle_event(Event::StartupAgentComplete {
+                idx: 0,
+                config: entry.config,
+                config_changed: false,
+                adapter: Box::new(NoopAdapter),
+                meta,
+            })
+            .await
+        );
+
+        assert!(app.agent_is_ready(0));
+        assert_eq!(app.startup_progress.as_ref().unwrap().completed, 1);
+        assert_eq!(app.agents[0].meta.status, AgentStatus::Idle);
+        assert_eq!(app.agents[0].meta.model_name.as_deref(), Some("test-model"));
     }
 
     fn dashboard_mouse_event(kind: MouseEventKind) -> MouseEvent {
@@ -6877,7 +7290,12 @@ mod tests {
         assert_eq!(app.active_theme_id, "gruvbox-dark");
         assert_eq!(app.preview_theme_id, None);
         assert_eq!(
-            app.runner.global_config().theme.as_deref(),
+            app.runner
+                .as_ref()
+                .unwrap()
+                .global_config()
+                .theme
+                .as_deref(),
             Some("gruvbox-dark")
         );
     }
@@ -6895,7 +7313,12 @@ mod tests {
         assert_eq!(app.active_theme_id, "catppuccin-latte");
         assert_eq!(app.preview_theme_id, None);
         assert_eq!(
-            app.runner.global_config().theme.as_deref(),
+            app.runner
+                .as_ref()
+                .unwrap()
+                .global_config()
+                .theme
+                .as_deref(),
             Some("catppuccin-latte")
         );
     }

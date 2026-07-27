@@ -6,6 +6,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Padding, Paragraph},
 };
 
+use crate::app::{StartupAgentState, StartupProgress};
 use crate::models::{AgentEntry, AgentStatus, AgentStatusCounts};
 use crate::ui::theme::{
     ICON_AGENT, ICON_CTX, ICON_DIR, ICON_IDLE, ICON_MODEL, ICON_RUN, ICON_STOP, ICON_TIME,
@@ -61,24 +62,35 @@ pub fn render_dashboard(
     status_counts: AgentStatusCounts,
     blink_running: bool,
     blink_waiting: bool,
+    startup_progress: Option<&StartupProgress>,
 ) {
     f.render_widget(Block::default().style(ds(dimmed).bg(theme.bg)), area);
 
-    // Split into tabs, main area, and keybindings bar at bottom
+    let startup_height = startup_progress
+        .filter(|progress| !progress.finished)
+        .map(|_| 1)
+        .unwrap_or(0);
+
+    // Split into tabs, optional startup progress, main area, and keybindings bar.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(PROJECT_TABS_HEIGHT),
+            Constraint::Length(startup_height),
             Constraint::Min(0),
             Constraint::Length(1),
         ])
         .split(area);
 
     let tabs_area = chunks[0];
-    let main_area = chunks[1];
-    let bar_area = chunks[2];
+    let startup_area = chunks[1];
+    let main_area = chunks[2];
+    let bar_area = chunks[3];
 
     render_project_tabs(f, tabs_area, theme, projects, active_project_idx, dimmed);
+    if let Some(progress) = startup_progress.filter(|progress| !progress.finished) {
+        render_startup_progress(f, startup_area, theme, progress, dimmed);
+    }
     render_keybindings_bar(
         f,
         bar_area,
@@ -102,6 +114,7 @@ pub fn render_dashboard(
         card_response_content_heights,
         card_response_content_widths,
         dimmed,
+        startup_progress.map(|progress| progress.states.as_slice()),
     );
 }
 
@@ -134,6 +147,29 @@ pub fn grid_layout(n: usize) -> (usize, usize) {
     }
 }
 
+fn render_startup_progress(
+    f: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    progress: &StartupProgress,
+    dimmed: bool,
+) {
+    let message = format!(
+        " Restoring agents {}/{} · restarting {} ",
+        progress.completed, progress.total, progress.restarted,
+    );
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            message,
+            ds(dimmed)
+                .fg(theme.bg)
+                .bg(theme.yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        area,
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_grid(
     f: &mut Frame,
@@ -149,6 +185,7 @@ fn render_grid(
     card_response_content_heights: &mut Vec<u16>,
     card_response_content_widths: &mut Vec<u16>,
     dimmed: bool,
+    startup_states: Option<&[StartupAgentState]>,
 ) {
     if visible_indices.is_empty() {
         let chunks = Layout::default()
@@ -216,6 +253,7 @@ fn render_grid(
                     scroll,
                     horizontal_scroll,
                     dimmed,
+                    startup_states.and_then(|states| states.get(agent_idx)),
                 );
                 card_response_heights[agent_idx] = resp_h;
                 card_response_widths[agent_idx] = resp_w;
@@ -298,6 +336,7 @@ fn render_card(
     response_scroll: u16,
     response_horizontal_scroll: u16,
     dimmed: bool,
+    startup_state: Option<&StartupAgentState>,
 ) -> (u16, u16, u16, u16) {
     let (border_color, title_color) = if is_selected {
         (selected_border_color(theme), selected_border_color(theme))
@@ -340,6 +379,34 @@ fn render_card(
         width: raw_inner.width.saturating_sub(2),
         height: raw_inner.height,
     };
+
+    if let Some(
+        state @ (StartupAgentState::Restoring
+        | StartupAgentState::Restarting
+        | StartupAgentState::Failed),
+    ) = startup_state
+    {
+        let (message, color) = match state {
+            StartupAgentState::Restoring => ("Restoring agent…", theme.yellow),
+            StartupAgentState::Restarting => ("Restarting tmux pane…", theme.yellow),
+            StartupAgentState::Failed => ("Restore failed — open to retry", theme.red),
+            StartupAgentState::Ready => unreachable!(),
+        };
+        let message_area = Rect {
+            y: inner.y + inner.height.saturating_sub(1) / 2,
+            height: 1,
+            ..inner
+        };
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                message,
+                ds(dimmed).fg(color).add_modifier(Modifier::ITALIC),
+            ))
+            .alignment(Alignment::Center),
+            message_area,
+        );
+        return (0, 0, 0, 0);
+    }
 
     // -----------------------------------------------------------------------
     // Compute header content
