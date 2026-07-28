@@ -1,5 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
+use std::collections::HashSet;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -403,6 +404,33 @@ impl StartupProgress {
             finished: total == 0,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StartupRestorePlan {
+    restarting: bool,
+    duplicate_pane: bool,
+}
+
+/// Freeze the restore decision before any restart creates a tmux window. This
+/// prevents a new pane from being mistaken for a persisted pane belonging to a
+/// later agent, and gives a duplicate saved pane to only its first claimant.
+fn startup_restore_plan(
+    configs: &[AgentConfig],
+    panes_alive_at_start: &[bool],
+) -> Vec<StartupRestorePlan> {
+    let mut claimed_panes = HashSet::new();
+    configs
+        .iter()
+        .zip(panes_alive_at_start)
+        .map(|(config, pane_alive)| {
+            let duplicate_pane = !claimed_panes.insert(config.pane.clone());
+            StartupRestorePlan {
+                restarting: !pane_alive || duplicate_pane,
+                duplicate_pane,
+            }
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1193,34 +1221,63 @@ impl App {
             return;
         };
         let configs = self.config.agents.clone();
+        // Decide which panes are alive before creating any new windows. A
+        // freshly restarted pane can otherwise occupy a later agent's saved
+        // pane target and make that agent look incorrectly restored.
+        let panes_alive_at_start: Vec<bool> = configs
+            .iter()
+            .map(|config| tmux::is_alive(&config.pane))
+            .collect();
+        let restore_plan = startup_restore_plan(&configs, &panes_alive_at_start);
         let tx = self.tx.clone();
 
         tokio::spawn(async move {
             let mut runner = runner;
             for (idx, saved_config) in configs.into_iter().enumerate() {
-                let restarting = !tmux::is_alive(&saved_config.pane);
+                let plan = restore_plan[idx];
+                if plan.duplicate_pane {
+                    log::warn!(
+                        "agents at startup both claim tmux pane {}; restarting '{}' in a fresh pane",
+                        saved_config.pane,
+                        saved_config.name
+                    );
+                }
                 let _ = tx.send(Event::StartupAgentState {
                     idx,
-                    state: if restarting {
+                    state: if plan.restarting {
                         StartupAgentState::Restarting
                     } else {
                         StartupAgentState::Restoring
                     },
                 });
 
-                let restored = if restarting {
-                    runner.restart(&saved_config).await
+                let restored = if plan.restarting {
+                    // `restart` creates a fresh transport adapter so that the
+                    // process can be launched. Rebuild it from the updated
+                    // config afterwards: Claude's restore path is what
+                    // rehydrates its hook state from the persisted transcript
+                    // and session ID. This also keeps restart and live-pane
+                    // restoration behaviour identical for every adapter.
+                    match runner.restart(&saved_config).await {
+                        Ok((mut updated_config, _)) => {
+                            let (adapter, restore_changed) = runner.restore(&mut updated_config);
+                            Ok((updated_config, adapter, restore_changed))
+                        }
+                        Err(error) => Err(error),
+                    }
                 } else {
-                    Ok((saved_config.clone(), runner.restore(&saved_config)))
+                    let mut config = saved_config.clone();
+                    let (adapter, restore_changed) = runner.restore(&mut config);
+                    Ok((config, adapter, restore_changed))
                 };
 
                 match restored {
-                    Ok((config, adapter)) => {
+                    Ok((config, adapter, restore_changed)) => {
                         let meta = initial_agent_meta(adapter.as_ref()).await;
                         let _ = tx.send(Event::StartupAgentComplete {
                             idx,
                             config,
-                            config_changed: restarting,
+                            config_changed: plan.restarting || restore_changed,
                             adapter,
                             meta,
                         });
@@ -2122,7 +2179,7 @@ impl App {
             }
             Event::StartupFinished { mut runner } => {
                 if let Some(progress) = self.startup_progress.as_mut() {
-                    progress.finished = true;
+                    progress.finished = progress.completed == progress.total;
                 }
                 if self.pending_startup_guide_dismissal {
                     let global_config = runner.global_config_mut();
@@ -2952,7 +3009,7 @@ impl App {
         // Initial metadata is collected by the startup worker. Deferring the
         // regular full-card poll until it finishes keeps completion events and
         // input responsive even for sessions with many persisted agents.
-        if self.startup_in_progress() {
+        if self.startup_in_progress() && self.runner.is_none() {
             return;
         }
         let len = self.adapters.len();
@@ -5801,6 +5858,52 @@ mod tests {
         assert_eq!(app.startup_progress.as_ref().unwrap().completed, 1);
         assert_eq!(app.agents[0].meta.status, AgentStatus::Idle);
         assert_eq!(app.agents[0].meta.model_name.as_deref(), Some("test-model"));
+    }
+
+    #[tokio::test]
+    async fn startup_marks_launched_agent_ready_without_waiting_for_metadata_hooks() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        let entry = test_agent("alpha", DEFAULT_PROJECT_NAME, AgentStatus::Unknown);
+        app.config.agents = vec![entry.config.clone()];
+        app.agents = vec![entry.clone()];
+        app.adapters = vec![Box::new(PendingAdapter)];
+        app.startup_progress = Some(StartupProgress::new(1));
+
+        app.handle_event(Event::StartupAgentComplete {
+            idx: 0,
+            config: entry.config,
+            config_changed: false,
+            adapter: Box::new(NoopAdapter),
+            meta: AgentMeta::default(),
+        })
+        .await;
+
+        assert_eq!(app.startup_state(0), Some(StartupAgentState::Ready));
+        assert_eq!(app.startup_progress.as_ref().unwrap().completed, 1);
+    }
+
+    #[test]
+    fn startup_restore_plan_uses_initial_liveness_and_repairs_duplicate_panes() {
+        let mut first = test_agent("first", DEFAULT_PROJECT_NAME, AgentStatus::Unknown).config;
+        first.pane = "flowmux:7.0".into();
+        let mut second = test_agent("second", DEFAULT_PROJECT_NAME, AgentStatus::Unknown).config;
+        second.pane = "flowmux:7.0".into();
+
+        let plan = startup_restore_plan(&[first, second], &[true, true]);
+
+        assert_eq!(
+            plan,
+            vec![
+                StartupRestorePlan {
+                    restarting: false,
+                    duplicate_pane: false,
+                },
+                StartupRestorePlan {
+                    restarting: true,
+                    duplicate_pane: true,
+                },
+            ]
+        );
     }
 
     fn dashboard_mouse_event(kind: MouseEventKind) -> MouseEvent {

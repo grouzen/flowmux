@@ -129,7 +129,6 @@ impl AgentAdapter for ClaudeAdapter {
 
 pub(crate) struct ClaudeRuntime {
     hook_state: HookStateMap,
-    persist_tx: tokio::sync::mpsc::UnboundedSender<claude_hook_server::HookPersistEvent>,
     port: u16,
 }
 
@@ -177,11 +176,7 @@ impl ClaudeRuntime {
             }
         });
 
-        Self {
-            hook_state,
-            persist_tx,
-            port,
-        }
+        Self { hook_state, port }
     }
 
     /// The actual port the hook server is listening on (may differ from
@@ -205,15 +200,15 @@ impl ClaudeRuntime {
     ///
     /// If `transcript_path` is absent but `session_id` is known, attempts to
     /// locate the transcript file under `~/.claude/projects/` using the agent's
-    /// working `directory` as a hint.  When found the path is persisted back to
-    /// the config so subsequent restarts don't need to re-infer it.
+    /// working `directory` as a hint. The caller persists a newly inferred path
+    /// together with its other startup configuration changes.
     pub(crate) fn restore(
         &self,
         id: &str,
         session_id: Option<String>,
         transcript_path: Option<String>,
         directory: Option<&str>,
-    ) {
+    ) -> Option<String> {
         // If transcript_path is missing but we have a session_id, try to find
         // the transcript on disk so meta info is available immediately.
         let transcript_path = transcript_path.or_else(|| {
@@ -240,20 +235,20 @@ impl ClaudeRuntime {
                     entry.first_prompt = info.first_prompt;
                 }
             }
-            entry.status = AgentStatus::Idle;
-
-            // Persist the (possibly newly inferred) transcript_path back to
-            // the config file so future restarts don't need to re-infer it.
-            let _ = self.persist_tx.send(claude_hook_server::HookPersistEvent {
-                flowmux_agent_id: id.to_owned(),
-                session_id: entry.session_id.clone(),
-                transcript_path: Some(path.clone()),
-            });
+            // Do not overwrite a SessionStart/UserPrompt hook that may have
+            // arrived between process launch and transcript hydration.
+            if entry.status == AgentStatus::Stopped {
+                entry.status = AgentStatus::Idle;
+            }
         } else if entry.session_id.is_some() {
             // If we have a session_id but no transcript_path yet (e.g., flowmux restarted
             // before the first Stop hook), assume the agent is waiting for input.
-            entry.status = AgentStatus::Idle;
+            if entry.status == AgentStatus::Stopped {
+                entry.status = AgentStatus::Idle;
+            }
         }
+
+        transcript_path
     }
 
     /// Reset the status of an existing agent entry to `Idle` so the UI
