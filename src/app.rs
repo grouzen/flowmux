@@ -3006,49 +3006,14 @@ impl App {
     // -----------------------------------------------------------------------
 
     async fn handle_dashboard_tick(&mut self) {
-        // Initial metadata is collected by the startup worker. Deferring the
-        // regular full-card poll until it finishes keeps completion events and
-        // input responsive even for sessions with many persisted agents.
-        if self.startup_in_progress() && self.runner.is_none() {
-            return;
-        }
-        let len = self.adapters.len();
-        let mut config_dirty = false;
-
-        for i in 0..len {
-            if !self.agent_is_ready(i) {
-                continue;
-            }
-            let status = self.adapters[i].get_status().await;
-            let context = self.adapters[i].get_context().await;
-            let first_prompt = self.adapters[i].get_first_prompt().await;
-            let last_model_response = self.adapters[i].get_last_model_response().await;
-            let model_name = self.adapters[i].get_model_name().await;
-            let total_work_ms = self.adapters[i].get_total_work_ms().await;
-
-            // Persist newly discovered session IDs so the dashboard shows
-            // correct history immediately on the next startup.
-            let session_id = self.adapters[i].get_cached_session_id();
-            if let Some(agent_config) = self.config.agents.get_mut(i)
-                && session_id.is_some()
-                && session_id.as_deref() != agent_config.session_id()
-            {
-                agent_config.set_session_id(session_id);
-                config_dirty = true;
-            }
-
-            if let Some(entry) = self.agents.get_mut(i) {
-                if entry.meta.status != status {
-                    entry.meta.status_changed_at = Some(std::time::Instant::now());
-                }
-                entry.meta.status = status;
-                entry.meta.context = context;
-                entry.meta.first_prompt = first_prompt;
-                entry.meta.last_model_response = last_model_response;
-                entry.meta.model_name = model_name;
-                entry.meta.total_work_ms = total_work_ms;
-            }
-        }
+        // A Codex adapter receives its metadata asynchronously from its
+        // app-server observer. Poll adapters that have already been installed
+        // even while the startup worker is launching later agents, so each
+        // completed card becomes live independently. The worker still owns
+        // configuration during that period, therefore defer persistence until
+        // it returns the runner.
+        self.refresh_ready_agent_metadata(self.runner.is_some())
+            .await;
 
         // Ensure card_scroll has an entry for every agent (agents may be added at runtime).
         if self.card_scroll.len() < self.agents.len() {
@@ -3075,7 +3040,49 @@ impl App {
             self.card_response_content_widths
                 .resize(self.agents.len(), 0);
         }
-        if config_dirty {
+    }
+
+    async fn refresh_ready_agent_metadata(&mut self, persist_session_ids: bool) {
+        let len = self.adapters.len();
+        let mut config_dirty = false;
+
+        for i in 0..len {
+            if !self.agent_is_ready(i) {
+                continue;
+            }
+            let status = self.adapters[i].get_status().await;
+            let context = self.adapters[i].get_context().await;
+            let first_prompt = self.adapters[i].get_first_prompt().await;
+            let last_model_response = self.adapters[i].get_last_model_response().await;
+            let model_name = self.adapters[i].get_model_name().await;
+            let total_work_ms = self.adapters[i].get_total_work_ms().await;
+
+            // Persist newly discovered session IDs so the dashboard shows
+            // correct history immediately on the next startup.
+            let session_id = self.adapters[i].get_cached_session_id();
+            if persist_session_ids
+                && let Some(agent_config) = self.config.agents.get_mut(i)
+                && session_id.is_some()
+                && session_id.as_deref() != agent_config.session_id()
+            {
+                agent_config.set_session_id(session_id);
+                config_dirty = true;
+            }
+
+            if let Some(entry) = self.agents.get_mut(i) {
+                if entry.meta.status != status {
+                    entry.meta.status_changed_at = Some(std::time::Instant::now());
+                }
+                entry.meta.status = status;
+                entry.meta.context = context;
+                entry.meta.first_prompt = first_prompt;
+                entry.meta.last_model_response = last_model_response;
+                entry.meta.model_name = model_name;
+                entry.meta.total_work_ms = total_work_ms;
+            }
+        }
+
+        if persist_session_ids && config_dirty {
             let _ = self.config.save();
         }
     }
@@ -5880,6 +5887,36 @@ mod tests {
 
         assert_eq!(app.startup_state(0), Some(StartupAgentState::Ready));
         assert_eq!(app.startup_progress.as_ref().unwrap().completed, 1);
+    }
+
+    #[tokio::test]
+    async fn startup_refreshes_completed_card_metadata_before_all_agents_finish() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        let entry = test_agent("alpha", DEFAULT_PROJECT_NAME, AgentStatus::Unknown);
+        app.config.agents = vec![entry.config.clone()];
+        app.agents = vec![entry.clone()];
+        app.adapters = vec![Box::new(PendingAdapter)];
+        app.startup_progress = Some(StartupProgress::new(2));
+        // This is the condition while the startup worker is still restoring
+        // later agents.
+        app.runner = None;
+
+        app.handle_event(Event::StartupAgentComplete {
+            idx: 0,
+            config: entry.config,
+            config_changed: false,
+            adapter: Box::new(NoopAdapter),
+            meta: AgentMeta::default(),
+        })
+        .await;
+
+        assert_eq!(app.agents[0].meta.status, AgentStatus::Unknown);
+
+        app.handle_dashboard_tick().await;
+
+        assert_eq!(app.agents[0].meta.status, AgentStatus::Idle);
+        assert_eq!(app.startup_progress.as_ref().unwrap().completed, 1);
+        assert!(!app.startup_progress.as_ref().unwrap().finished);
     }
 
     #[test]
