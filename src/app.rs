@@ -4258,7 +4258,7 @@ impl App {
                             let _ = self.config.save();
                             let entry = AgentEntry {
                                 config,
-                                meta: AgentMeta::default(),
+                                meta: initial_agent_meta(adapter.as_ref()).await,
                             };
                             self.agents.push(entry);
                             self.adapters.push(adapter);

@@ -32,6 +32,9 @@ impl AgentType {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AgentStatus {
+    /// The agent process has launched but has not completed its readiness
+    /// handshake yet.
+    Starting,
     Running,
     WaitingForInput,
     Idle, // turn finished, ready for next user prompt
@@ -92,7 +95,7 @@ impl AgentStatusCounts {
                 AgentStatus::Running => counts.running += 1,
                 AgentStatus::WaitingForInput => counts.waiting += 1,
                 AgentStatus::Idle => counts.idle += 1,
-                AgentStatus::Stopped | AgentStatus::Unknown => {}
+                AgentStatus::Starting | AgentStatus::Stopped | AgentStatus::Unknown => {}
             }
         }
 

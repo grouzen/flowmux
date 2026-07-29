@@ -74,7 +74,13 @@ impl AgentAdapter for ClaudeAdapter {
     async fn get_status(&self) -> AgentStatus {
         let map = self.hook_state.lock().unwrap();
         map.get(&self.flowmux_agent_id)
-            .map(|s| s.status.clone())
+            .map(|state| {
+                if state.session_started {
+                    state.status.clone()
+                } else {
+                    AgentStatus::Starting
+                }
+            })
             .unwrap_or(AgentStatus::Unknown)
     }
 
@@ -262,6 +268,11 @@ impl ClaudeRuntime {
 
         let mut map = self.hook_state.lock().unwrap();
         let entry = map.entry(id.to_owned()).or_default();
+
+        // This path restores a pane that was already alive when Flowmux
+        // started. It will not emit a new SessionStart hook, so treat it as
+        // ready and retain its cached idle/running status.
+        entry.session_started = true;
 
         if session_id.is_some() {
             entry.session_id = session_id;
@@ -747,6 +758,28 @@ mod tests {
         assert!(command.contains("curl"));
         assert!(command.contains("http://127.0.0.1:15100/hook"));
         assert!(command.contains(FLOWMUX_HOOK_MARKER));
+    }
+
+    #[tokio::test]
+    async fn adapter_is_starting_until_session_start() {
+        let agent_id = "agent-1".to_owned();
+        let hook_state: HookStateMap = Arc::new(Mutex::new(HashMap::new()));
+        hook_state.lock().unwrap().insert(
+            agent_id.clone(),
+            claude_hook_server::ClaudeHookState::default(),
+        );
+        let adapter = ClaudeAdapter::new(agent_id.clone(), hook_state.clone());
+
+        assert_eq!(adapter.get_status().await, AgentStatus::Starting);
+
+        hook_state
+            .lock()
+            .unwrap()
+            .get_mut(&agent_id)
+            .unwrap()
+            .session_started = true;
+
+        assert_eq!(adapter.get_status().await, AgentStatus::Idle);
     }
 
     #[test]

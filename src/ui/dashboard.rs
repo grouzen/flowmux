@@ -271,6 +271,7 @@ fn render_grid(
 
 fn status_symbol(status: &AgentStatus) -> &'static str {
     match status {
+        AgentStatus::Starting => "…",
         AgentStatus::Running => ICON_RUN,
         AgentStatus::WaitingForInput => ICON_WAIT,
         AgentStatus::Idle => ICON_IDLE,
@@ -281,6 +282,7 @@ fn status_symbol(status: &AgentStatus) -> &'static str {
 
 fn status_label(status: &AgentStatus) -> &'static str {
     match status {
+        AgentStatus::Starting => "Starting",
         AgentStatus::Running => "Running",
         AgentStatus::WaitingForInput => "Waiting",
         AgentStatus::Idle => "Idle",
@@ -291,6 +293,7 @@ fn status_label(status: &AgentStatus) -> &'static str {
 
 fn status_color(theme: &Theme, status: &AgentStatus) -> ratatui::style::Color {
     match status {
+        AgentStatus::Starting => theme.yellow,
         AgentStatus::Running => theme.green,
         AgentStatus::WaitingForInput => theme.yellow,
         AgentStatus::Idle => theme.cyan,

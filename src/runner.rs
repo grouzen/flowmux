@@ -284,7 +284,6 @@ impl AgentRunner {
                     flowmux_agent_id.clone().into(),
                 ];
                 tmux::send_literal(&pane, &launch::flowmux_launch_command("claude", &args))?;
-                runtime.wait_until_ready(&flowmux_agent_id).await?;
 
                 let config = AgentConfig {
                     name: name.to_owned(),
