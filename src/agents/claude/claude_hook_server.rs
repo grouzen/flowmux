@@ -142,7 +142,10 @@ async fn hook_handler(
                 if model_name.is_some() {
                     entry.model_name = model_name;
                 }
-                entry.status = AgentStatus::Running;
+                // SessionStart confirms that Claude is ready to accept input,
+                // not that it is actively working. UserPromptSubmit and tool
+                // lifecycle hooks transition the agent to Running later.
+                entry.status = AgentStatus::Idle;
             }
             state.startup_notify.notify_waiters();
         }
@@ -584,7 +587,7 @@ mod tests {
         {
             let state = hook_state.lock().unwrap();
             assert!(state["agent-1"].session_started);
-            assert_eq!(state["agent-1"].status, AgentStatus::Running);
+            assert_eq!(state["agent-1"].status, AgentStatus::Idle);
             assert_eq!(state["agent-1"].session_id.as_deref(), Some("session-1"));
         }
         tokio::time::timeout(std::time::Duration::from_millis(100), notified.as_mut())
