@@ -66,31 +66,22 @@ pub fn render_dashboard(
 ) {
     f.render_widget(Block::default().style(ds(dimmed).bg(theme.bg)), area);
 
-    let startup_height = startup_progress
-        .filter(|progress| !progress.finished)
-        .map(|_| 1)
-        .unwrap_or(0);
-
-    // Split into tabs, optional startup progress, main area, and keybindings bar.
+    // Split into tabs, main area, and keybindings bar. Startup progress lives in
+    // the right side of the status bar so cards can use the full vertical area.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(PROJECT_TABS_HEIGHT),
-            Constraint::Length(startup_height),
             Constraint::Min(0),
             Constraint::Length(1),
         ])
         .split(area);
 
     let tabs_area = chunks[0];
-    let startup_area = chunks[1];
-    let main_area = chunks[2];
-    let bar_area = chunks[3];
+    let main_area = chunks[1];
+    let bar_area = chunks[2];
 
     render_project_tabs(f, tabs_area, theme, projects, active_project_idx, dimmed);
-    if let Some(progress) = startup_progress.filter(|progress| !progress.finished) {
-        render_startup_progress(f, startup_area, theme, progress, dimmed);
-    }
     render_keybindings_bar(
         f,
         bar_area,
@@ -99,6 +90,7 @@ pub fn render_dashboard(
         status_counts,
         blink_running,
         blink_waiting,
+        startup_progress.filter(|progress| !progress.finished),
     );
     render_grid(
         f,
@@ -147,27 +139,11 @@ pub fn grid_layout(n: usize) -> (usize, usize) {
     }
 }
 
-fn render_startup_progress(
-    f: &mut Frame,
-    area: Rect,
-    theme: &Theme,
-    progress: &StartupProgress,
-    dimmed: bool,
-) {
-    let message = format!(
+fn startup_progress_message(progress: &StartupProgress) -> String {
+    format!(
         " Restoring agents {}/{} · restarting {} ",
         progress.completed, progress.total, progress.restarted,
-    );
-    f.render_widget(
-        Paragraph::new(Span::styled(
-            message,
-            ds(dimmed)
-                .fg(theme.bg)
-                .bg(theme.yellow)
-                .add_modifier(Modifier::BOLD),
-        )),
-        area,
-    );
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -728,6 +704,7 @@ fn push_keybind<'a>(
     ));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_keybindings_bar(
     f: &mut Frame,
     area: Rect,
@@ -736,6 +713,7 @@ fn render_keybindings_bar(
     status_counts: AgentStatusCounts,
     blink_running: bool,
     blink_waiting: bool,
+    startup_progress: Option<&StartupProgress>,
 ) {
     // Left: hotkeys
     let mut spans: Vec<Span> = Vec::new();
@@ -756,7 +734,13 @@ fn render_keybindings_bar(
     spans.push(Span::raw(" "));
     push_keybind(&mut spans, "q", "quit", theme, dimmed);
 
-    // Right: agent status counts (leading space separates from middle chunk; trailing space before brand)
+    let progress_message = startup_progress.map(startup_progress_message);
+    let progress_width = progress_message
+        .as_deref()
+        .map(|message| unicode_width::UnicodeWidthStr::width(message) as u16)
+        .unwrap_or(0);
+
+    // Right: startup progress, agent status counts, then brand.
     let (status_spans, status_width) = status_count_spans(
         theme,
         status_counts.running,
@@ -773,14 +757,24 @@ fn render_keybindings_bar(
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Min(0),
+            Constraint::Length(progress_width),
             Constraint::Length(status_width),
             Constraint::Length(brand_width),
         ])
         .split(area);
 
     f.render_widget(Paragraph::new(Line::from(spans)), bar_chunks[0]);
-    f.render_widget(Paragraph::new(Line::from(status_spans)), bar_chunks[1]);
-    f.render_widget(Paragraph::new(brand), bar_chunks[2]);
+    if let Some(message) = progress_message {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                message,
+                ds(dimmed).fg(theme.yellow).add_modifier(Modifier::BOLD),
+            )),
+            bar_chunks[1],
+        );
+    }
+    f.render_widget(Paragraph::new(Line::from(status_spans)), bar_chunks[2]);
+    f.render_widget(Paragraph::new(brand), bar_chunks[3]);
 }
 
 fn render_project_tabs(
