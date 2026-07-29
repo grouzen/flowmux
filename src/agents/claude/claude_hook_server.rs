@@ -8,7 +8,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
 use axum::{Json, Router};
 use serde_json::Value;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::{Notify, mpsc::UnboundedSender};
 
 use crate::models::AgentStatus;
 
@@ -19,6 +19,9 @@ use crate::models::AgentStatus;
 /// Per-agent state maintained by the hook server.
 pub struct ClaudeHookState {
     pub status: AgentStatus,
+    /// Set by SessionStart and used as the readiness signal for a fresh
+    /// Claude process.
+    pub session_started: bool,
     pub first_prompt: Option<String>,
     pub last_model_response: Option<String>,
     pub model_name: Option<String>,
@@ -33,6 +36,7 @@ impl Default for ClaudeHookState {
     fn default() -> Self {
         Self {
             status: AgentStatus::Idle,
+            session_started: false,
             first_prompt: None,
             last_model_response: None,
             model_name: None,
@@ -67,6 +71,7 @@ pub struct HookPersistEvent {
 struct HookServerState {
     hook_state: HookStateMap,
     persist_tx: UnboundedSender<HookPersistEvent>,
+    startup_notify: Arc<Notify>,
 }
 
 // ---------------------------------------------------------------------------
@@ -131,6 +136,7 @@ async fn hook_handler(
 
             let mut map = state.hook_state.lock().unwrap();
             if let Some(entry) = map.get_mut(&agent_id) {
+                entry.session_started = true;
                 entry.session_id = session_id;
                 entry.transcript_path = transcript_path;
                 if model_name.is_some() {
@@ -138,6 +144,7 @@ async fn hook_handler(
                 }
                 entry.status = AgentStatus::Running;
             }
+            state.startup_notify.notify_waiters();
         }
 
         "UserPromptSubmit" => {
@@ -325,6 +332,7 @@ fn bind_listener(from: u16) -> (StdTcpListener, u16) {
 pub fn spawn_hook_server(
     hook_state: HookStateMap,
     persist_tx: UnboundedSender<HookPersistEvent>,
+    startup_notify: Arc<Notify>,
     base_port: u16,
 ) -> u16 {
     // Binding before spawning closes the window where a just-launched Claude
@@ -338,6 +346,7 @@ pub fn spawn_hook_server(
         let state = HookServerState {
             hook_state,
             persist_tx,
+            startup_notify,
         };
         let app = Router::new()
             .route("/hook", post(hook_handler))
@@ -549,9 +558,14 @@ mod tests {
             .unwrap()
             .insert("agent-1".into(), Default::default());
         let (persist_tx, _persist_rx) = tokio::sync::mpsc::unbounded_channel();
+        let startup_notify = Arc::new(Notify::new());
+        let notified = startup_notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
         let state = HookServerState {
             hook_state: hook_state.clone(),
             persist_tx,
+            startup_notify: startup_notify.clone(),
         };
         let mut headers = HeaderMap::new();
         headers.insert("x-flowmux-agent-id", HeaderValue::from_static("agent-1"));
@@ -567,9 +581,15 @@ mod tests {
         .await;
 
         assert_eq!(response, StatusCode::OK);
-        let state = hook_state.lock().unwrap();
-        assert_eq!(state["agent-1"].status, AgentStatus::Running);
-        assert_eq!(state["agent-1"].session_id.as_deref(), Some("session-1"));
+        {
+            let state = hook_state.lock().unwrap();
+            assert!(state["agent-1"].session_started);
+            assert_eq!(state["agent-1"].status, AgentStatus::Running);
+            assert_eq!(state["agent-1"].session_id.as_deref(), Some("session-1"));
+        }
+        tokio::time::timeout(std::time::Duration::from_millis(100), notified.as_mut())
+            .await
+            .expect("SessionStart should notify readiness waiters");
     }
 
     #[test]

@@ -117,43 +117,18 @@ async fn launch(
     }
 
     if !healthy {
-        let pane_output = format_launch_failure_output(&pane);
         let window = format!("{}:{}", tmux::session_name(), window_index);
         let _ = tmux::kill_window(&window);
         return Err(anyhow!(
-            "opencode did not become healthy on {} within {}s; cleaned up tmux window {}{}",
+            "opencode did not become healthy on {} within {}s; cleaned up tmux window {}",
             health_url,
             HEALTH_POLL_INTERVAL.as_secs_f32() * HEALTH_POLL_ATTEMPTS as f32,
-            window,
-            pane_output
+            window
         ));
     }
 
     Ok((window_index, pane))
 }
-
-fn format_launch_failure_output(pane: &str) -> String {
-    let Ok(output) = tmux::capture_pane(pane) else {
-        return String::new();
-    };
-
-    let tail = output
-        .lines()
-        .rev()
-        .filter(|line| !line.trim().is_empty())
-        .take(20)
-        .collect::<Vec<_>>();
-
-    if tail.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "; last pane output:\n{}",
-            tail.into_iter().rev().collect::<Vec<_>>().join("\n")
-        )
-    }
-}
-
 // ---------------------------------------------------------------------------
 // OpenCodeAdapter
 // ---------------------------------------------------------------------------

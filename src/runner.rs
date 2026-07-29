@@ -284,6 +284,7 @@ impl AgentRunner {
                     flowmux_agent_id.clone().into(),
                 ];
                 tmux::send_literal(&pane, &launch::flowmux_launch_command("claude", &args))?;
+                runtime.wait_until_ready(&flowmux_agent_id).await?;
 
                 let config = AgentConfig {
                     name: name.to_owned(),
@@ -425,6 +426,7 @@ impl AgentRunner {
                     args.push(sid.clone().into());
                 }
                 tmux::send_literal(&new_pane, &launch::flowmux_launch_command("claude", &args))?;
+                runtime.wait_until_ready(flowmux_agent_id).await?;
 
                 let mut new_config = config.clone();
                 new_config.pane = new_pane;
