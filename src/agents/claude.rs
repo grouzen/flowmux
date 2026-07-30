@@ -5,6 +5,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use tokio::sync::Notify;
+use tokio::time::{Duration, timeout};
 
 use crate::agents::AgentAdapter;
 use crate::models::{AgentStatus, ContextInfo};
@@ -72,7 +74,13 @@ impl AgentAdapter for ClaudeAdapter {
     async fn get_status(&self) -> AgentStatus {
         let map = self.hook_state.lock().unwrap();
         map.get(&self.flowmux_agent_id)
-            .map(|s| s.status.clone())
+            .map(|state| {
+                if state.session_started {
+                    state.status.clone()
+                } else {
+                    AgentStatus::Starting
+                }
+            })
             .unwrap_or(AgentStatus::Unknown)
     }
 
@@ -129,7 +137,7 @@ impl AgentAdapter for ClaudeAdapter {
 
 pub(crate) struct ClaudeRuntime {
     hook_state: HookStateMap,
-    persist_tx: tokio::sync::mpsc::UnboundedSender<claude_hook_server::HookPersistEvent>,
+    startup_notify: Arc<Notify>,
     port: u16,
 }
 
@@ -149,8 +157,13 @@ impl ClaudeRuntime {
             tokio::sync::mpsc::unbounded_channel::<claude_hook_server::HookPersistEvent>();
 
         let persist_tx_clone = persist_tx.clone();
-        let port =
-            claude_hook_server::spawn_hook_server(hook_state.clone(), persist_tx_clone, base_port);
+        let startup_notify = Arc::new(Notify::new());
+        let port = claude_hook_server::spawn_hook_server(
+            hook_state.clone(),
+            persist_tx_clone,
+            startup_notify.clone(),
+            base_port,
+        );
 
         // Background task: receive persist events and patch the session config file.
         tokio::spawn(async move {
@@ -179,7 +192,7 @@ impl ClaudeRuntime {
 
         Self {
             hook_state,
-            persist_tx,
+            startup_notify,
             port,
         }
     }
@@ -200,20 +213,52 @@ impl ClaudeRuntime {
         ClaudeAdapter::new(flowmux_agent_id, self.hook_state.clone())
     }
 
+    /// Wait for the registered Claude SessionStart hook. Unlike terminal
+    /// scraping, this remains stable across Claude Code themes and UI changes.
+    pub(crate) async fn wait_until_ready(&self, id: &str) -> Result<()> {
+        let wait_for_hook = async {
+            let notified = self.startup_notify.notified();
+            tokio::pin!(notified);
+
+            loop {
+                // Register the waiter before reading the state. This closes
+                // the gap where SessionStart could otherwise arrive after the
+                // state check but before the await.
+                notified.as_mut().enable();
+                let started = self
+                    .hook_state
+                    .lock()
+                    .unwrap()
+                    .get(id)
+                    .is_some_and(|state| state.session_started);
+                if started {
+                    return;
+                }
+                notified.as_mut().await;
+                notified.set(self.startup_notify.notified());
+            }
+        };
+
+        timeout(Duration::from_secs(30), wait_for_hook)
+            .await
+            .map_err(|_| anyhow::anyhow!("Claude did not emit SessionStart within 30 seconds"))?;
+        Ok(())
+    }
+
     /// Pre-populate the hook state from persisted config so that the dashboard
     /// shows meaningful data immediately on startup (before the first hook fires).
     ///
     /// If `transcript_path` is absent but `session_id` is known, attempts to
     /// locate the transcript file under `~/.claude/projects/` using the agent's
-    /// working `directory` as a hint.  When found the path is persisted back to
-    /// the config so subsequent restarts don't need to re-infer it.
+    /// working `directory` as a hint. The caller persists a newly inferred path
+    /// together with its other startup configuration changes.
     pub(crate) fn restore(
         &self,
         id: &str,
         session_id: Option<String>,
         transcript_path: Option<String>,
         directory: Option<&str>,
-    ) {
+    ) -> Option<String> {
         // If transcript_path is missing but we have a session_id, try to find
         // the transcript on disk so meta info is available immediately.
         let transcript_path = transcript_path.or_else(|| {
@@ -223,6 +268,11 @@ impl ClaudeRuntime {
 
         let mut map = self.hook_state.lock().unwrap();
         let entry = map.entry(id.to_owned()).or_default();
+
+        // This path restores a pane that was already alive when Flowmux
+        // started. It will not emit a new SessionStart hook, so treat it as
+        // ready and retain its cached idle/running status.
+        entry.session_started = true;
 
         if session_id.is_some() {
             entry.session_id = session_id;
@@ -240,29 +290,30 @@ impl ClaudeRuntime {
                     entry.first_prompt = info.first_prompt;
                 }
             }
-            entry.status = AgentStatus::Idle;
-
-            // Persist the (possibly newly inferred) transcript_path back to
-            // the config file so future restarts don't need to re-infer it.
-            let _ = self.persist_tx.send(claude_hook_server::HookPersistEvent {
-                flowmux_agent_id: id.to_owned(),
-                session_id: entry.session_id.clone(),
-                transcript_path: Some(path.clone()),
-            });
+            // Do not overwrite a SessionStart/UserPrompt hook that may have
+            // arrived between process launch and transcript hydration.
+            if entry.status == AgentStatus::Stopped {
+                entry.status = AgentStatus::Idle;
+            }
         } else if entry.session_id.is_some() {
             // If we have a session_id but no transcript_path yet (e.g., flowmux restarted
             // before the first Stop hook), assume the agent is waiting for input.
-            entry.status = AgentStatus::Idle;
+            if entry.status == AgentStatus::Stopped {
+                entry.status = AgentStatus::Idle;
+            }
         }
+
+        transcript_path
     }
 
-    /// Reset the status of an existing agent entry to `Idle` so the UI
-    /// reflects "restarting" rather than "stopped" while the new process boots.
+    /// Reset the status and readiness handshake of an existing agent entry so
+    /// the UI reflects a fresh restart rather than a previously running client.
     /// If no entry exists for `id` this is a no-op.
     pub(crate) fn reset_status(&self, id: &str) {
         let mut map = self.hook_state.lock().unwrap();
         if let Some(entry) = map.get_mut(id) {
             entry.status = AgentStatus::Idle;
+            entry.session_started = false;
         }
     }
 }
@@ -320,11 +371,28 @@ fn infer_transcript_path(session_id: &str, directory: Option<&str>) -> Option<St
 /// `~/.claude/settings.json`.  Used to detect whether installation is
 /// already present and to remove stale entries when the port changes.
 const HOOK_URL_PATH: &str = "/hook";
+const FLOWMUX_HOOK_MARKER: &str = "flowmux-claude-hook";
 
-/// Build the four-event hooks block that flowmux merges into
+fn hook_url(port: u16) -> String {
+    format!("http://127.0.0.1:{}{}", port, HOOK_URL_PATH)
+}
+
+/// Claude Code only supports command and MCP hooks for `SessionStart`.
+/// Forward the hook JSON from stdin to Flowmux's local HTTP hook server without
+/// emitting anything to stdout (which Claude would otherwise add as context).
+fn session_start_hook_command(url: &str) -> String {
+    format!(
+        "curl --noproxy '*' --silent --show-error --request POST \\
+         --header 'Content-Type: application/json' \\
+         --header \"X-Flowmux-Agent-Id: $FLOWMUX_AGENT_ID\" \\
+         --data-binary @- '{url}' >/dev/null 2>&1 || true # {FLOWMUX_HOOK_MARKER}"
+    )
+}
+
+/// Build the hooks block that flowmux merges into
 /// `~/.claude/settings.json`.
 fn build_hooks_block(port: u16) -> Value {
-    let url = format!("http://127.0.0.1:{}{}", port, HOOK_URL_PATH);
+    let url = hook_url(port);
 
     let make_hook = |event: &str| -> (String, Value) {
         let entry = serde_json::json!([{
@@ -351,8 +419,16 @@ fn build_hooks_block(port: u16) -> Value {
         }]
     }]);
 
+    let session_start_entry = serde_json::json!([{
+        "hooks": [{
+            "type": "command",
+            "command": session_start_hook_command(&url),
+            "timeout": 5
+        }]
+    }]);
+
     let mut hooks_map: serde_json::Map<String, Value> = [
-        make_hook("SessionStart"),
+        ("SessionStart".to_owned(), session_start_entry),
         make_hook("UserPromptSubmit"),
         make_hook("PreToolUse"),
         make_hook("PostToolUse"),
@@ -383,10 +459,26 @@ const FLOWMUX_HOOK_EVENTS: &[&str] = &[
     "SessionEnd",
 ];
 
+fn is_http_flowmux_hook(hook: &Value, url: &str) -> bool {
+    hook.get("url").and_then(Value::as_str) == Some(url)
+}
+
+fn is_session_start_flowmux_hook(hook: &Value, url: &str) -> bool {
+    hook.get("type").and_then(Value::as_str) == Some("command")
+        && hook
+            .get("command")
+            .and_then(Value::as_str)
+            .is_some_and(|command| command.contains(FLOWMUX_HOOK_MARKER) && command.contains(url))
+}
+
+fn is_any_flowmux_hook(hook: &Value, url: &str) -> bool {
+    is_http_flowmux_hook(hook, url) || is_session_start_flowmux_hook(hook, url)
+}
+
 /// Return `true` if `hooks_root` contains a flowmux hook entry for the
 /// given `port` (identified by the exact URL `http://127.0.0.1:<port>/hook`).
 fn has_flowmux_hooks_for_port(hooks_root: &Value, port: u16) -> bool {
-    let url = format!("http://127.0.0.1:{}{}", port, HOOK_URL_PATH);
+    let url = hook_url(port);
     let Some(obj) = hooks_root.as_object() else {
         return false;
     };
@@ -399,7 +491,7 @@ fn has_flowmux_hooks_for_port(hooks_root: &Value, port: u16) -> bool {
                 continue;
             };
             for h in inner {
-                if h.get("url").and_then(Value::as_str) == Some(&url) {
+                if is_any_flowmux_hook(h, &url) {
                     return true;
                 }
             }
@@ -412,7 +504,7 @@ fn has_flowmux_hooks_for_port(hooks_root: &Value, port: u16) -> bool {
 /// registered for the given `port` in `hooks_root`.  A `false` return means
 /// the installation is incomplete or stale and a re-install is required.
 fn has_all_flowmux_hook_events_for_port(hooks_root: &Value, port: u16) -> bool {
-    let url = format!("http://127.0.0.1:{}{}", port, HOOK_URL_PATH);
+    let url = hook_url(port);
     let Some(obj) = hooks_root.as_object() else {
         return false;
     };
@@ -424,9 +516,13 @@ fn has_all_flowmux_hook_events_for_port(hooks_root: &Value, port: u16) -> bool {
             let Some(inner) = hook_group.get("hooks").and_then(Value::as_array) else {
                 return false;
             };
-            inner
-                .iter()
-                .any(|h| h.get("url").and_then(Value::as_str) == Some(&url))
+            inner.iter().any(|hook| {
+                if *event == "SessionStart" {
+                    is_session_start_flowmux_hook(hook, &url)
+                } else {
+                    is_http_flowmux_hook(hook, &url)
+                }
+            })
         })
     })
 }
@@ -434,7 +530,7 @@ fn has_all_flowmux_hook_events_for_port(hooks_root: &Value, port: u16) -> bool {
 /// Remove flowmux hook entries for a specific `port` from the hooks object
 /// (in-place).  Entries for other ports are preserved.
 fn remove_flowmux_hooks_for_port(hooks_root: &mut Value, port: u16) {
-    let url = format!("http://127.0.0.1:{}{}", port, HOOK_URL_PATH);
+    let url = hook_url(port);
     let Some(obj) = hooks_root.as_object_mut() else {
         return;
     };
@@ -446,9 +542,7 @@ fn remove_flowmux_hooks_for_port(hooks_root: &mut Value, port: u16) {
             let Some(inner) = hook_group.get("hooks").and_then(Value::as_array) else {
                 return true;
             };
-            !inner
-                .iter()
-                .any(|h| h.get("url").and_then(Value::as_str) == Some(&url))
+            !inner.iter().any(|hook| is_any_flowmux_hook(hook, &url))
         });
     }
 }
@@ -468,12 +562,22 @@ fn extract_flowmux_ports(hooks_root: &Value) -> Vec<u16> {
                 continue;
             };
             for h in inner {
-                if let Some(url) = h.get("url").and_then(Value::as_str)
-                    && url.contains("127.0.0.1")
-                    && url.ends_with(HOOK_URL_PATH)
-                    && let Some(port_str) = url
-                        .strip_prefix("http://127.0.0.1:")
-                        .and_then(|s| s.strip_suffix(HOOK_URL_PATH))
+                let source = match h.get("url").and_then(Value::as_str) {
+                    Some(url) => Some(url),
+                    None if h
+                        .get("command")
+                        .and_then(Value::as_str)
+                        .is_some_and(|command| command.contains(FLOWMUX_HOOK_MARKER)) =>
+                    {
+                        h.get("command").and_then(Value::as_str)
+                    }
+                    None => None,
+                };
+                if let Some(source) = source
+                    && let Some(port_str) = source
+                        .split("http://127.0.0.1:")
+                        .nth(1)
+                        .and_then(|s| s.split(HOOK_URL_PATH).next())
                     && let Ok(port) = port_str.parse::<u16>()
                     && !ports.contains(&port)
                 {
@@ -508,7 +612,7 @@ fn settings_path() -> Option<std::path::PathBuf> {
     dirs::home_dir().map(|h| h.join(".claude").join("settings.json"))
 }
 
-/// Merge flowmux's HTTP hooks into `~/.claude/settings.json` for this instance's port.
+/// Merge Flowmux's Claude hooks into `~/.claude/settings.json` for this instance's port.
 ///
 /// - Cleans up hooks from dead flowmux instances first.
 /// - No-op if all expected events are already registered for this port.
@@ -644,6 +748,41 @@ mod tests {
     }
 
     #[test]
+    fn session_start_uses_command_forwarder() {
+        let root = make_settings(15100);
+        let hook = &root["hooks"]["SessionStart"][0]["hooks"][0];
+
+        assert_eq!(hook["type"], "command");
+        assert!(hook.get("url").is_none());
+        let command = hook["command"].as_str().unwrap();
+        assert!(command.contains("curl"));
+        assert!(command.contains("http://127.0.0.1:15100/hook"));
+        assert!(command.contains(FLOWMUX_HOOK_MARKER));
+    }
+
+    #[tokio::test]
+    async fn adapter_is_starting_until_session_start() {
+        let agent_id = "agent-1".to_owned();
+        let hook_state: HookStateMap = Arc::new(Mutex::new(HashMap::new()));
+        hook_state.lock().unwrap().insert(
+            agent_id.clone(),
+            claude_hook_server::ClaudeHookState::default(),
+        );
+        let adapter = ClaudeAdapter::new(agent_id.clone(), hook_state.clone());
+
+        assert_eq!(adapter.get_status().await, AgentStatus::Starting);
+
+        hook_state
+            .lock()
+            .unwrap()
+            .get_mut(&agent_id)
+            .unwrap()
+            .session_started = true;
+
+        assert_eq!(adapter.get_status().await, AgentStatus::Idle);
+    }
+
+    #[test]
     fn install_is_idempotent() {
         let mut root = make_settings(15100);
         install_hooks_into(&mut root, 15100);
@@ -690,14 +829,11 @@ mod tests {
         let flowmux_entry = serde_json::json!([{
             "hooks": [{"type": "http", "url": old_url}]
         }]);
-        let mut root = serde_json::json!({
-            "hooks": {
-                "SessionStart":     flowmux_entry.clone(),
-                "UserPromptSubmit": flowmux_entry.clone(),
-                "Stop":             flowmux_entry.clone(),
-                "SessionEnd":       flowmux_entry.clone(),
-            }
-        });
+        let mut root = serde_json::json!({ "hooks": {} });
+        let hooks = root["hooks"].as_object_mut().unwrap();
+        for event in FLOWMUX_HOOK_EVENTS {
+            hooks.insert((*event).to_owned(), flowmux_entry.clone());
+        }
 
         let hooks = root.get("hooks").unwrap();
         assert!(
@@ -718,6 +854,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing event after upgrade: {event}"));
             assert_eq!(arr.len(), 1, "duplicate hook groups for {event}");
         }
+        assert_eq!(hooks["SessionStart"][0]["hooks"][0]["type"], "command");
     }
 
     #[test]

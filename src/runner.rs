@@ -148,10 +148,12 @@ impl AgentRunner {
     // Restore an agent from persisted config (called on startup)
     // -----------------------------------------------------------------------
 
-    pub fn restore(&mut self, config: &AgentConfig) -> Box<dyn AgentAdapter> {
-        match &config.kind {
+    /// Restore an adapter and update `config` when restoration discovers
+    /// durable metadata that should be persisted with the agent.
+    pub fn restore(&mut self, config: &mut AgentConfig) -> (Box<dyn AgentAdapter>, bool) {
+        match config.kind.clone() {
             AgentKind::Opencode { port, session_id } => {
-                Box::new(OpenCodeAdapter::new(*port, session_id.clone()))
+                (Box::new(OpenCodeAdapter::new(port, session_id)), false)
             }
             AgentKind::Claude {
                 flowmux_agent_id,
@@ -162,27 +164,50 @@ impl AgentRunner {
                 let port = self.claude.as_ref().unwrap().port();
                 let _ = install_hooks(port);
                 let runtime = self.claude.as_ref().unwrap();
-                runtime.restore(
-                    flowmux_agent_id,
-                    session_id.clone(),
-                    transcript_path.clone(),
+                let resolved_transcript_path = runtime.restore(
+                    &flowmux_agent_id,
+                    session_id,
+                    transcript_path,
                     Some(&config.directory),
                 );
-                Box::new(runtime.make_adapter(flowmux_agent_id.clone()))
+                let config_changed = if let (
+                    Some(resolved_transcript_path),
+                    AgentKind::Claude {
+                        transcript_path: stored_transcript_path,
+                        ..
+                    },
+                ) = (resolved_transcript_path, &mut config.kind)
+                {
+                    if stored_transcript_path.as_deref() != Some(&resolved_transcript_path) {
+                        *stored_transcript_path = Some(resolved_transcript_path);
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                (
+                    Box::new(runtime.make_adapter(flowmux_agent_id)),
+                    config_changed,
+                )
             }
-            AgentKind::Codex { port, session_id } => Box::new(CodexAdapter::new(
-                *port,
-                config.directory.clone(),
-                session_id.clone(),
-            )),
+            AgentKind::Codex { port, session_id } => (
+                Box::new(CodexAdapter::new(
+                    port,
+                    config.directory.clone(),
+                    session_id,
+                )),
+                false,
+            ),
             AgentKind::Pi {
                 flowmux_agent_id,
                 session_id,
             } => {
                 self.ensure_pi();
                 let runtime = self.pi.as_ref().unwrap();
-                runtime.restore(flowmux_agent_id, session_id.clone());
-                Box::new(runtime.make_adapter(flowmux_agent_id.clone()))
+                runtime.restore(&flowmux_agent_id, session_id);
+                (Box::new(runtime.make_adapter(flowmux_agent_id)), false)
             }
         }
     }
@@ -247,15 +272,18 @@ impl AgentRunner {
                 let window_index = tmux::new_window(&effective_dir, name)?;
                 let pane = format!("{}:{}.0", tmux::session_name(), window_index);
 
+                // Claude can emit SessionStart as soon as its command reaches
+                // tmux, so its hook state must exist before the launch command
+                // is sent.
+                let runtime = self.claude.as_ref().unwrap();
+                let adapter = runtime.make_adapter(flowmux_agent_id.clone());
+
                 // Launch claude with the flowmux agent ID exported as an env var.
                 let args = vec![
                     std::ffi::OsString::from("--flowmux-agent-id"),
                     flowmux_agent_id.clone().into(),
                 ];
                 tmux::send_literal(&pane, &launch::flowmux_launch_command("claude", &args))?;
-
-                let runtime = self.claude.as_ref().unwrap();
-                let adapter = runtime.make_adapter(flowmux_agent_id.clone());
 
                 let config = AgentConfig {
                     name: name.to_owned(),
@@ -380,6 +408,11 @@ impl AgentRunner {
                 let runtime = self.claude.as_ref().unwrap();
                 runtime.reset_status(flowmux_agent_id);
 
+                // Register before launching. Claude can send SessionStart
+                // immediately; registering afterward drops that event and leaves
+                // the dashboard waiting for readiness indefinitely.
+                let adapter = runtime.make_adapter(flowmux_agent_id.clone());
+
                 // Launch claude, exporting the flowmux agent ID.
                 // If we have a prior Claude session ID, resume it so the
                 // conversation context is preserved across restarts.
@@ -392,8 +425,8 @@ impl AgentRunner {
                     args.push(sid.clone().into());
                 }
                 tmux::send_literal(&new_pane, &launch::flowmux_launch_command("claude", &args))?;
+                runtime.wait_until_ready(flowmux_agent_id).await?;
 
-                let adapter = runtime.make_adapter(flowmux_agent_id.clone());
                 let mut new_config = config.clone();
                 new_config.pane = new_pane;
                 Ok((new_config, Box::new(adapter)))

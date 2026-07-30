@@ -43,13 +43,25 @@ pub fn sanitize_name(s: &str) -> String {
 /// Uses raw `Command` so that a tmux server is started automatically when
 /// none is running (tmux_interface's `HasSession` errors out in that case).
 pub fn ensure_session() -> Result<()> {
-    let has = Command::new("tmux")
+    // `tmux has-session` writes an alarming-looking diagnostic to stderr when
+    // no tmux server exists yet. That is the normal first-run path for
+    // Flowmux, so capture it rather than letting it leak into the user's
+    // terminal before the TUI starts.
+    let probe = Command::new("tmux")
         .args(["has-session", "-t", &format!("={}", session_name())])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+        .output()
+        .context("failed to probe tmux session")?;
+    let has = probe.status.success();
 
     if !has {
+        let diagnostic = String::from_utf8_lossy(&probe.stderr);
+        if !diagnostic.trim().is_empty() {
+            log::debug!(
+                "tmux session '{}' is not available yet: {}",
+                session_name(),
+                diagnostic.trim()
+            );
+        }
         // Create the session detached with the current terminal size so panes
         // aren't stuck at the tmux default (80×24).
         let (cols, rows) = terminal::size().unwrap_or((220, 50));

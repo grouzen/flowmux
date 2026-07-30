@@ -8,7 +8,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
 use axum::{Json, Router};
 use serde_json::Value;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::{Notify, mpsc::UnboundedSender};
 
 use crate::models::AgentStatus;
 
@@ -19,6 +19,9 @@ use crate::models::AgentStatus;
 /// Per-agent state maintained by the hook server.
 pub struct ClaudeHookState {
     pub status: AgentStatus,
+    /// Set by SessionStart and used as the readiness signal for a fresh
+    /// Claude process.
+    pub session_started: bool,
     pub first_prompt: Option<String>,
     pub last_model_response: Option<String>,
     pub model_name: Option<String>,
@@ -33,6 +36,7 @@ impl Default for ClaudeHookState {
     fn default() -> Self {
         Self {
             status: AgentStatus::Idle,
+            session_started: false,
             first_prompt: None,
             last_model_response: None,
             model_name: None,
@@ -67,6 +71,7 @@ pub struct HookPersistEvent {
 struct HookServerState {
     hook_state: HookStateMap,
     persist_tx: UnboundedSender<HookPersistEvent>,
+    startup_notify: Arc<Notify>,
 }
 
 // ---------------------------------------------------------------------------
@@ -131,13 +136,18 @@ async fn hook_handler(
 
             let mut map = state.hook_state.lock().unwrap();
             if let Some(entry) = map.get_mut(&agent_id) {
+                entry.session_started = true;
                 entry.session_id = session_id;
                 entry.transcript_path = transcript_path;
                 if model_name.is_some() {
                     entry.model_name = model_name;
                 }
-                entry.status = AgentStatus::Running;
+                // SessionStart confirms that Claude is ready to accept input,
+                // not that it is actively working. UserPromptSubmit and tool
+                // lifecycle hooks transition the agent to Running later.
+                entry.status = AgentStatus::Idle;
             }
+            state.startup_notify.notify_waiters();
         }
 
         "UserPromptSubmit" => {
@@ -302,33 +312,50 @@ fn session_id_from_transcript_path(transcript_path: &str) -> Option<String> {
 // Spawn the hook server
 // ---------------------------------------------------------------------------
 
-fn find_free_port(from: u16) -> u16 {
+/// Bind synchronously so a launched Claude client cannot beat its hook server
+/// to the first SessionStart request. The listener is then handed to Tokio.
+fn bind_listener(from: u16) -> (StdTcpListener, u16) {
     let mut port = from;
     loop {
-        if StdTcpListener::bind(format!("127.0.0.1:{}", port)).is_ok() {
-            return port;
+        match StdTcpListener::bind(("127.0.0.1", port)) {
+            Ok(listener) => {
+                let actual_port = listener
+                    .local_addr()
+                    .expect("bound Claude hook listener should have an address")
+                    .port();
+                return (listener, actual_port);
+            }
+            Err(_) => {
+                port = port.checked_add(1).expect("no free port available");
+            }
         }
-        port += 1;
     }
 }
 
 pub fn spawn_hook_server(
     hook_state: HookStateMap,
     persist_tx: UnboundedSender<HookPersistEvent>,
+    startup_notify: Arc<Notify>,
     base_port: u16,
 ) -> u16 {
-    let port = find_free_port(base_port);
+    // Binding before spawning closes the window where a just-launched Claude
+    // process receives connection refused for its first hook event.
+    let (listener, port) = bind_listener(base_port);
+    listener
+        .set_nonblocking(true)
+        .expect("Claude hook listener should support nonblocking mode");
+
     tokio::spawn(async move {
         let state = HookServerState {
             hook_state,
             persist_tx,
+            startup_notify,
         };
         let app = Router::new()
             .route("/hook", post(hook_handler))
             .layer(Extension(state));
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
-            .await
-            .expect("bind should succeed after find_free_port");
+        let listener = tokio::net::TcpListener::from_std(listener)
+            .expect("pre-bound Claude hook listener should be valid");
         axum::serve(listener, app).await.unwrap();
     });
     port
@@ -500,6 +527,7 @@ fn parse_ts_ms(ts: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::HeaderValue;
     use std::io::Write;
 
     fn make_transcript(lines: &[&str]) -> std::path::PathBuf {
@@ -524,6 +552,58 @@ mod tests {
     const ASSISTANT_T5: &str = r#"{"type":"assistant","message":{"id":"m1","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"hi"}],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":100,"output_tokens":50}},"uuid":"a1","parentUuid":"u1","isSidechain":false,"sessionId":"s1","timestamp":"2026-01-01T00:00:05.000Z"}"#;
     const TOOL_RESULT_T50: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu1","content":"result"}]},"uuid":"tr1","parentUuid":"a1","isSidechain":false,"sessionId":"s1","timestamp":"2026-01-01T00:00:50.000Z"}"#;
     const ASSISTANT_T60: &str = r#"{"type":"assistant","message":{"id":"m2","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"done"}],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":200,"output_tokens":100}},"uuid":"a2","parentUuid":"tr1","isSidechain":false,"sessionId":"s1","timestamp":"2026-01-01T00:01:00.000Z"}"#;
+
+    #[tokio::test]
+    async fn session_start_updates_agent_metadata() {
+        let hook_state: HookStateMap = Arc::new(Mutex::new(HashMap::new()));
+        hook_state
+            .lock()
+            .unwrap()
+            .insert("agent-1".into(), Default::default());
+        let (persist_tx, _persist_rx) = tokio::sync::mpsc::unbounded_channel();
+        let startup_notify = Arc::new(Notify::new());
+        let notified = startup_notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        let state = HookServerState {
+            hook_state: hook_state.clone(),
+            persist_tx,
+            startup_notify: startup_notify.clone(),
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert("x-flowmux-agent-id", HeaderValue::from_static("agent-1"));
+
+        let response = hook_handler(
+            headers,
+            Extension(state),
+            Json(serde_json::json!({
+                "hook_event_name": "SessionStart",
+                "session_id": "session-1",
+            })),
+        )
+        .await;
+
+        assert_eq!(response, StatusCode::OK);
+        {
+            let state = hook_state.lock().unwrap();
+            assert!(state["agent-1"].session_started);
+            assert_eq!(state["agent-1"].status, AgentStatus::Idle);
+            assert_eq!(state["agent-1"].session_id.as_deref(), Some("session-1"));
+        }
+        tokio::time::timeout(std::time::Duration::from_millis(100), notified.as_mut())
+            .await
+            .expect("SessionStart should notify readiness waiters");
+    }
+
+    #[test]
+    fn bind_listener_reserves_the_returned_port_before_server_spawn() {
+        let (listener, port) = bind_listener(0);
+
+        assert_ne!(port, 0);
+        assert!(StdTcpListener::bind(("127.0.0.1", port)).is_err());
+
+        drop(listener);
+    }
 
     #[test]
     fn parse_transcript_skips_tool_results() {

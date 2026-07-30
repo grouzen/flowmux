@@ -6,6 +6,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Padding, Paragraph},
 };
 
+use crate::app::{StartupAgentState, StartupProgress};
 use crate::models::{AgentEntry, AgentStatus, AgentStatusCounts};
 use crate::ui::theme::{
     ICON_AGENT, ICON_CTX, ICON_DIR, ICON_IDLE, ICON_MODEL, ICON_RUN, ICON_STOP, ICON_TIME,
@@ -61,10 +62,12 @@ pub fn render_dashboard(
     status_counts: AgentStatusCounts,
     blink_running: bool,
     blink_waiting: bool,
+    startup_progress: Option<&StartupProgress>,
 ) {
     f.render_widget(Block::default().style(ds(dimmed).bg(theme.bg)), area);
 
-    // Split into tabs, main area, and keybindings bar at bottom
+    // Split into tabs, main area, and keybindings bar. Startup progress lives in
+    // the right side of the status bar so cards can use the full vertical area.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -87,6 +90,7 @@ pub fn render_dashboard(
         status_counts,
         blink_running,
         blink_waiting,
+        startup_progress.filter(|progress| !progress.finished),
     );
     render_grid(
         f,
@@ -102,6 +106,7 @@ pub fn render_dashboard(
         card_response_content_heights,
         card_response_content_widths,
         dimmed,
+        startup_progress.map(|progress| progress.states.as_slice()),
     );
 }
 
@@ -134,6 +139,13 @@ pub fn grid_layout(n: usize) -> (usize, usize) {
     }
 }
 
+fn startup_progress_message(progress: &StartupProgress) -> String {
+    format!(
+        " Restoring agents {}/{} · restarting {} ",
+        progress.completed, progress.total, progress.restarted,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_grid(
     f: &mut Frame,
@@ -149,6 +161,7 @@ fn render_grid(
     card_response_content_heights: &mut Vec<u16>,
     card_response_content_widths: &mut Vec<u16>,
     dimmed: bool,
+    startup_states: Option<&[StartupAgentState]>,
 ) {
     if visible_indices.is_empty() {
         let chunks = Layout::default()
@@ -216,6 +229,7 @@ fn render_grid(
                     scroll,
                     horizontal_scroll,
                     dimmed,
+                    startup_states.and_then(|states| states.get(agent_idx)),
                 );
                 card_response_heights[agent_idx] = resp_h;
                 card_response_widths[agent_idx] = resp_w;
@@ -233,6 +247,7 @@ fn render_grid(
 
 fn status_symbol(status: &AgentStatus) -> &'static str {
     match status {
+        AgentStatus::Starting => "…",
         AgentStatus::Running => ICON_RUN,
         AgentStatus::WaitingForInput => ICON_WAIT,
         AgentStatus::Idle => ICON_IDLE,
@@ -243,6 +258,7 @@ fn status_symbol(status: &AgentStatus) -> &'static str {
 
 fn status_label(status: &AgentStatus) -> &'static str {
     match status {
+        AgentStatus::Starting => "Starting",
         AgentStatus::Running => "Running",
         AgentStatus::WaitingForInput => "Waiting",
         AgentStatus::Idle => "Idle",
@@ -253,6 +269,7 @@ fn status_label(status: &AgentStatus) -> &'static str {
 
 fn status_color(theme: &Theme, status: &AgentStatus) -> ratatui::style::Color {
     match status {
+        AgentStatus::Starting => theme.yellow,
         AgentStatus::Running => theme.green,
         AgentStatus::WaitingForInput => theme.yellow,
         AgentStatus::Idle => theme.cyan,
@@ -298,6 +315,7 @@ fn render_card(
     response_scroll: u16,
     response_horizontal_scroll: u16,
     dimmed: bool,
+    startup_state: Option<&StartupAgentState>,
 ) -> (u16, u16, u16, u16) {
     let (border_color, title_color) = if is_selected {
         (selected_border_color(theme), selected_border_color(theme))
@@ -340,6 +358,34 @@ fn render_card(
         width: raw_inner.width.saturating_sub(2),
         height: raw_inner.height,
     };
+
+    if let Some(
+        state @ (StartupAgentState::Restoring
+        | StartupAgentState::Restarting
+        | StartupAgentState::Failed),
+    ) = startup_state
+    {
+        let (message, color) = match state {
+            StartupAgentState::Restoring => ("Restoring agent…", theme.yellow),
+            StartupAgentState::Restarting => ("Restarting tmux pane…", theme.yellow),
+            StartupAgentState::Failed => ("Restore failed — open to retry", theme.red),
+            StartupAgentState::Ready => unreachable!(),
+        };
+        let message_area = Rect {
+            y: inner.y + inner.height.saturating_sub(1) / 2,
+            height: 1,
+            ..inner
+        };
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                message,
+                ds(dimmed).fg(color).add_modifier(Modifier::ITALIC),
+            ))
+            .alignment(Alignment::Center),
+            message_area,
+        );
+        return (0, 0, 0, 0);
+    }
 
     // -----------------------------------------------------------------------
     // Compute header content
@@ -658,6 +704,7 @@ fn push_keybind<'a>(
     ));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_keybindings_bar(
     f: &mut Frame,
     area: Rect,
@@ -666,6 +713,7 @@ fn render_keybindings_bar(
     status_counts: AgentStatusCounts,
     blink_running: bool,
     blink_waiting: bool,
+    startup_progress: Option<&StartupProgress>,
 ) {
     // Left: hotkeys
     let mut spans: Vec<Span> = Vec::new();
@@ -686,7 +734,13 @@ fn render_keybindings_bar(
     spans.push(Span::raw(" "));
     push_keybind(&mut spans, "q", "quit", theme, dimmed);
 
-    // Right: agent status counts (leading space separates from middle chunk; trailing space before brand)
+    let progress_message = startup_progress.map(startup_progress_message);
+    let progress_width = progress_message
+        .as_deref()
+        .map(|message| unicode_width::UnicodeWidthStr::width(message) as u16)
+        .unwrap_or(0);
+
+    // Right: startup progress, agent status counts, then brand.
     let (status_spans, status_width) = status_count_spans(
         theme,
         status_counts.running,
@@ -703,14 +757,24 @@ fn render_keybindings_bar(
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Min(0),
+            Constraint::Length(progress_width),
             Constraint::Length(status_width),
             Constraint::Length(brand_width),
         ])
         .split(area);
 
     f.render_widget(Paragraph::new(Line::from(spans)), bar_chunks[0]);
-    f.render_widget(Paragraph::new(Line::from(status_spans)), bar_chunks[1]);
-    f.render_widget(Paragraph::new(brand), bar_chunks[2]);
+    if let Some(message) = progress_message {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                message,
+                ds(dimmed).fg(theme.yellow).add_modifier(Modifier::BOLD),
+            )),
+            bar_chunks[1],
+        );
+    }
+    f.render_widget(Paragraph::new(Line::from(status_spans)), bar_chunks[2]);
+    f.render_widget(Paragraph::new(brand), bar_chunks[3]);
 }
 
 fn render_project_tabs(

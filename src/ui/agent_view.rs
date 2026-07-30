@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Clear, Paragraph},
 };
 
-use crate::app::AgentViewState;
+use crate::app::{AgentViewState, StartupAgentState};
 use crate::host_terminal::HostColors;
 use crate::models::{AgentEntry, AgentStatusCounts};
 use crate::ui::theme::{
@@ -27,6 +27,7 @@ pub fn render_agent_view(
     blink_waiting: bool,
     copy_notice: Option<(&str, Color)>,
     selection: Option<crate::ghostty::render::SelectionRange>,
+    startup_state: Option<StartupAgentState>,
 ) {
     // Split into top info bar, content area, and bottom status bar
     let chunks = Layout::default()
@@ -53,34 +54,72 @@ pub fn render_agent_view(
 
     let viewport_height = content_area.height.saturating_sub(2) as usize;
 
-    // Show the appropriate window of lines based on view_scroll.
-    // view_scroll == 0: live view (last viewport_height lines).
-    // view_scroll > 0: history view (a window offset from the end).
-    //
-    // Clamp effective_scroll here (read-only, no state write) so the renderer
-    // never produces an empty frame when view_scroll overshoots the buffer.
-    // This avoids a flicker cycle that would occur if we mutated state and
-    // triggered a dirty→redraw round-trip.
-    let visible_text =
-        crate::app::pane_visible_text(&state.lines, state.view_scroll, viewport_height);
-
-    let cursor_position = if !state.show_stopped_overlay && state.view_scroll == 0 {
-        state.cursor
+    if let Some(
+        startup @ (StartupAgentState::Restoring
+        | StartupAgentState::Restarting
+        | StartupAgentState::Failed),
+    ) = startup_state
+    {
+        let message = match startup {
+            StartupAgentState::Restoring => "Restoring agent…",
+            StartupAgentState::Restarting => "Restarting tmux pane…",
+            StartupAgentState::Failed => {
+                "Restore failed. Press r to retry or ctrl+g for the dashboard."
+            }
+            StartupAgentState::Ready => unreachable!(),
+        };
+        let popup = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Ratio(1, 2),
+                Constraint::Length(1),
+                Constraint::Ratio(1, 2),
+            ])
+            .split(content_area);
+        f.render_widget(
+            Block::default()
+                .borders(ratatui::widgets::Borders::ALL)
+                .border_style(Style::default().fg(inactive_border_color(theme))),
+            content_area,
+        );
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                message,
+                Style::default()
+                    .fg(if matches!(startup, StartupAgentState::Failed) {
+                        theme.red
+                    } else {
+                        theme.yellow
+                    })
+                    .add_modifier(Modifier::ITALIC),
+            ))
+            .alignment(ratatui::layout::Alignment::Center),
+            popup[1],
+        );
     } else {
-        None
-    };
-    crate::ghostty::render::render_pane_content(
-        visible_text.as_bytes(),
-        f,
-        content_area,
-        crate::ghostty::render::PaneRenderOptions {
-            border_color: inactive_border_color(theme),
-            cursor: cursor_position,
-            host_fg: host_colors.fg,
-            host_bg: host_colors.bg,
-            selection,
-        },
-    );
+        // Show the appropriate window of lines based on view_scroll.
+        // view_scroll == 0: live view (last viewport_height lines).
+        // view_scroll > 0: history view (a window offset from the end).
+        let visible_text =
+            crate::app::pane_visible_text(&state.lines, state.view_scroll, viewport_height);
+        let cursor_position = if !state.show_stopped_overlay && state.view_scroll == 0 {
+            state.cursor
+        } else {
+            None
+        };
+        crate::ghostty::render::render_pane_content(
+            visible_text.as_bytes(),
+            f,
+            content_area,
+            crate::ghostty::render::PaneRenderOptions {
+                border_color: inactive_border_color(theme),
+                cursor: cursor_position,
+                host_fg: host_colors.fg,
+                host_bg: host_colors.bg,
+                selection,
+            },
+        );
+    }
 
     // Status bar
     let dir_str = super::dashboard::shellify_dir(&agent_entry.config.directory);

@@ -25,7 +25,7 @@ use agent_discovery::DiscoveredAgents;
 use app::App;
 use config::Config;
 use global_config::GlobalConfig;
-use models::{AgentEntry, AgentMeta, AgentType};
+use models::AgentType;
 use runner::AgentRunner;
 
 /// flowmux — multi-agent TUI dashboard
@@ -126,7 +126,7 @@ async fn main() -> Result<()> {
     tmux::ensure_session()?;
 
     // Load persisted config for this session
-    let mut config = Config::load(&cli.tmux_session)?;
+    let config = Config::load(&cli.tmux_session)?;
 
     // Resolve enabled agents: CLI overrides global config.
     let enabled_agents = cli
@@ -143,7 +143,7 @@ async fn main() -> Result<()> {
     }
 
     // Build AgentRunner which owns all agent lifecycle logic.
-    let mut runner = AgentRunner::new(
+    let runner = AgentRunner::new(
         discovered,
         global_config,
         cli.tmux_session.clone(),
@@ -158,59 +158,8 @@ async fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    // Auto-resume any agents whose tmux pane died (e.g. after a tmux server
-    // restart).  Snapshot the dead panes before creating replacements: tmux
-    // may reuse low window indexes, and a newly restarted agent can otherwise
-    // make a later agent's old pane target look alive.
-    let restart_indices: Vec<usize> = config
-        .agents
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, agent_config)| (!tmux::is_alive(&agent_config.pane)).then_some(idx))
-        .collect();
-
-    let mut config_dirty = false;
-    for idx in restart_indices {
-        let Some(agent_config) = config.agents.get(idx).cloned() else {
-            continue;
-        };
-        if let Ok((updated_config, _adapter)) = runner.restart(&agent_config).await {
-            if let Some(config_agent) = config.agents.get_mut(idx) {
-                *config_agent = updated_config;
-            }
-            config_dirty = true;
-        }
-        // On failure the config is left unchanged.
-    }
-    if config_dirty {
-        let _ = config.save();
-    }
-
-    // Reconstruct agents and adapters from stored config.
-    let mut agents: Vec<AgentEntry> = Vec::new();
-    let mut agent_adapters: Vec<Box<dyn agents::AgentAdapter>> = Vec::new();
-
-    for agent_config in &config.agents {
-        let adapter = runner.restore(agent_config);
-        // Eagerly populate meta from the adapter so the dashboard shows
-        // meaningful data on the very first frame, before any tick fires.
-        let meta = AgentMeta {
-            status: adapter.get_status().await,
-            context: adapter.get_context().await,
-            first_prompt: adapter.get_first_prompt().await,
-            last_model_response: adapter.get_last_model_response().await,
-            model_name: adapter.get_model_name().await,
-            total_work_ms: adapter.get_total_work_ms().await,
-            status_changed_at: None,
-        };
-        agents.push(AgentEntry {
-            config: agent_config.clone(),
-            meta,
-        });
-        agent_adapters.push(adapter);
-    }
-
-    // Build App and spawn background tasks
+    // Build the first dashboard frame now. Persisted agents are restored after
+    // the terminal enters its alternate screen so startup remains responsive.
     let host_colors = match host_terminal::probe_host_colors() {
         Ok(colors) => colors,
         Err(e) => {
@@ -218,11 +167,11 @@ async fn main() -> Result<()> {
             host_terminal::HostColors::default()
         }
     };
-    let mut app = App::new(config, agents, agent_adapters, runner, host_colors);
-    crossterm::terminal::enable_raw_mode()?;
+    let mut app = App::new_with_startup_placeholders(config, runner, host_colors);
     app.spawn_tasks();
 
     tui::run(|mut terminal| async move {
+        app.begin_startup_restore();
         loop {
             // Draw only when state has changed since the last frame.
             if app.dirty {
@@ -263,6 +212,7 @@ async fn main() -> Result<()> {
                                 status_counts,
                                 blink_running,
                                 blink_waiting,
+                                app.startup_progress.as_ref(),
                             );
                         }
                         app::AppState::StartupGuide(guide) => {
@@ -286,6 +236,7 @@ async fn main() -> Result<()> {
                                 status_counts,
                                 blink_running,
                                 blink_waiting,
+                                app.startup_progress.as_ref(),
                             );
                             ui::startup_guide::render_startup_guide(f, area, theme, guide);
                         }
@@ -310,6 +261,7 @@ async fn main() -> Result<()> {
                                 status_counts,
                                 blink_running,
                                 blink_waiting,
+                                app.startup_progress.as_ref(),
                             );
                             ui::settings::render_settings(f, area, theme, settings_state);
                         }
@@ -329,6 +281,7 @@ async fn main() -> Result<()> {
                                         .as_ref()
                                         .map(|(text, color)| (text.as_str(), *color)),
                                     selection,
+                                    app.startup_state(*idx),
                                 );
                             }
                         }
@@ -353,6 +306,7 @@ async fn main() -> Result<()> {
                                 status_counts,
                                 blink_running,
                                 blink_waiting,
+                                app.startup_progress.as_ref(),
                             );
                             ui::create_agent::render_create_agent(
                                 f,
@@ -382,6 +336,7 @@ async fn main() -> Result<()> {
                                 status_counts,
                                 blink_running,
                                 blink_waiting,
+                                app.startup_progress.as_ref(),
                             );
                             ui::create_project::render_create_project(
                                 f,
@@ -411,6 +366,7 @@ async fn main() -> Result<()> {
                                 status_counts,
                                 blink_running,
                                 blink_waiting,
+                                app.startup_progress.as_ref(),
                             );
                             let name = app
                                 .agents
@@ -454,6 +410,7 @@ async fn main() -> Result<()> {
                                 status_counts,
                                 blink_running,
                                 blink_waiting,
+                                app.startup_progress.as_ref(),
                             );
                             ui::remove_project::render_remove_project(
                                 f,
