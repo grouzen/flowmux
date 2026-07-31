@@ -86,6 +86,11 @@ jobs:
           echo "LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast" >> "$GITHUB_ENV"
 
       - name: Run tests
+        # A native ReleaseFast Ghostty build can emit instructions unavailable
+        # on the hosted Linux runner. Keep it optimized for release artifacts,
+        # but use the debug build for correctness tests.
+        env:
+          LIBGHOSTTY_VT_SYS_OPTIMIZE: Debug
         run: cargo test --locked --target ${{ matrix.primary_target }}
 
       - name: Run clippy
