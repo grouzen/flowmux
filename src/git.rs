@@ -7,6 +7,7 @@
 use anyhow::{Context, Result, bail};
 use git2::Repository;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorktreeStartPoint<'a> {
@@ -213,6 +214,21 @@ pub fn repo_has_submodules(repo_root: &Path) -> bool {
 // Worktree creation
 // ---------------------------------------------------------------------------
 
+/// Build a Git command that cannot wait for credentials in Flowmux's UI.
+///
+/// Git commands run while creating or removing an agent do not have a place to
+/// display a credential prompt.  In particular, submodule URLs may use HTTPS
+/// even when the parent repository uses SSH.  Make authentication failures
+/// return an error instead of blocking the application event loop.
+fn non_interactive_git_command(repo_root: &Path) -> Command {
+    let mut command = Command::new("git");
+    command
+        .current_dir(repo_root)
+        .stdin(Stdio::null())
+        .env("GIT_TERMINAL_PROMPT", "0");
+    command
+}
+
 /// Create a git worktree at `worktree_path` for `branch`.
 ///
 /// - If `use_existing_branch` is `false`, a new branch is created from the
@@ -236,8 +252,7 @@ pub fn create_worktree(
 
     // Build the git command arguments.
     // git worktree add [--no-track -b <branch>] <path> [<branch>]
-    let mut cmd = std::process::Command::new("git");
-    cmd.current_dir(repo_root);
+    let mut cmd = non_interactive_git_command(repo_root);
 
     if use_existing_branch {
         // Checkout the existing branch into the new worktree.
@@ -266,8 +281,7 @@ pub fn create_worktree(
 
 /// Initialize submodules in the given worktree, including nested submodules.
 pub fn initialize_submodules(worktree_path: &Path) -> Result<()> {
-    let output = std::process::Command::new("git")
-        .current_dir(worktree_path)
+    let output = non_interactive_git_command(worktree_path)
         .args([
             "-c",
             "protocol.file.allow=always",
@@ -307,8 +321,7 @@ pub fn remove_worktree(
 ) -> Result<()> {
     // `git worktree remove --force <path>` handles both the lock-file cleanup
     // and the directory removal.
-    let output = std::process::Command::new("git")
-        .current_dir(repo_root)
+    let output = non_interactive_git_command(repo_root)
         .args(["worktree", "remove", "--force"])
         .arg(worktree_path)
         .output()
@@ -326,15 +339,13 @@ pub fn remove_worktree(
     if delete_branch {
         // `git branch -d` refuses to delete an unmerged branch; use `-D` to
         // force deletion since the user explicitly requested it.
-        let _ = std::process::Command::new("git")
-            .current_dir(repo_root)
+        let _ = non_interactive_git_command(repo_root)
             .args(["branch", "-D", branch])
             .output();
     }
 
     // Prune any stale worktree administrative files.
-    let _ = std::process::Command::new("git")
-        .current_dir(repo_root)
+    let _ = non_interactive_git_command(repo_root)
         .args(["worktree", "prune"])
         .output();
 
@@ -373,6 +384,18 @@ mod tests {
         assert!(repo_has_submodules(&root));
 
         let _ = std::fs::remove_dir_all(PathBuf::from(&root));
+    }
+
+    #[test]
+    fn worktree_git_commands_disable_terminal_prompts() {
+        let command = non_interactive_git_command(Path::new("/tmp"));
+        let prompt_setting = command
+            .get_envs()
+            .find(|(key, _)| *key == "GIT_TERMINAL_PROMPT")
+            .and_then(|(_, value)| value)
+            .expect("GIT_TERMINAL_PROMPT should be set");
+
+        assert_eq!(prompt_setting, "0");
     }
 
     fn run_git(repo_root: &Path, args: &[&str]) {
