@@ -62,6 +62,54 @@ struct StoredWorktree {
     repo_root: String,
     branch_name: String,
     base_ref: Option<String>,
+    /// Whether this creation made the branch, so a failed creation can remove
+    /// it without deleting a branch that existed before the worktree did.
+    delete_branch_on_rollback: bool,
+}
+
+/// Removes a freshly created worktree unless agent creation completes.
+///
+/// Worktree setup happens before the adapter is launched. Keeping this guard
+/// alive for the rest of [`AgentRunner::create`] makes every `?` in the launch
+/// path roll the worktree back, including readiness timeouts.
+struct WorktreeCreationRollback<'a> {
+    worktree_path: &'a str,
+    worktree: Option<&'a StoredWorktree>,
+    armed: bool,
+}
+
+impl<'a> WorktreeCreationRollback<'a> {
+    fn new(worktree_path: &'a str, worktree: Option<&'a StoredWorktree>) -> Self {
+        Self {
+            worktree_path,
+            worktree,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for WorktreeCreationRollback<'_> {
+    fn drop(&mut self) {
+        let Some(worktree) = self.armed.then_some(self.worktree).flatten() else {
+            return;
+        };
+
+        if let Err(error) = git::remove_worktree(
+            Path::new(&worktree.repo_root),
+            Path::new(self.worktree_path),
+            &worktree.branch_name,
+            worktree.delete_branch_on_rollback,
+        ) {
+            log::warn!(
+                "failed to roll back git worktree {:?} after agent creation failed: {error}",
+                self.worktree_path
+            );
+        }
+    }
 }
 
 impl WorktreeMaterialization {
@@ -239,16 +287,18 @@ impl AgentRunner {
                 symlink_directories,
             },
         )?;
+        let mut worktree_rollback =
+            WorktreeCreationRollback::new(&effective_dir, stored_worktree.as_ref());
         // -------------------------------------------------------------------
 
-        match agent_type {
+        let result: Result<(AgentConfig, Box<dyn AgentAdapter>)> = match agent_type {
             AgentType::Opencode => {
                 let (adapter, window_index) = OpenCodeAdapter::create(&effective_dir, name).await?;
                 let pane = format!("{}:{}.0", tmux::session_name(), window_index);
                 let config = AgentConfig {
                     name: name.to_owned(),
                     pane,
-                    directory: effective_dir,
+                    directory: effective_dir.clone(),
                     project: project.to_owned(),
                     kind: AgentKind::Opencode {
                         port: adapter.port,
@@ -288,7 +338,7 @@ impl AgentRunner {
                 let config = AgentConfig {
                     name: name.to_owned(),
                     pane,
-                    directory: effective_dir,
+                    directory: effective_dir.clone(),
                     project: project.to_owned(),
                     kind: AgentKind::Claude {
                         flowmux_agent_id,
@@ -310,7 +360,7 @@ impl AgentRunner {
                 let config = AgentConfig {
                     name: name.to_owned(),
                     pane,
-                    directory: effective_dir,
+                    directory: effective_dir.clone(),
                     project: project.to_owned(),
                     kind: AgentKind::Codex {
                         port: adapter.port,
@@ -345,7 +395,7 @@ impl AgentRunner {
                 let config = AgentConfig {
                     name: name.to_owned(),
                     pane,
-                    directory: effective_dir,
+                    directory: effective_dir.clone(),
                     project: project.to_owned(),
                     kind: AgentKind::Pi {
                         flowmux_agent_id,
@@ -359,7 +409,10 @@ impl AgentRunner {
                 };
                 Ok((config, Box::new(adapter)))
             }
-        }
+        };
+
+        worktree_rollback.disarm();
+        result
     }
 
     // -----------------------------------------------------------------------
@@ -570,6 +623,7 @@ fn prepare_worktree_directory(
             repo_root: worktree.repo_root,
             branch_name: worktree.branch_name,
             base_ref: stored_base_ref,
+            delete_branch_on_rollback: !use_existing,
         }),
     ))
 }
@@ -932,6 +986,64 @@ mod tests {
         assert!(err.to_string().contains("does not exist"));
         assert!(!worktree_path.exists());
         assert!(!git_worktree_list_contains(&repo_root, &worktree_path));
+        assert!(git::branch_exists(&repo_root, &branch));
+    }
+
+    #[test]
+    fn failed_agent_creation_rolls_back_prepared_worktree() {
+        let temp = TestDir::new("rollback-agent-launch");
+        let repo_root = init_test_repo(&temp);
+        let worktrees_base = temp.path.join("worktrees");
+        let branch = git::sanitize_branch_name("agent launch timeout");
+
+        let (worktree_dir, stored_worktree) = prepare_worktree_directory(
+            repo_root.to_str().unwrap(),
+            Some(worktree_request(&repo_root, &branch)),
+            &worktrees_base,
+            WorktreeMaterialization::default(),
+        )
+        .unwrap();
+
+        {
+            let _rollback = WorktreeCreationRollback::new(&worktree_dir, stored_worktree.as_ref());
+            // Simulate an adapter launch error after the worktree has been
+            // prepared. Dropping the guard is what happens when `create`
+            // returns that error to the create-agent dialog.
+        }
+
+        assert!(!Path::new(&worktree_dir).exists());
+        assert!(!git_worktree_list_contains(
+            &repo_root,
+            Path::new(&worktree_dir)
+        ));
+        assert!(!git::branch_exists(&repo_root, &branch));
+    }
+
+    #[test]
+    fn failed_agent_creation_preserves_preexisting_branch() {
+        let temp = TestDir::new("rollback-existing-agent-branch");
+        let repo_root = init_test_repo(&temp);
+        let worktrees_base = temp.path.join("worktrees");
+        let branch = git::sanitize_branch_name("existing agent branch");
+        run_git(&repo_root, &["branch", &branch]);
+
+        let (worktree_dir, stored_worktree) = prepare_worktree_directory(
+            repo_root.to_str().unwrap(),
+            Some(worktree_request(&repo_root, &branch)),
+            &worktrees_base,
+            WorktreeMaterialization::default(),
+        )
+        .unwrap();
+
+        {
+            let _rollback = WorktreeCreationRollback::new(&worktree_dir, stored_worktree.as_ref());
+        }
+
+        assert!(!Path::new(&worktree_dir).exists());
+        assert!(!git_worktree_list_contains(
+            &repo_root,
+            Path::new(&worktree_dir)
+        ));
         assert!(git::branch_exists(&repo_root, &branch));
     }
 
