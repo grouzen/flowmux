@@ -392,9 +392,9 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "claude-code-transcripts"
-version = "0.1.11"
+version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "011a2ca51f3e0793835b280105577f01d1143745826f07e36cfc0e7094dff79c"
+checksum = "dc068b2ee898069691f6def8ec37f6fca74b03f0eec59e1e3fb12ef2e21940c6"
 dependencies = [
  "chrono",
  "serde",
