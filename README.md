@@ -255,6 +255,7 @@ Core stack:
 Before opening a PR, run:
 
 ```bash
+cargo fmt
 cargo build --locked
 cargo test
 ```
