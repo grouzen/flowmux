@@ -131,6 +131,8 @@ pub fn send_keys(target: &str, keys: &str) -> Result<()> {
 /// lookup.  Uses `load-buffer` + `paste-buffer` instead of `send-keys -l`
 /// because tmux silently drops `;` when passed as a standalone argument to
 /// `send-keys` (tmux treats `;` as a command separator regardless of `-l`).
+/// `-S` prevents tmux from sanitizing control bytes such as ESC, and `-r`
+/// preserves linefeeds. Callers provide any required bracketed-paste markers.
 pub fn send_literal(target: &str, data: &str) -> Result<()> {
     use std::io::Write;
     let mut child = Command::new("tmux")
@@ -144,7 +146,15 @@ pub fn send_literal(target: &str, data: &str) -> Result<()> {
     child.wait().context("tmux load-buffer failed")?;
 
     Command::new("tmux")
-        .args(["paste-buffer", "-t", target, "-b", "flowmux_buf"])
+        .args([
+            "paste-buffer",
+            "-S",
+            "-r",
+            "-t",
+            target,
+            "-b",
+            "flowmux_buf",
+        ])
         .status()
         .with_context(|| format!("failed to paste buffer to {}", target))?;
     Ok(())
