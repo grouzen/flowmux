@@ -2582,18 +2582,19 @@ impl App {
         show_overlay: bool,
         mouse_active: bool,
     ) {
-        let Some(seq) = mouse_event_to_sgr(mouse, show_overlay) else {
+        if !mouse_active {
+            return;
+        }
+
+        let Ok((term_cols, term_rows)) = crossterm::terminal::size() else {
             return;
         };
 
-        let term_height = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
-        if mouse.row >= term_height.saturating_sub(1) {
+        let Some(seq) =
+            mouse_event_to_sgr(mouse, show_overlay, pane_inner_rect(term_cols, term_rows))
+        else {
             return;
-        }
-
-        if mouse.kind == MouseEventKind::Moved && !mouse_active {
-            return;
-        }
+        };
 
         let _ = tmux::send_literal(pane, &seq);
     }
@@ -5233,10 +5234,11 @@ fn is_unmodified_left_button(mouse: MouseEvent) -> bool {
     mouse.modifiers.is_empty()
 }
 
-fn mouse_event_to_sgr(mouse: MouseEvent, show_overlay: bool) -> Option<String> {
+fn mouse_event_to_sgr(mouse: MouseEvent, show_overlay: bool, inner: Rect) -> Option<String> {
     if show_overlay {
         return None;
     }
+    let cell = mouse_to_pane_cell_in_rect(mouse, inner, false)?;
 
     let (mut cb, suffix) = match mouse.kind {
         MouseEventKind::Down(btn) => (sgr_button(btn), 'M'),
@@ -5261,8 +5263,8 @@ fn mouse_event_to_sgr(mouse: MouseEvent, show_overlay: bool) -> Option<String> {
     Some(format!(
         "\x1b[<{};{};{}{}",
         cb,
-        mouse.column.saturating_sub(1) + 1,
-        mouse.row.saturating_sub(2) + 1,
+        cell.col + 1,
+        cell.row + 1,
         suffix
     ))
 }
@@ -5325,6 +5327,7 @@ mod project_tests {
 
     #[test]
     fn scroll_wheel_mouse_events_encode_as_sgr_sequences() {
+        let inner = pane_inner_rect(80, 24);
         let scroll_up = MouseEvent {
             kind: MouseEventKind::ScrollUp,
             column: 4,
@@ -5339,13 +5342,36 @@ mod project_tests {
         };
 
         assert_eq!(
-            mouse_event_to_sgr(scroll_up, false).as_deref(),
+            mouse_event_to_sgr(scroll_up, false, inner).as_deref(),
             Some("\x1b[<64;4;5M")
         );
         assert_eq!(
-            mouse_event_to_sgr(scroll_down, false).as_deref(),
+            mouse_event_to_sgr(scroll_down, false, inner).as_deref(),
             Some("\x1b[<69;4;5M")
         );
+    }
+
+    #[test]
+    fn mouse_events_outside_pane_are_not_forwarded() {
+        let inner = pane_inner_rect(80, 24);
+        let mut click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: inner.x,
+            row: inner.y,
+            modifiers: KeyModifiers::empty(),
+        };
+
+        assert_eq!(
+            mouse_event_to_sgr(click, false, inner).as_deref(),
+            Some("\x1b[<0;1;1M")
+        );
+        click.row = inner.y - 1;
+        assert_eq!(mouse_event_to_sgr(click, false, inner), None);
+        click.row = inner.y + inner.height;
+        assert_eq!(mouse_event_to_sgr(click, false, inner), None);
+        click.row = inner.y;
+        click.column = inner.x + inner.width;
+        assert_eq!(mouse_event_to_sgr(click, false, inner), None);
     }
 
     #[test]
