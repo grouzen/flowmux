@@ -24,6 +24,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RequestKind {
     Discover,
+    Recover,
     Resume,
 }
 
@@ -307,6 +308,7 @@ async fn run_loop(
         let mut request_id = 10u64;
         let mut pending = None;
         let mut subscribed_thread_id: Option<String> = None;
+        let mut recovering = false;
 
         if let Some(thread_id) = cached_thread_id(&cached_session_id)
             && send_request(
@@ -341,7 +343,9 @@ async fn run_loop(
                     {
                         continue;
                     }
-                    let kind = if thread_id.is_some() {
+                    let kind = if recovering {
+                        RequestKind::Recover
+                    } else if thread_id.is_some() {
                         RequestKind::Resume
                     } else {
                         RequestKind::Discover
@@ -378,9 +382,10 @@ async fn run_loop(
                         let request = pending.take().unwrap();
                         if value.get("error").is_some() {
                             match request.kind {
-                                RequestKind::Discover => {}
+                                RequestKind::Discover | RequestKind::Recover => {}
                                 RequestKind::Resume if is_unmaterialized_thread_error(&value) => {
                                     live_cache.write().unwrap().status = AgentStatus::Idle;
+                                    recovering = true;
                                     continue;
                                 }
                                 _ => break,
@@ -395,6 +400,19 @@ async fn run_loop(
                                         &cached_session_id,
                                         &live_cache,
                                     );
+                                }
+                                RequestKind::Recover => {
+                                    recovering = false;
+                                    recover_from_thread_list(
+                                        &value,
+                                        &directory,
+                                        min_created_at,
+                                        &cached_session_id,
+                                        &live_cache,
+                                    );
+                                    if cached_thread_id(&cached_session_id) == previous_thread_id {
+                                        continue;
+                                    }
                                 }
                                 RequestKind::Resume => {
                                     if !handle_thread_response(
@@ -466,7 +484,7 @@ async fn send_request(
 
 fn request_for(id: u64, kind: RequestKind, thread_id: Option<&str>, directory: &str) -> Value {
     match kind {
-        RequestKind::Discover => json!({
+        RequestKind::Discover | RequestKind::Recover => json!({
             "id": id,
             "method": "thread/list",
             "params": {
@@ -635,8 +653,7 @@ fn handle_message(
         return;
     }
     let selected = threads.iter().find(|thread| {
-        thread.get("cwd").and_then(Value::as_str) == Some(directory)
-            && thread.get("parentThreadId").is_none_or(Value::is_null)
+        is_root_thread_for_directory(thread, directory)
             && thread
                 .get("createdAt")
                 .and_then(Value::as_i64)
@@ -664,6 +681,42 @@ fn handle_thread_response(
         live_cache.write().unwrap().model_name = Some(model.to_owned());
     }
     true
+}
+
+fn recover_from_thread_list(
+    message: &Value,
+    directory: &str,
+    min_created_at: i64,
+    cached_session_id: &Arc<Mutex<Option<String>>>,
+    live_cache: &Arc<RwLock<LiveCache>>,
+) {
+    let Some(threads) = message
+        .get("result")
+        .and_then(|result| result.get("data"))
+        .and_then(Value::as_array)
+    else {
+        return;
+    };
+    let current = cached_thread_id(cached_session_id);
+    let candidate = threads.iter().find(|thread| {
+        is_root_thread_for_directory(thread, directory)
+            && thread
+                .get("createdAt")
+                .and_then(Value::as_i64)
+                .unwrap_or_default()
+                >= min_created_at
+            && matches!(
+                thread
+                    .get("status")
+                    .and_then(|status| status.get("type"))
+                    .and_then(Value::as_str),
+                Some("active" | "idle")
+            )
+            && thread.get("id").and_then(Value::as_str) != current.as_deref()
+    });
+    if let Some(thread) = candidate {
+        switch_to_thread(thread, cached_session_id, live_cache);
+    }
 }
 
 fn handle_notification(
@@ -782,6 +835,7 @@ fn handle_notification(
 fn is_root_thread_for_directory(thread: &Value, directory: &str) -> bool {
     thread.get("parentThreadId").is_none_or(Value::is_null)
         && thread.get("cwd").and_then(Value::as_str) == Some(directory)
+        && thread.get("ephemeral").and_then(Value::as_bool) != Some(true)
 }
 
 fn switch_to_thread(
@@ -1865,10 +1919,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unmaterialized_thread_stays_idle_and_retries_resume() {
+    async fn unmaterialized_thread_recovers_to_active_thread() {
         let listener = TokioTcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let (retry_tx, retry_rx) = tokio::sync::oneshot::channel();
+        let (recovery_tx, recovery_rx) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
             let mut stream = accept_test_websocket(listener).await;
 
@@ -1900,23 +1954,153 @@ mod tests {
             )
             .await;
 
-            let retry: Value =
+            let discover: Value =
                 serde_json::from_str(&read_test_client_text(&mut stream).await).unwrap();
             assert_eq!(
-                retry.get("method").and_then(Value::as_str),
+                discover.get("method").and_then(Value::as_str),
+                Some("thread/list")
+            );
+            let discover_id = discover.get("id").and_then(Value::as_u64).unwrap();
+            write_test_server_text(
+                &mut stream,
+                json!({
+                    "id": discover_id,
+                    "result": {"data": [{
+                        "id": "thread-2",
+                        "cwd": "/tmp",
+                        "createdAt": 1,
+                        "parentThreadId": null,
+                        "status": {"type": "active", "activeFlags": []}
+                    }]}
+                }),
+            )
+            .await;
+
+            let resume: Value =
+                serde_json::from_str(&read_test_client_text(&mut stream).await).unwrap();
+            assert_eq!(
+                resume.get("method").and_then(Value::as_str),
                 Some("thread/resume")
             );
-            retry_tx.send(()).unwrap();
+            assert_eq!(resume["params"]["threadId"], "thread-2");
+            let resume_id = resume.get("id").and_then(Value::as_u64).unwrap();
+            write_test_server_text(
+                &mut stream,
+                json!({
+                    "id": resume_id,
+                    "result": {
+                        "model": "gpt-6-sol",
+                        "thread": {
+                            "id": "thread-2",
+                            "status": {"type": "active", "activeFlags": []},
+                            "turns": [{"items": [
+                                {"type": "userMessage", "text": "Investigate SSH"},
+                                {"type": "agentMessage", "text": "Checking the agent"}
+                            ]}]
+                        }
+                    }
+                }),
+            )
+            .await;
+            recovery_tx.send(()).unwrap();
             sleep(Duration::from_millis(100)).await;
         });
 
         let adapter = CodexAdapter::new(port, "/tmp".to_string(), Some("thread-1".to_string()));
-        tokio::time::timeout(Duration::from_secs(2), retry_rx)
+        tokio::time::timeout(Duration::from_secs(2), recovery_rx)
             .await
-            .expect("observer did not retry thread/resume")
+            .expect("observer did not recover active thread")
             .unwrap();
-        assert_eq!(adapter.get_status().await, AgentStatus::Idle);
+        for _ in 0..20 {
+            if adapter.get_model_name().await.is_some() {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(adapter.get_cached_session_id().as_deref(), Some("thread-2"));
+        assert_eq!(adapter.get_status().await, AgentStatus::Running);
+        assert_eq!(adapter.get_model_name().await.as_deref(), Some("gpt-6-sol"));
+        assert_eq!(
+            adapter.get_first_prompt().await.as_deref(),
+            Some("Investigate SSH")
+        );
+        assert_eq!(
+            adapter.get_last_model_response().await.as_deref(),
+            Some("Checking the agent")
+        );
         server.await.unwrap();
+    }
+
+    #[test]
+    fn recovery_keeps_unmaterialized_thread_without_loaded_replacement() {
+        let session = Arc::new(Mutex::new(Some("thread-1".to_string())));
+        let cache = Arc::new(RwLock::new(LiveCache::default()));
+        recover_from_thread_list(
+            &json!({"result": {"data": [{
+                "id": "old-thread",
+                "cwd": "/tmp",
+                "createdAt": 1,
+                "status": {"type": "notLoaded"}
+            }]}}),
+            "/tmp",
+            0,
+            &session,
+            &cache,
+        );
+        assert_eq!(cached_thread_id(&session).as_deref(), Some("thread-1"));
+    }
+
+    #[test]
+    fn ephemeral_title_thread_does_not_replace_user_thread() {
+        let session = Arc::new(Mutex::new(Some("user-thread".to_string())));
+        let cache = Arc::new(RwLock::new(LiveCache::default()));
+        let title_thread = json!({
+            "id": "title-thread",
+            "cwd": "/tmp",
+            "parentThreadId": null,
+            "ephemeral": true,
+            "status": {"type": "active", "activeFlags": []}
+        });
+
+        handle_notification(
+            "thread/started",
+            &json!({"thread": title_thread}),
+            "/tmp",
+            &session,
+            &cache,
+        );
+
+        assert_eq!(cached_thread_id(&session).as_deref(), Some("user-thread"));
+        assert_eq!(cache.read().unwrap().status, AgentStatus::Idle);
+    }
+
+    #[test]
+    fn discovery_skips_ephemeral_title_thread() {
+        let session = Arc::new(Mutex::new(None));
+        let cache = Arc::new(RwLock::new(LiveCache::default()));
+        handle_message(
+            &json!({"result": {"data": [
+                {
+                    "id": "title-thread",
+                    "cwd": "/tmp",
+                    "createdAt": 2,
+                    "ephemeral": true,
+                    "status": {"type": "active", "activeFlags": []}
+                },
+                {
+                    "id": "user-thread",
+                    "cwd": "/tmp",
+                    "createdAt": 1,
+                    "ephemeral": false,
+                    "status": {"type": "active", "activeFlags": []}
+                }
+            ]}}),
+            "/tmp",
+            0,
+            &session,
+            &cache,
+        );
+        assert_eq!(cached_thread_id(&session).as_deref(), Some("user-thread"));
     }
 
     #[tokio::test]
