@@ -2,6 +2,10 @@ use crate::models::{AgentStatus, ContextInfo};
 use async_trait::async_trait;
 
 #[async_trait]
+#[allow(
+    clippy::double_must_use,
+    reason = "async_trait adds must_use to methods returning futures that are already must_use"
+)]
 pub trait AgentAdapter: Send + Sync {
     /// Stop processes owned by this adapter. The caller is responsible for
     /// closing any tmux pane that hosts the interactive client.
