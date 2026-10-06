@@ -77,8 +77,22 @@ mod tests {
 
     #[test]
     fn test_deepseek_models() {
-        assert_eq!(model_context_window("deepseek-chat"), Some(65_536));
+        assert_eq!(model_context_window("deepseek-chat"), Some(131_072));
         assert_eq!(model_context_window("deepseek-reasoner"), Some(131_072));
+    }
+
+    #[test]
+    fn test_refreshed_models() {
+        assert_eq!(model_context_window("claude-sonnet-5"), Some(1_000_000));
+        assert_eq!(model_context_window("gpt-6.1-sol"), Some(922_000));
+        assert_eq!(model_context_window("gemini-3.1-pro"), Some(1_000_000));
+        assert_eq!(model_context_window("deepseek-v4-pro"), Some(1_000_000));
+        assert_eq!(model_context_window("openai/gpt-6.1-sol"), Some(922_000));
+        assert_eq!(model_context_window("CLAUDE-SONNET-5"), Some(1_000_000));
+        assert_eq!(
+            model_context_window("claude-sonnet-5-future-snapshot"),
+            Some(1_000_000)
+        );
     }
 
     #[test]
