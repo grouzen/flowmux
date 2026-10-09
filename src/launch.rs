@@ -132,10 +132,8 @@ pub fn flowmux_launch_command(agent: &str, args: &[OsString]) -> String {
 }
 
 fn flowmux_invocation() -> String {
-    if which::which("flowmux").is_ok() {
-        return "flowmux".to_string();
-    }
-
+    // Keep agent helpers on the same build as the running UI, even when an
+    // older flowmux is installed on PATH.
     let path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("flowmux"));
     shell_quote(&path.to_string_lossy())
 }
@@ -215,12 +213,7 @@ async fn run_codex(args: LaunchCodexArgs) -> Result<()> {
     }
 
     let remote = format!("ws://127.0.0.1:{}", args.port);
-    let mut codex = Command::new("codex");
-    if let Some(session_id) = args.session_id {
-        codex.args(["resume", "--remote", &remote, &session_id]);
-    } else {
-        codex.args(["--remote", &remote]);
-    }
+    let mut codex = codex_client_command(&remote, args.session_id.as_deref());
 
     let status = spawn_foreground(&mut codex)
         .with_context(|| format!("failed to start codex client against {}", remote))?;
@@ -230,6 +223,19 @@ async fn run_codex(args: LaunchCodexArgs) -> Result<()> {
     let _ = fs::remove_file(&pid_path);
 
     exit_with_status(status);
+}
+
+fn codex_client_command(remote: &str, session_id: Option<&str>) -> Command {
+    let mut command = Command::new("codex");
+    if session_id.is_some() {
+        command.arg("resume");
+    }
+    // AgentView scrolls captured tmux history, which the alternate screen lacks.
+    command.args(["--no-alt-screen", "--remote", remote]);
+    if let Some(session_id) = session_id {
+        command.arg(session_id);
+    }
+    command
 }
 
 async fn app_server_ready(client: &reqwest::Client, port: u16) -> bool {
@@ -247,8 +253,34 @@ fn server_pid_path(port: u16) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{flowmux_launch_command, write_pi_extension};
+    use super::{codex_client_command, flowmux_launch_command, write_pi_extension};
     use std::ffi::OsString;
+
+    #[test]
+    fn new_codex_client_preserves_tmux_scrollback() {
+        let command = codex_client_command("ws://127.0.0.1:16100", None);
+        assert_eq!(command.get_program(), "codex");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["--no-alt-screen", "--remote", "ws://127.0.0.1:16100"]
+        );
+    }
+
+    #[test]
+    fn resumed_codex_client_preserves_tmux_scrollback() {
+        let command = codex_client_command("ws://127.0.0.1:16100", Some("thread with spaces"));
+        assert_eq!(command.get_program(), "codex");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [
+                "resume",
+                "--no-alt-screen",
+                "--remote",
+                "ws://127.0.0.1:16100",
+                "thread with spaces"
+            ]
+        );
+    }
 
     #[test]
     fn launch_command_quotes_arguments_for_shell() {
@@ -264,6 +296,14 @@ mod tests {
         assert!(command.contains("--tmux-session"));
         assert!(command.contains("--session-id 'thread with spaces'"));
         assert!(command.ends_with('\n'));
+    }
+
+    #[test]
+    fn launch_command_uses_the_running_flowmux_executable() {
+        let command = flowmux_launch_command("codex", &[]);
+        let executable = std::env::current_exe().unwrap();
+        let invocation = super::shell_quote(&executable.to_string_lossy());
+        assert!(command.starts_with(&format!("{invocation} --tmux-session ")));
     }
 
     #[test]
