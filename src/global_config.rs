@@ -30,6 +30,16 @@ pub struct GlobalConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled_agents: Option<Vec<String>>,
 
+    /// SSH host aliases offered by the transfer picker. New hosts are saved
+    /// only after a successful connection.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transfer_hosts: Vec<String>,
+
+    /// Local executable and fixed arguments for the version 1 copy contract.
+    /// An argument array keeps configured paths and options unambiguous.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_copy_command: Option<Vec<String>>,
+
     /// Whether the first-run startup guide has been dismissed.
     #[serde(default, skip_serializing_if = "is_false")]
     pub startup_guide_dismissed: bool,
@@ -72,6 +82,8 @@ impl Default for GlobalConfig {
             pi_hook_server_port: default_pi_hook_port(),
             git_viewer: None,
             enabled_agents: None,
+            transfer_hosts: Vec::new(),
+            agent_copy_command: None,
             startup_guide_dismissed: false,
             theme: None,
             worktree_directory_presets: BTreeMap::new(),
@@ -197,5 +209,18 @@ mod tests {
     #[test]
     fn default_theme_is_unset() {
         assert_eq!(GlobalConfig::default().theme, None);
+    }
+
+    #[test]
+    fn transfer_settings_round_trip_through_toml() {
+        let config = GlobalConfig {
+            transfer_hosts: vec!["laptop".into()],
+            agent_copy_command: Some(vec!["/opt/agent copy".into(), "--verbose".into()]),
+            ..GlobalConfig::default()
+        };
+        let encoded = toml::to_string(&config).unwrap();
+        let decoded: GlobalConfig = toml::from_str(&encoded).unwrap();
+        assert_eq!(decoded.transfer_hosts, config.transfer_hosts);
+        assert_eq!(decoded.agent_copy_command, config.agent_copy_command);
     }
 }

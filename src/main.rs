@@ -13,6 +13,7 @@ mod models;
 mod platform;
 mod runner;
 mod tmux;
+mod transfer;
 mod tui;
 mod ui;
 
@@ -56,6 +57,17 @@ enum Commands {
         #[command(subcommand)]
         command: launch::LaunchCommand,
     },
+    /// Read-only agent transfer protocol commands.
+    Transfer {
+        #[command(subcommand)]
+        command: TransferCommand,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum TransferCommand {
+    /// Print versioned JSON listing saved sessions and their live status.
+    List,
 }
 
 /// Resolve the effective worktrees base directory.
@@ -104,6 +116,14 @@ async fn main() -> Result<()> {
     if let Some(Commands::Launch { command }) = cli.command.clone() {
         return launch::run(command).await;
     }
+    if let Some(Commands::Transfer { command }) = cli.command.clone() {
+        match command {
+            TransferCommand::List => {
+                println!("{}", serde_json::to_string(&transfer::list()?)?);
+            }
+        }
+        return Ok(());
+    }
 
     let log_path = logging::init(&cli.tmux_session)?;
     log::debug!("flowmux logs: {}", log_path.display());
@@ -112,6 +132,7 @@ async fn main() -> Result<()> {
 
     // Ensure only one instance runs per tmux session.
     let _session_lock = acquire_session_lock(&cli.tmux_session)?;
+    let _status_snapshot = transfer::StatusSnapshotGuard::new(&cli.tmux_session)?;
 
     // Probe $PATH for agent binaries
     let discovered = DiscoveredAgents::probe();
@@ -465,7 +486,12 @@ async fn main() -> Result<()> {
 
             // Wait for next event and dispatch
             let should_continue = if let Some(event) = app.rx.recv().await {
-                app.handle_event(event).await
+                let publish = matches!(event, app::Event::DashboardTick);
+                let keep_running = app.handle_event(event).await;
+                if publish && let Err(error) = transfer::publish_status(&app.config, &app.agents) {
+                    log::warn!("failed to publish transfer status: {error:#}");
+                }
+                keep_running
             } else {
                 false
             };
