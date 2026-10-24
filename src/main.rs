@@ -68,6 +68,11 @@ enum Commands {
 enum TransferCommand {
     /// Print versioned JSON listing saved sessions and their live status.
     List,
+    /// Fetch a remote machine's listing over SSH and save its host on success.
+    RemoteList {
+        #[arg(long)]
+        host: String,
+    },
 }
 
 /// Resolve the effective worktrees base directory.
@@ -120,6 +125,14 @@ async fn main() -> Result<()> {
         match command {
             TransferCommand::List => {
                 println!("{}", serde_json::to_string(&transfer::list()?)?);
+            }
+            TransferCommand::RemoteList { host } => {
+                let listing = transfer::fetch_remote_listing(&host).await?;
+                let mut config = GlobalConfig::load()?;
+                if config.add_transfer_host(&host) {
+                    config.save()?;
+                }
+                println!("{}", serde_json::to_string(&listing)?);
             }
         }
         return Ok(());

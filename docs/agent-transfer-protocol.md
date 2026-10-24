@@ -1,8 +1,9 @@
 # Agent transfer protocol, version 1
 
 This document fixes the wire contract used by the agent transfer feature.
-The remote listing command is implemented. The local picker and copy-command
-invocation are subsequent implementation steps.
+The remote listing command, SSH transport, and copy-command backend are
+implemented. The local picker, native session verification, and registration
+are subsequent implementation steps.
 
 ## Remote listing
 
@@ -11,6 +12,11 @@ Run `flowmux transfer list` on the source computer, commonly through SSH:
 ```text
 ssh -o BatchMode=yes laptop flowmux transfer list
 ```
+
+On the destination computer, `flowmux transfer remote-list --host laptop`
+performs this SSH request, validates the JSON version, and saves `laptop` in
+the global host list after the request succeeds. It uses SSH host aliases and
+configuration, with a 20-second overall timeout.
 
 The command writes one JSON object to stdout, with no dashboard startup or
 session lock. Its shape is:
@@ -89,3 +95,8 @@ details to stderr and exit nonzero on failure. Flowmux will reject malformed
 JSON, mismatched versions or agent types, an empty or unchanged ID, and a
 session ID that the local agent CLI cannot resume. The command is the final
 authority on whether a safe snapshot of the source can be made.
+
+The backend re-queries the source before invoking the copy command, rejects a
+changed source identity or a non-idle status, and bounds command runtime at
+five minutes. Native session verification and local agent registration are
+required before the returned ID becomes a Flowmux card.

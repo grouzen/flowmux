@@ -96,6 +96,16 @@ fn config_path() -> Option<PathBuf> {
 }
 
 impl GlobalConfig {
+    /// Add a host after its first successful remote listing.
+    /// Returns whether the list changed; callers persist the config.
+    pub fn add_transfer_host(&mut self, host: &str) -> bool {
+        if self.transfer_hosts.iter().any(|saved| saved == host) {
+            return false;
+        }
+        self.transfer_hosts.push(host.to_string());
+        true
+    }
+
     /// Load from `~/.config/flowmux/config.toml`.  Returns the default
     /// configuration if the file does not exist.
     pub fn load() -> Result<Self> {
@@ -222,5 +232,13 @@ mod tests {
         let decoded: GlobalConfig = toml::from_str(&encoded).unwrap();
         assert_eq!(decoded.transfer_hosts, config.transfer_hosts);
         assert_eq!(decoded.agent_copy_command, config.agent_copy_command);
+    }
+
+    #[test]
+    fn transfer_host_is_saved_once() {
+        let mut config = GlobalConfig::default();
+        assert!(config.add_transfer_host("laptop"));
+        assert!(!config.add_transfer_host("laptop"));
+        assert_eq!(config.transfer_hosts, vec!["laptop"]);
     }
 }
