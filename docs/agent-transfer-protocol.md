@@ -21,6 +21,11 @@ performs this SSH request, validates the JSON version, and saves `laptop` in
 the global host list after the request succeeds. It uses SSH host aliases and
 configuration, with a 20-second overall timeout.
 
+The dashboard picker asks for a password or key passphrase if the first SSH
+listing fails authentication. The credential is kept only in the open picker
+and supplied to Flowmux's SSH listing and source recheck. The configured copy
+command receives no credential and must use its own SSH authentication setup.
+
 The command writes one JSON object to stdout, with no dashboard startup or
 session lock. Its shape is:
 

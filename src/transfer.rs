@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::io::Write;
+use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -20,6 +21,65 @@ const STATUS_MAX_AGE: Duration = Duration::from_secs(3);
 const SSH_TIMEOUT: Duration = Duration::from_secs(20);
 const COPY_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_COMMAND_OUTPUT: usize = 4 * 1024 * 1024;
+const ASKPASS_FILE_ENV: &str = "FLOWMUX_SSH_ASKPASS_FILE";
+
+/// Short-lived credential storage for Flowmux's own SSH listing request.
+struct Askpass {
+    dir: PathBuf,
+    executable: PathBuf,
+    secret_file: PathBuf,
+}
+
+impl Askpass {
+    fn new(secret: &str) -> Result<Self> {
+        let dir = std::env::temp_dir().join(format!("flowmux-askpass-{}", uuid::Uuid::new_v4()));
+        std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
+        let askpass = Self {
+            executable: dir.join("flowmux-askpass"),
+            secret_file: dir.join("secret"),
+            dir,
+        };
+        std::os::unix::fs::symlink(std::env::current_exe()?, &askpass.executable)?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&askpass.secret_file)?;
+        file.write_all(secret.as_bytes())?;
+        Ok(askpass)
+    }
+
+    fn configure(&self, command: &mut Command) {
+        command
+            .env("SSH_ASKPASS", &self.executable)
+            .env("SSH_ASKPASS_REQUIRE", "force")
+            .env(ASKPASS_FILE_ENV, &self.secret_file);
+        if std::env::var_os("DISPLAY").is_none() {
+            command.env("DISPLAY", "flowmux");
+        }
+    }
+}
+
+impl Drop for Askpass {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Called only when OpenSSH executes the private askpass symlink.
+pub fn answer_ssh_prompt() -> Result<()> {
+    let prompt = std::env::args().nth(1).unwrap_or_default();
+    let prompt = prompt.to_ascii_lowercase();
+    ensure!(
+        prompt.contains("password") || prompt.contains("passphrase"),
+        "unsupported SSH authentication prompt"
+    );
+    let path = std::env::var_os(ASKPASS_FILE_ENV).context("askpass credential is unavailable")?;
+    let secret = std::fs::read(path)?;
+    std::io::stdout().write_all(&secret)?;
+    std::io::stdout().write_all(b"\n")?;
+    Ok(())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Listing {
@@ -326,16 +386,19 @@ fn parse_remote_listing(bytes: &[u8]) -> Result<Listing> {
 
 /// Query the remote Flowmux installation without interpolating the host into
 /// a shell command. SSH uses the user's host aliases and configuration.
-pub async fn fetch_remote_listing(host: &str) -> Result<Listing> {
+pub async fn fetch_remote_listing(host: &str, credential: Option<&str>) -> Result<Listing> {
     validate_host(host)?;
-    let output = output_with_timeout(
-        Command::new("ssh")
-            .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", host])
-            .args(["flowmux", "transfer", "list"]),
-        SSH_TIMEOUT,
-        "SSH remote listing",
-    )
-    .await?;
+    let askpass = credential.map(Askpass::new).transpose()?;
+    let mut command = Command::new("ssh");
+    command.args(["-o", "ConnectTimeout=10"]);
+    if let Some(askpass) = &askpass {
+        command.args(["-o", "BatchMode=no", "-o", "NumberOfPasswordPrompts=1"]);
+        askpass.configure(&mut command);
+    } else {
+        command.args(["-o", "BatchMode=yes"]);
+    }
+    command.args(["--", host, "flowmux", "transfer", "list"]);
+    let output = output_with_timeout(&mut command, SSH_TIMEOUT, "SSH remote listing").await?;
     parse_remote_listing(&output.stdout)
 }
 
@@ -416,6 +479,7 @@ pub async fn copy_native_session(
     config: &GlobalConfig,
     request: &CopyRequest<'_>,
     available_types: &[AgentType],
+    credential: Option<&str>,
 ) -> Result<CopiedAgent> {
     let directory = request
         .destination_directory
@@ -427,7 +491,7 @@ pub async fn copy_native_session(
         .as_ref()
         .filter(|parts| !parts.is_empty() && !parts[0].is_empty())
         .context("agent_copy_command is not configured")?;
-    let listing = fetch_remote_listing(request.host).await?;
+    let listing = fetch_remote_listing(request.host, credential).await?;
     let source = validate_selected_source(&listing, request, available_types)?;
     let destination = directory.to_string_lossy();
     let mut command = Command::new(&parts[0]);
@@ -469,6 +533,31 @@ pub async fn copy_native_session(
 mod tests {
     use super::*;
     use crate::config::AgentKind;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn askpass_credential_is_private_and_removed_after_use() {
+        let askpass = Askpass::new("example-secret").unwrap();
+        let dir = askpass.dir.clone();
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(&askpass.secret_file)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::read(&askpass.secret_file).unwrap(),
+            b"example-secret"
+        );
+        drop(askpass);
+        assert!(!dir.exists());
+    }
 
     fn config() -> Config {
         Config {

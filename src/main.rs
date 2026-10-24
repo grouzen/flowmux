@@ -117,6 +117,14 @@ fn acquire_session_lock(session: &str) -> Result<std::fs::File> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if std::env::args_os()
+        .next()
+        .as_ref()
+        .and_then(|path| std::path::Path::new(path).file_name())
+        .is_some_and(|name| name == "flowmux-askpass")
+    {
+        return transfer::answer_ssh_prompt();
+    }
     let cli = Cli::parse();
 
     if let Some(Commands::Launch { command }) = cli.command.clone() {
@@ -128,7 +136,7 @@ async fn main() -> Result<()> {
                 println!("{}", serde_json::to_string(&transfer::list()?)?);
             }
             TransferCommand::RemoteList { host } => {
-                let listing = transfer::fetch_remote_listing(&host).await?;
+                let listing = transfer::fetch_remote_listing(&host, None).await?;
                 let mut config = GlobalConfig::load()?;
                 if config.add_transfer_host(&host) {
                     config.save()?;

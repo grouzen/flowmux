@@ -2252,12 +2252,21 @@ impl App {
                     }
                     Err(error) => {
                         self.import_state.listing = None;
-                        if self.import_state.stage == ImportStage::Connecting {
+                        if error.contains("Permission denied") {
+                            self.import_state.stage = ImportStage::Credential;
+                            self.import_state.credential = None;
+                            self.import_state.credential_input.clear();
+                            self.import_state.error = Some(
+                                "SSH authentication failed. Enter the password or key passphrase."
+                                    .into(),
+                            );
+                        } else if self.import_state.stage == ImportStage::Connecting {
                             self.import_state.stage = ImportStage::Host;
+                            self.import_state.error = Some(error);
                         } else {
                             self.import_state.stage = ImportStage::Session;
+                            self.import_state.error = Some(error);
                         }
-                        self.import_state.error = Some(error);
                     }
                 }
                 self.dirty = true;
@@ -2762,6 +2771,7 @@ impl App {
         match &self.state {
             AppState::ImportAgentDialog => match self.import_state.stage {
                 ImportStage::Host => self.import_state.host.push_str(text.trim()),
+                ImportStage::Credential => self.import_state.credential_input.push_str(&text),
                 ImportStage::Directory => self.import_state.directory.push_str(text.trim()),
                 _ => {}
             },
@@ -2842,6 +2852,11 @@ impl App {
                         return true;
                     }
                     Session => Host,
+                    Credential => {
+                        self.import_state.credential_input.clear();
+                        self.import_state.credential = None;
+                        Host
+                    }
                     Agent => Session,
                     Directory => Agent,
                     _ => unreachable!(),
@@ -2860,6 +2875,7 @@ impl App {
                                 (*idx + 1).min(len - 1)
                             };
                             self.import_state.host = self.import_state.saved_hosts[*idx].clone();
+                            self.import_state.credential = None;
                         }
                     }
                     Session => {
@@ -2895,6 +2911,15 @@ impl App {
             }
             KeyCode::Enter => match stage {
                 Host => self.start_remote_listing(true),
+                Credential => {
+                    if self.import_state.credential_input.is_empty() {
+                        self.import_state.error = Some("enter an SSH credential".into());
+                    } else {
+                        self.import_state.credential =
+                            Some(std::mem::take(&mut self.import_state.credential_input));
+                        self.start_remote_listing(true);
+                    }
+                }
                 Session => {
                     if let Some(session) = self.import_state.session() {
                         if session.online {
@@ -2916,6 +2941,11 @@ impl App {
             KeyCode::Backspace => match stage {
                 Host => {
                     self.import_state.host.pop();
+                    self.import_state.credential = None;
+                    self.import_state.error = None;
+                }
+                Credential => {
+                    self.import_state.credential_input.pop();
                     self.import_state.error = None;
                 }
                 Directory => {
@@ -2925,13 +2955,22 @@ impl App {
                 _ => {}
             },
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => match stage {
-                Host => self.import_state.host.clear(),
+                Host => {
+                    self.import_state.host.clear();
+                    self.import_state.credential = None;
+                }
+                Credential => self.import_state.credential_input.clear(),
                 Directory => self.import_state.directory.clear(),
                 _ => {}
             },
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => match stage {
                 Host => {
                     self.import_state.host.push(c);
+                    self.import_state.credential = None;
+                    self.import_state.error = None;
+                }
+                Credential => {
+                    self.import_state.credential_input.push(c);
                     self.import_state.error = None;
                 }
                 Directory => {
@@ -2960,8 +2999,9 @@ impl App {
         self.import_state.refresh_in_flight = true;
         self.import_state.error = None;
         let tx = self.tx.clone();
+        let credential = self.import_state.credential.clone();
         tokio::spawn(async move {
-            let result = transfer::fetch_remote_listing(&host)
+            let result = transfer::fetch_remote_listing(&host, credential.as_deref())
                 .await
                 .map_err(|error| format!("{error:#}"));
             let _ = tx.send(Event::ImportListing { host, result });
@@ -3002,6 +3042,7 @@ impl App {
         let config = runner.global_config().clone();
         let available_types = runner.available_agent_types();
         let host = self.import_state.host.clone();
+        let credential = self.import_state.credential.clone();
         let tx = self.tx.clone();
         self.import_state.stage = ImportStage::Copying;
         self.import_state.error = None;
@@ -3014,9 +3055,14 @@ impl App {
                 agent_type: &source.agent_type,
                 destination_directory: &directory,
             };
-            let result = transfer::copy_native_session(&config, &request, &available_types)
-                .await
-                .map_err(|error| format!("{error:#}"));
+            let result = transfer::copy_native_session(
+                &config,
+                &request,
+                &available_types,
+                credential.as_deref(),
+            )
+            .await
+            .map_err(|error| format!("{error:#}"));
             let _ = tx.send(Event::ImportCopied { result });
         });
     }

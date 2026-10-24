@@ -16,6 +16,7 @@ use crate::ui::theme::Theme;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImportStage {
     Host,
+    Credential,
     Connecting,
     Session,
     Agent,
@@ -33,10 +34,12 @@ pub struct SelectedSource {
     pub name: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ImportAgentState {
     pub stage: ImportStage,
     pub host: String,
+    pub credential: Option<String>,
+    pub credential_input: String,
     pub saved_hosts: Vec<String>,
     pub host_idx: usize,
     pub listing: Option<Listing>,
@@ -60,6 +63,8 @@ impl ImportAgentState {
         Self {
             stage: ImportStage::Host,
             host,
+            credential: None,
+            credential_input: String::new(),
             saved_hosts,
             host_idx: 0,
             listing: None,
@@ -161,6 +166,7 @@ pub fn render(f: &mut Frame, area: Rect, theme: &Theme, state: &ImportAgentState
         .split(modal);
     let title = match state.stage {
         ImportStage::Host | ImportStage::Connecting => "Import agent · SSH host",
+        ImportStage::Credential => "Import agent · SSH authentication",
         ImportStage::Session => "Import agent · remote session",
         ImportStage::Agent => "Import agent · source agent",
         ImportStage::Directory | ImportStage::Copying | ImportStage::Launching => {
@@ -196,6 +202,16 @@ pub fn render(f: &mut Frame, area: Rect, theme: &Theme, state: &ImportAgentState
             if state.stage == ImportStage::Connecting {
                 lines.push(Line::raw("  Connecting over SSH…"));
             }
+        }
+        ImportStage::Credential => {
+            lines.push(Line::raw(format!("  Host: {}", state.host)));
+            lines.push(Line::raw(""));
+            lines.push(Line::raw("  SSH password or key passphrase:"));
+            lines.push(Line::raw(format!(
+                "  {}",
+                "•".repeat(state.credential_input.chars().count())
+            )));
+            lines.push(Line::raw("  Kept only for this import; never saved."));
         }
         ImportStage::Session => {
             if let Some(listing) = &state.listing {
@@ -267,6 +283,7 @@ pub fn render(f: &mut Frame, area: Rect, theme: &Theme, state: &ImportAgentState
     }
     let help = match state.stage {
         ImportStage::Host => "  type host · up/down saved · enter connect · esc cancel",
+        ImportStage::Credential => "  type secret · enter retry · esc back",
         ImportStage::Session | ImportStage::Agent => "  up/down select · enter continue · esc back",
         ImportStage::Directory => "  type path · enter import · esc back",
         _ => "  Please wait…",
