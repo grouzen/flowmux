@@ -13,6 +13,7 @@ use crate::global_config::GlobalConfig;
 use crate::launch;
 use crate::models::AgentType;
 use crate::tmux;
+use crate::transfer::CopiedAgent;
 
 // ---------------------------------------------------------------------------
 // AgentRunner
@@ -168,6 +169,37 @@ impl AgentRunner {
             types.retain(|t| enabled.iter().any(|e| e == t.name()));
         }
         types
+    }
+
+    /// Launch an already copied native session in a fresh local pane. This
+    /// does not persist a card; the caller must verify the resumed native
+    /// session and save the returned config only after that succeeds.
+    pub async fn attach_copied(
+        &mut self,
+        copied: &CopiedAgent,
+        project: &str,
+    ) -> Result<(AgentConfig, Box<dyn AgentAdapter>)> {
+        if copied.session_id.trim().is_empty() {
+            bail!("copied native session ID is empty");
+        }
+        if !copied.directory.is_dir() {
+            bail!("copied agent destination directory no longer exists");
+        }
+        let agent_type = AgentType::from_name(&copied.agent_type)
+            .with_context(|| format!("unknown copied agent type {}", copied.agent_type))?;
+        if !self.available_agent_types().contains(&agent_type) {
+            bail!(
+                "copied agent type {} is not available locally",
+                copied.agent_type
+            );
+        }
+        let config = imported_agent_config(copied, project, agent_type);
+        self.restart(&config).await.with_context(|| {
+            format!(
+                "failed to launch copied native session {}; its history remains available for manual recovery",
+                copied.session_id
+            )
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -530,6 +562,43 @@ impl AgentRunner {
     }
 }
 
+fn imported_agent_config(
+    copied: &CopiedAgent,
+    project: &str,
+    agent_type: AgentType,
+) -> AgentConfig {
+    let session_id = Some(copied.session_id.clone());
+    let kind = match agent_type {
+        AgentType::Opencode => AgentKind::Opencode {
+            port: 0,
+            session_id,
+        },
+        AgentType::Claude => AgentKind::Claude {
+            flowmux_agent_id: uuid::Uuid::new_v4().to_string(),
+            session_id,
+            transcript_path: None,
+        },
+        AgentType::Codex => AgentKind::Codex {
+            port: 0,
+            session_id,
+        },
+        AgentType::Pi => AgentKind::Pi {
+            flowmux_agent_id: uuid::Uuid::new_v4().to_string(),
+            session_id,
+        },
+    };
+    AgentConfig {
+        name: copied.name.clone(),
+        pane: String::new(),
+        directory: copied.directory.to_string_lossy().into_owned(),
+        project: project.to_string(),
+        kind,
+        git_repo_root: None,
+        git_worktree_branch: None,
+        git_worktree_base_ref: None,
+    }
+}
+
 fn prepare_worktree_directory(
     dir: &str,
     worktree: Option<WorktreeRequest>,
@@ -741,6 +810,32 @@ fn create_symlink(source: &Path, destination: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use std::process::Command;
+
+    #[test]
+    fn imported_agent_uses_local_identity_without_worktree_ownership() {
+        let copied = CopiedAgent {
+            name: "remote name".into(),
+            agent_type: "claude".into(),
+            session_id: "new-native-id".into(),
+            directory: PathBuf::from("/local/project"),
+        };
+        let config = imported_agent_config(&copied, "Current", AgentType::Claude);
+        assert_eq!(config.name, "remote name");
+        assert_eq!(config.project, "Current");
+        assert_eq!(config.directory, "/local/project");
+        assert_eq!(config.session_id(), Some("new-native-id"));
+        assert!(config.pane.is_empty());
+        assert!(config.git_repo_root.is_none());
+        assert!(config.git_worktree_branch.is_none());
+        assert!(matches!(
+            config.kind,
+            AgentKind::Claude {
+                flowmux_agent_id,
+                transcript_path: None,
+                ..
+            } if !flowmux_agent_id.is_empty()
+        ));
+    }
 
     struct TestDir {
         path: PathBuf,
