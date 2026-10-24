@@ -111,31 +111,45 @@ adapter, launches it in a new tmux pane, and saves the card only after those
 steps succeed. If the copy succeeds but a later step fails, the picker reports
 the new native session ID for manual recovery.
 
-## Codex wrapper recipe
+## Codex copy command example
 
-One possible external command can use
-[`agent-handoff`](https://github.com/DavidDingXu/agent-handoff) for the native
-copy. Its current CLI can share a Codex thread as a zip, import it as a new
-native task with `--allow-duplicate`, and verify an imported thread. A wrapper
-for Flowmux's contract would:
+[`tools/agent-copy-codex-example.py`](../tools/agent-copy-codex-example.py)
+implements the version 1 command contract using
+[`agent-handoff`](https://github.com/DavidDingXu/agent-handoff#commands). Install
+the `agent-handoff` CLI on both computers, including the source computer's
+noninteractive SSH `PATH`. The example adds `~/.local/bin` to that remote
+`PATH`, which covers the CLI's usual per-user install location. Set up
+noninteractive SSH for the copy command (for example, an unlocked key in
+`ssh-agent`). The picker credential is used only by Flowmux's own listing
+request. Set the destination computer's global config to:
 
-1. Parse Flowmux's named arguments and reject agent types other than `codex`.
-2. Run `agent-handoff share --source codex --thread <source-session-id>
-   --format zip --out <remote-temp-file>` over SSH on the selected host.
-3. Copy that bundle to a local temporary file through SSH or SCP. Remove both
-   temporary files when finished.
-4. Run `agent-handoff import <bundle> --target codex --cwd
-   <destination-directory> --execute --allow-duplicate` locally.
-5. Read its machine-readable result, require a fresh thread ID, and run
-   `agent-handoff verify --thread <new-id> --source codex --cwd
-   <destination-directory>`. Print only Flowmux's version 1 result JSON to
-   stdout; send diagnostics to stderr.
+```toml
+agent_copy_command = ["python3", "/absolute/path/to/flowmux/tools/agent-copy-codex-example.py"]
+```
 
-The wrapper must check the installed `agent-handoff` version's JSON fields and
-test a real round trip before use. This is a recipe, not a bundled transfer
-implementation. Flowmux does not invoke `agent-handoff` unless the user
-configures a command that does so. The upstream CLI and its flags are described
-in the [agent-handoff README](https://github.com/DavidDingXu/agent-handoff#commands).
+The example exports the selected Codex thread on the source, streams a
+temporary zip over SSH, imports it locally with `--execute --allow-duplicate`,
+and verifies the fresh thread and destination directory before returning the
+Flowmux JSON result. Temporary bundles are removed on normal completion and
+handled failures. It rejects other agent types. Its argument handling and
+output have a simulated end-to-end test: `python3 -m unittest
+tools/test_agent_copy_codex_example.py`.
+
+This example has not been tested against an installed `agent-handoff` or a real
+remote Codex session. Check the installed tool's CLI and JSON result format,
+then test a real round trip before relying on it. Flowmux does not invoke
+`agent-handoff` unless this command is configured.
+
+[`txcript`](https://github.com/skillsynchq/txcript) is another possible copy
+command backend and currently reads and writes Codex, Claude Code, OpenCode,
+and Pi sessions. A Flowmux wrapper would export the selected source to a
+Simple document, set that document's `cwd` to the selected local directory,
+then run `txcript continue <file> --with <txcript-target> --no-resume` (for
+example, `claude_code` for Flowmux's `claude`). It must obtain
+the fresh native ID and return Flowmux's version 1 JSON. The current CLI prints
+the resume command with that ID as human-readable text, so a robust wrapper
+needs a machine-readable result from txcript or its library API. The Simple
+conversion can also omit agent-specific fields, including some Codex metadata.
 
 The alternative [`cct`](https://github.com/ahmojo/codex-claude-transfer/blob/Main/docs/usage.md)
 supports session export and import, but its `--import-as-copy` applies on

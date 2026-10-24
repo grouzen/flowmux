@@ -11,8 +11,10 @@ registration, and presentation; a configured external command owns the native
 session copy. Flowmux must not implement Codex, Claude Code, OpenCode, or Pi
 transcript conversion or synchronize project files.
 
-This document records the decisions from the design interview. It is a plan,
-not an implementation. No tool has yet been tested against a real transfer.
+This document records the decisions from the design interview. The implemented
+protocol and Codex copy command example are documented in
+[`docs/agent-transfer-protocol.md`](docs/agent-transfer-protocol.md). No tool has
+yet been tested against a real cross-machine transfer.
 
 ## Agreed user flow
 
@@ -187,6 +189,7 @@ that flowmux should reimplement or commit to as a required dependency.
 | --- | --- | --- |
 | [codex-claude-transfer (`cct`)](https://github.com/ahmojo/codex-claude-transfer) | Codex and Claude session bundles, JSON output, directory mapping, optional experimental LAN sync | Its LAN sync is not the exact remote-list / selected-agent / guaranteed-new-ID contract; a wrapper or extra commands may be needed. Its `--import-as-copy` has limitations for inherited Codex forks. |
 | [agent-handoff](https://github.com/DavidDingXu/agent-handoff) | Imports Codex/Claude history as a new native task from a file or encrypted link | Needs a wrapper for flowmux's SSH host and source-session contract. |
+| [txcript](https://github.com/skillsynchq/txcript) | Exports and writes native sessions for Codex, Claude Code, OpenCode, and Pi through its Simple interchange format | A same-agent `continue <id>` resumes the source, so a copy must use `export` then `continue <file> --no-resume`; the CLI prints the new ID in human-readable output rather than JSON, and the wrapper must set the selected destination directory in the exported document. Conversion through Simple can lose agent-specific fields. |
 | [codex-sync](https://github.com/Jac0bXu/codex-sync) | Uses rsync over SSH to copy Codex session files | Syncing files alone does not guarantee an independent fork or local flowmux registration. |
 | [Agent Sessions Sync](https://github.com/Gregor-von-Vitek/agent-sessions-sync) | Syncs Claude, Codex, and Cursor histories through private GitHub | Background history sync, not selective flowmux agent import. |
 | [OpenCode CLI](https://dev.opencode.ai/docs/cli/) | Native session export/import | Useful for a future external adapter; flowmux need not parse OpenCode storage. |
