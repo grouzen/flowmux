@@ -29,6 +29,7 @@ pub struct PiHookState {
     total_work_ms: u64,
     work_started_at: Option<Instant>,
     active_generation: u64,
+    session_started: bool,
 }
 
 impl Default for PiHookState {
@@ -43,6 +44,7 @@ impl Default for PiHookState {
             total_work_ms: 0,
             work_started_at: None,
             active_generation: 0,
+            session_started: false,
         }
     }
 }
@@ -202,6 +204,32 @@ impl PiRuntime {
         let entry = state.entry(flowmux_agent_id.to_owned()).or_default();
         entry.status = AgentStatus::Idle;
         entry.work_started_at = None;
+        entry.session_started = false;
+    }
+
+    pub(crate) async fn wait_until_ready(
+        &self,
+        flowmux_agent_id: &str,
+        session_id: &str,
+    ) -> anyhow::Result<()> {
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(15);
+        loop {
+            let ready = self
+                .hook_state
+                .lock()
+                .unwrap()
+                .get(flowmux_agent_id)
+                .is_some_and(|entry| {
+                    entry.session_started && entry.session_id.as_deref() == Some(session_id)
+                });
+            if ready {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                anyhow::bail!("Pi did not start the copied native session within 15 seconds");
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
     }
 }
 
@@ -278,6 +306,13 @@ fn find_session_file(root: &Path, session_id: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+pub(crate) fn session_exists(session_id: &str) -> bool {
+    let Some(home) = dirs::home_dir() else {
+        return false;
+    };
+    find_session_file(&home.join(".pi").join("agent").join("sessions"), session_id).is_some()
 }
 
 fn restore_message_metadata(entry: &mut PiHookState, record: &Value) {
@@ -400,6 +435,7 @@ async fn hook_handler(
 
         match event {
             "session_start" => {
+                entry.session_started = true;
                 entry.status = if body.get("is_idle").and_then(Value::as_bool).unwrap_or(true) {
                     AgentStatus::Idle
                 } else {
@@ -514,6 +550,30 @@ fn spawn_hook_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn copied_session_waits_for_matching_session_start() {
+        let hook_state: HookStateMap = Arc::new(Mutex::new(HashMap::new()));
+        hook_state
+            .lock()
+            .unwrap()
+            .insert("agent".into(), PiHookState::default());
+        let runtime = PiRuntime {
+            hook_state: hook_state.clone(),
+            port: 0,
+        };
+        tokio::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+            let mut state = hook_state.lock().unwrap();
+            let entry = state.get_mut("agent").unwrap();
+            entry.session_started = true;
+            entry.session_id = Some("new-session".into());
+        });
+        runtime
+            .wait_until_ready("agent", "new-session")
+            .await
+            .unwrap();
+    }
 
     #[test]
     fn metadata_keeps_first_prompt_and_updates_latest_response() {

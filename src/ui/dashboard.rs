@@ -720,6 +720,8 @@ fn render_keybindings_bar(
     spans.push(Span::raw(" "));
     push_keybind(&mut spans, "n", "new agent", theme, dimmed);
     spans.push(Span::raw(" "));
+    push_keybind(&mut spans, "i", "import", theme, dimmed);
+    spans.push(Span::raw(" "));
     push_keybind(&mut spans, "p", "new project", theme, dimmed);
     spans.push(Span::raw(" "));
     push_keybind(&mut spans, "d", "delete agent", theme, dimmed);

@@ -279,7 +279,10 @@ fn discover_session_names(sessions_dir: &Path, now: u64) -> Result<BTreeSet<Stri
 fn validate_host(host: &str) -> Result<()> {
     ensure!(!host.is_empty(), "SSH host is empty");
     ensure!(
-        !host.starts_with('-') && !host.chars().any(char::is_whitespace),
+        !host.starts_with('-')
+            && !host
+                .chars()
+                .any(|character| character.is_whitespace() || character.is_control()),
         "SSH host contains invalid characters"
     );
     Ok(())
@@ -390,7 +393,13 @@ fn parse_copy_result(bytes: &[u8], agent_type: &str, source_id: &str) -> Result<
         "copy result agent type changed"
     );
     ensure!(
-        !result.session_id.trim().is_empty() && result.session_id.trim() == result.session_id,
+        !result.session_id.trim().is_empty()
+            && result.session_id.trim() == result.session_id
+            && !result.session_id.starts_with('-')
+            && !result
+                .session_id
+                .chars()
+                .any(|character| character.is_control() || character == '/' || character == '\\'),
         "copy result has an invalid native session ID"
     );
     ensure!(
@@ -563,6 +572,13 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("source native session ID"));
+        let error = parse_copy_result(
+            br#"{"version":1,"agent_type":"codex","session_id":"../escape"}"#,
+            "codex",
+            "old",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("invalid native session ID"));
     }
 
     #[test]

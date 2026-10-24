@@ -201,6 +201,22 @@ impl OpenCodeAdapter {
     }
 }
 
+pub(crate) async fn session_exists(port: u16, session_id: &str) -> bool {
+    let Ok(mut url) = reqwest::Url::parse(&format!("http://127.0.0.1:{port}/session/")) else {
+        return false;
+    };
+    let Ok(mut segments) = url.path_segments_mut() else {
+        return false;
+    };
+    segments.push(session_id);
+    drop(segments);
+    reqwest::Client::new()
+        .get(url)
+        .send()
+        .await
+        .is_ok_and(|response| response.status().is_success())
+}
+
 // ---------------------------------------------------------------------------
 // SSE background task
 // ---------------------------------------------------------------------------

@@ -1037,7 +1037,7 @@ fn first_prompt_from_rollout_record(kind: Option<&str>, payload: &Value) -> Opti
     }
 }
 
-fn find_rollout_path(thread_id: &str) -> Option<String> {
+pub(crate) fn find_rollout_path(thread_id: &str) -> Option<String> {
     let sessions_dir = codex_home().join("sessions");
     let mut stack = vec![sessions_dir];
 

@@ -1,9 +1,12 @@
 # Agent transfer protocol, version 1
 
 This document fixes the wire contract used by the agent transfer feature.
-The remote listing command, SSH transport, and copy-command backend are
-implemented. The local picker, native session verification, and registration
-are subsequent implementation steps.
+
+In the local dashboard, press `i` to open the import picker. Enter or select an
+SSH host, a remote Flowmux session, an idle agent with a native session ID, and
+an existing local directory. The import belongs to the currently selected
+local project. The picker refreshes remote status while it is open and checks
+the selected source again before running the copy command.
 
 ## Remote listing
 
@@ -98,5 +101,38 @@ authority on whether a safe snapshot of the source can be made.
 
 The backend re-queries the source before invoking the copy command, rejects a
 changed source identity or a non-idle status, and bounds command runtime at
-five minutes. Native session verification and local agent registration are
-required before the returned ID becomes a Flowmux card.
+five minutes. Flowmux checks the local native session using the relevant agent
+adapter, launches it in a new tmux pane, and saves the card only after those
+steps succeed. If the copy succeeds but a later step fails, the picker reports
+the new native session ID for manual recovery.
+
+## Codex wrapper recipe
+
+One possible external command can use
+[`agent-handoff`](https://github.com/DavidDingXu/agent-handoff) for the native
+copy. Its current CLI can share a Codex thread as a zip, import it as a new
+native task with `--allow-duplicate`, and verify an imported thread. A wrapper
+for Flowmux's contract would:
+
+1. Parse Flowmux's named arguments and reject agent types other than `codex`.
+2. Run `agent-handoff share --source codex --thread <source-session-id>
+   --format zip --out <remote-temp-file>` over SSH on the selected host.
+3. Copy that bundle to a local temporary file through SSH or SCP. Remove both
+   temporary files when finished.
+4. Run `agent-handoff import <bundle> --target codex --cwd
+   <destination-directory> --execute --allow-duplicate` locally.
+5. Read its machine-readable result, require a fresh thread ID, and run
+   `agent-handoff verify --thread <new-id> --source codex --cwd
+   <destination-directory>`. Print only Flowmux's version 1 result JSON to
+   stdout; send diagnostics to stderr.
+
+The wrapper must check the installed `agent-handoff` version's JSON fields and
+test a real round trip before use. This is a recipe, not a bundled transfer
+implementation. Flowmux does not invoke `agent-handoff` unless the user
+configures a command that does so. The upstream CLI and its flags are described
+in the [agent-handoff README](https://github.com/DavidDingXu/agent-handoff#commands).
+
+The alternative [`cct`](https://github.com/ahmojo/codex-claude-transfer/blob/Main/docs/usage.md)
+supports session export and import, but its `--import-as-copy` applies on
+conflict and cannot safely copy Codex forks with inherited history. A wrapper
+must not assume a plain `cct import` always yields a new independent ID.

@@ -10,9 +10,11 @@ use crate::agents::AgentAdapter;
 use crate::config::{AgentConfig, AgentKind, Config, DEFAULT_PROJECT_NAME, MAX_PROJECTS};
 use crate::global_config::WorktreeDirectoryPreset;
 use crate::host_terminal::HostColors;
+use crate::import_picker::{ImportAgentState, ImportStage};
 use crate::models::{AgentEntry, AgentMeta, AgentStatus, AgentStatusCounts, AgentType};
 use crate::runner::{self, AgentRunner};
 use crate::tmux;
+use crate::transfer::{self, CopiedAgent, CopyRequest, Listing};
 use crate::ui::dashboard::{PROJECT_TABS_HEIGHT, grid_layout, project_tab_label};
 use crate::ui::theme::{
     Theme, theme_by_id, theme_by_index, theme_id_or_default, theme_index_by_id,
@@ -366,6 +368,7 @@ pub enum AppState {
     Dashboard,
     StartupGuide(StartupGuideState),
     CreateAgentDialog,
+    ImportAgentDialog,
     CreateProjectDialog,
     SettingsDialog(SettingsState),
     AgentView(usize),
@@ -462,6 +465,18 @@ pub enum Event {
     },
     StartupFinished {
         runner: AgentRunner,
+    },
+    ImportListing {
+        host: String,
+        result: Result<Listing, String>,
+    },
+    ImportCopied {
+        result: Result<CopiedAgent, String>,
+    },
+    ImportAttached {
+        runner: Box<AgentRunner>,
+        copied: CopiedAgent,
+        result: Result<(AgentConfig, Box<dyn AgentAdapter>), String>,
     },
 }
 
@@ -1092,6 +1107,7 @@ pub struct App {
     pub terminal_view_state: Option<TerminalViewState>,
     pub terminal_panes: std::collections::HashMap<usize, String>,
     pub create_state: CreateAgentState,
+    pub import_state: ImportAgentState,
     pub create_project_state: CreateProjectState,
     pub active_theme_id: String,
     pub preview_theme_id: Option<String>,
@@ -1138,6 +1154,10 @@ impl App {
         let card_count = agents.len();
         let active_theme_id =
             theme_id_or_default(runner.global_config().theme.as_deref()).to_string();
+        let import_state = ImportAgentState::new(
+            runner.global_config().transfer_hosts.clone(),
+            runner.available_agent_types(),
+        );
         let mut app = Self {
             agents,
             adapters,
@@ -1158,6 +1178,7 @@ impl App {
             terminal_view_state: None,
             terminal_panes: std::collections::HashMap::new(),
             create_state: CreateAgentState::default(),
+            import_state,
             create_project_state: CreateProjectState::default(),
             active_theme_id,
             preview_theme_id: None,
@@ -2085,6 +2106,7 @@ impl App {
             }
             Event::DashboardTick => {
                 self.handle_dashboard_tick().await;
+                self.maybe_refresh_import();
                 self.dirty = true;
                 true
             }
@@ -2190,6 +2212,137 @@ impl App {
                     self.pending_startup_guide_dismissal = false;
                 }
                 self.runner = Some(runner);
+                self.dirty = true;
+                true
+            }
+            Event::ImportListing { host, result } => {
+                if !matches!(self.state, AppState::ImportAgentDialog)
+                    || self.import_state.host != host
+                {
+                    return true;
+                }
+                self.import_state.refresh_in_flight = false;
+                self.import_state.last_refresh = Some(std::time::Instant::now());
+                if matches!(
+                    self.import_state.stage,
+                    ImportStage::Copying | ImportStage::Launching
+                ) {
+                    return true;
+                }
+                match result {
+                    Ok(listing) => {
+                        if let Some(runner) = self.runner.as_mut() {
+                            let global = runner.global_config_mut();
+                            if global.add_transfer_host(&host)
+                                && let Err(error) = global.save()
+                            {
+                                log::warn!("failed to save transfer host: {error:#}");
+                            }
+                        }
+                        self.import_state.saved_hosts = self
+                            .runner
+                            .as_ref()
+                            .map(|runner| runner.global_config().transfer_hosts.clone())
+                            .unwrap_or_default();
+                        self.import_state.listing = Some(listing);
+                        if self.import_state.stage == ImportStage::Connecting {
+                            self.import_state.stage = ImportStage::Session;
+                        }
+                        self.import_state.error = None;
+                    }
+                    Err(error) => {
+                        self.import_state.listing = None;
+                        if self.import_state.stage == ImportStage::Connecting {
+                            self.import_state.stage = ImportStage::Host;
+                        } else {
+                            self.import_state.stage = ImportStage::Session;
+                        }
+                        self.import_state.error = Some(error);
+                    }
+                }
+                self.dirty = true;
+                true
+            }
+            Event::ImportCopied { result } => {
+                if !matches!(self.state, AppState::ImportAgentDialog)
+                    || self.import_state.stage != ImportStage::Copying
+                {
+                    return true;
+                }
+                match result {
+                    Ok(copied) => {
+                        let Some(mut runner) = self.runner.take() else {
+                            self.import_state.error = Some(format!(
+                                "copied native session {}; local runner is unavailable",
+                                copied.session_id
+                            ));
+                            self.import_state.stage = ImportStage::Directory;
+                            return true;
+                        };
+                        self.import_state.stage = ImportStage::Launching;
+                        let project = self.active_project_name().to_string();
+                        let tx = self.tx.clone();
+                        tokio::spawn(async move {
+                            let result = runner
+                                .attach_copied(&copied, &project)
+                                .await
+                                .map_err(|error| format!("{error:#}"));
+                            let _ = tx.send(Event::ImportAttached {
+                                runner: Box::new(runner),
+                                copied,
+                                result,
+                            });
+                        });
+                    }
+                    Err(error) => {
+                        self.import_state.error = Some(error);
+                        self.import_state.stage = ImportStage::Directory;
+                    }
+                }
+                self.dirty = true;
+                true
+            }
+            Event::ImportAttached {
+                runner,
+                copied,
+                result,
+            } => {
+                self.runner = Some(*runner);
+                match result {
+                    Ok((config, adapter)) => {
+                        if adapter.get_cached_session_id().as_deref() != Some(&copied.session_id) {
+                            let _ = tmux::kill_window(config.pane.trim_end_matches(".0"));
+                            self.import_state.error = Some(format!(
+                                "local agent did not resume copied session {}; recover it manually",
+                                copied.session_id
+                            ));
+                            self.import_state.stage = ImportStage::Directory;
+                        } else {
+                            self.config.agents.push(config.clone());
+                            if let Err(error) = self.config.save() {
+                                self.config.agents.pop();
+                                let _ = tmux::kill_window(config.pane.trim_end_matches(".0"));
+                                self.import_state.error = Some(format!(
+                                    "could not save imported agent: {error}; copied session {} remains available",
+                                    copied.session_id
+                                ));
+                                self.import_state.stage = ImportStage::Directory;
+                            } else {
+                                let meta = initial_agent_meta(adapter.as_ref()).await;
+                                self.agents.push(AgentEntry { config, meta });
+                                self.adapters.push(adapter);
+                                self.agent_view_scroll
+                                    .push(StoredAgentViewScroll::default());
+                                let new_idx = self.agents.len() - 1;
+                                self.enter_agent_view(new_idx);
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        self.import_state.error = Some(error);
+                        self.import_state.stage = ImportStage::Directory;
+                    }
+                }
                 self.dirty = true;
                 true
             }
@@ -2607,6 +2760,11 @@ impl App {
     /// pasting large blocks of text fast.
     fn handle_paste(&mut self, text: String) {
         match &self.state {
+            AppState::ImportAgentDialog => match self.import_state.stage {
+                ImportStage::Host => self.import_state.host.push_str(text.trim()),
+                ImportStage::Directory => self.import_state.directory.push_str(text.trim()),
+                _ => {}
+            },
             AppState::AgentView(idx) => {
                 let idx = *idx;
                 if self.agent_view_state.show_stopped_overlay || !self.agent_is_ready(idx) {
@@ -2654,6 +2812,7 @@ impl App {
                 self.handle_agent_view_key(key, idx).await
             }
             AppState::CreateAgentDialog => self.handle_create_key(key).await,
+            AppState::ImportAgentDialog => self.handle_import_key(key),
             AppState::CreateProjectDialog => self.handle_create_project_key(key),
             AppState::RemoveAgentDialog(state) => {
                 let state = state.clone();
@@ -2666,6 +2825,200 @@ impl App {
             AppState::GitViewer(_) => self.handle_git_viewer_key(key),
             AppState::TerminalView(_) => self.handle_terminal_view_key(key),
         }
+    }
+
+    fn handle_import_key(&mut self, key: KeyEvent) -> bool {
+        use ImportStage::*;
+        let stage = self.import_state.stage;
+        if matches!(stage, Connecting | Copying | Launching) {
+            return true;
+        }
+        match key.code {
+            KeyCode::Esc => {
+                self.import_state.error = None;
+                self.import_state.stage = match stage {
+                    Host => {
+                        self.state = AppState::Dashboard;
+                        return true;
+                    }
+                    Session => Host,
+                    Agent => Session,
+                    Directory => Agent,
+                    _ => unreachable!(),
+                };
+            }
+            KeyCode::Up | KeyCode::Down => {
+                let up = key.code == KeyCode::Up;
+                match stage {
+                    Host => {
+                        let len = self.import_state.saved_hosts.len();
+                        if len > 0 {
+                            let idx = &mut self.import_state.host_idx;
+                            *idx = if up {
+                                idx.saturating_sub(1)
+                            } else {
+                                (*idx + 1).min(len - 1)
+                            };
+                            self.import_state.host = self.import_state.saved_hosts[*idx].clone();
+                        }
+                    }
+                    Session => {
+                        let len = self
+                            .import_state
+                            .listing
+                            .as_ref()
+                            .map(|listing| listing.sessions.len())
+                            .unwrap_or(0);
+                        if len > 0 {
+                            let idx = &mut self.import_state.session_idx;
+                            *idx = if up {
+                                idx.saturating_sub(1)
+                            } else {
+                                (*idx + 1).min(len - 1)
+                            };
+                        }
+                    }
+                    Agent => {
+                        let len = self.import_state.visible_agents().len();
+                        if len > 0 {
+                            let idx = &mut self.import_state.agent_idx;
+                            *idx = if up {
+                                idx.saturating_sub(1)
+                            } else {
+                                (*idx + 1).min(len - 1)
+                            };
+                        }
+                    }
+                    _ => {}
+                }
+                self.import_state.error = None;
+            }
+            KeyCode::Enter => match stage {
+                Host => self.start_remote_listing(true),
+                Session => {
+                    if let Some(session) = self.import_state.session() {
+                        if session.online {
+                            self.import_state.stage = Agent;
+                            self.import_state.agent_idx = 0;
+                            self.import_state.error = None;
+                        } else {
+                            self.import_state.error =
+                                Some("remote Flowmux session is offline".into());
+                        }
+                    }
+                }
+                Agent => {
+                    self.import_state.error = self.import_state.choose_agent().err();
+                }
+                Directory => self.start_import_copy(),
+                _ => {}
+            },
+            KeyCode::Backspace => match stage {
+                Host => {
+                    self.import_state.host.pop();
+                    self.import_state.error = None;
+                }
+                Directory => {
+                    self.import_state.directory.pop();
+                    self.import_state.error = None;
+                }
+                _ => {}
+            },
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => match stage {
+                Host => self.import_state.host.clear(),
+                Directory => self.import_state.directory.clear(),
+                _ => {}
+            },
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => match stage {
+                Host => {
+                    self.import_state.host.push(c);
+                    self.import_state.error = None;
+                }
+                Directory => {
+                    self.import_state.directory.push(c);
+                    self.import_state.error = None;
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        true
+    }
+
+    fn start_remote_listing(&mut self, initial: bool) {
+        let host = self.import_state.host.clone();
+        if host.trim().is_empty() {
+            self.import_state.error = Some("enter an SSH host".into());
+            return;
+        }
+        if initial {
+            self.import_state.stage = ImportStage::Connecting;
+            self.import_state.listing = None;
+            self.import_state.session_idx = 0;
+            self.import_state.agent_idx = 0;
+        }
+        self.import_state.refresh_in_flight = true;
+        self.import_state.error = None;
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let result = transfer::fetch_remote_listing(&host)
+                .await
+                .map_err(|error| format!("{error:#}"));
+            let _ = tx.send(Event::ImportListing { host, result });
+        });
+    }
+
+    fn maybe_refresh_import(&mut self) {
+        if !matches!(self.state, AppState::ImportAgentDialog)
+            || !matches!(
+                self.import_state.stage,
+                ImportStage::Session | ImportStage::Agent | ImportStage::Directory
+            )
+            || self.import_state.refresh_in_flight
+            || self
+                .import_state
+                .last_refresh
+                .is_some_and(|at| at.elapsed() < Duration::from_secs(2))
+        {
+            return;
+        }
+        self.start_remote_listing(false);
+    }
+
+    fn start_import_copy(&mut self) {
+        let Some(source) = self.import_state.selected.clone() else {
+            self.import_state.error = Some("select a source agent".into());
+            return;
+        };
+        let directory = std::path::PathBuf::from(&self.import_state.directory);
+        if !directory.is_dir() {
+            self.import_state.error = Some("select an existing local directory".into());
+            return;
+        }
+        let Some(runner) = self.runner.as_ref() else {
+            self.import_state.error = Some("local runner is unavailable".into());
+            return;
+        };
+        let config = runner.global_config().clone();
+        let available_types = runner.available_agent_types();
+        let host = self.import_state.host.clone();
+        let tx = self.tx.clone();
+        self.import_state.stage = ImportStage::Copying;
+        self.import_state.error = None;
+        tokio::spawn(async move {
+            let request = CopyRequest {
+                host: &host,
+                flowmux_session: &source.session,
+                source_id: &source.id,
+                source_session_id: &source.session_id,
+                agent_type: &source.agent_type,
+                destination_directory: &directory,
+            };
+            let result = transfer::copy_native_session(&config, &request, &available_types)
+                .await
+                .map_err(|error| format!("{error:#}"));
+            let _ = tx.send(Event::ImportCopied { result });
+        });
     }
 
     // -----------------------------------------------------------------------
@@ -2744,7 +3097,7 @@ impl App {
         // and opening cards stay available throughout restoration.
         let startup_mutation = matches!(
             key.code,
-            KeyCode::Char('n') | KeyCode::Char('S') | KeyCode::Char('d')
+            KeyCode::Char('n') | KeyCode::Char('i') | KeyCode::Char('S') | KeyCode::Char('d')
         ) || (key.code == KeyCode::Char('p') && !ctrl)
             || (ctrl
                 && matches!(
@@ -2780,6 +3133,16 @@ impl App {
                 self.create_state = cs;
                 self.load_create_state_worktree_presets();
                 self.state = AppState::CreateAgentDialog;
+            }
+            KeyCode::Char('i') => {
+                let Some(runner) = self.runner.as_ref() else {
+                    return true;
+                };
+                self.import_state = ImportAgentState::new(
+                    runner.global_config().transfer_hosts.clone(),
+                    runner.available_agent_types(),
+                );
+                self.state = AppState::ImportAgentDialog;
             }
             KeyCode::Char('S') => {
                 self.open_settings_dialog();
@@ -5726,6 +6089,21 @@ mod tests {
     use crate::agents::AgentAdapter;
     use crate::config::{AgentConfig, AgentKind};
     use crate::global_config::GlobalConfig;
+
+    #[tokio::test]
+    async fn late_refresh_cannot_discard_an_in_progress_copy() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.state = AppState::ImportAgentDialog;
+        app.import_state.host = "laptop".into();
+        app.import_state.stage = ImportStage::Copying;
+        app.handle_event(Event::ImportListing {
+            host: "laptop".into(),
+            result: Err("SSH disconnected".into()),
+        })
+        .await;
+        assert_eq!(app.import_state.stage, ImportStage::Copying);
+        assert!(app.import_state.error.is_none());
+    }
     use crate::models::ContextInfo;
     use async_trait::async_trait;
     use std::collections::BTreeMap;

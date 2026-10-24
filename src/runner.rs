@@ -193,13 +193,51 @@ impl AgentRunner {
                 copied.agent_type
             );
         }
+        verify_copied_session(copied, &agent_type).with_context(|| {
+            format!(
+                "copied native session {} could not be found locally; its history remains available for manual recovery",
+                copied.session_id
+            )
+        })?;
         let config = imported_agent_config(copied, project, agent_type);
-        self.restart(&config).await.with_context(|| {
+        let (local_config, adapter) = self.restart(&config).await.with_context(|| {
             format!(
                 "failed to launch copied native session {}; its history remains available for manual recovery",
                 copied.session_id
             )
-        })
+        })?;
+        let verification = match &local_config.kind {
+            AgentKind::Opencode { port, .. } => {
+                if crate::agents::opencode::session_exists(*port, &copied.session_id).await {
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!(
+                        "OpenCode cannot find the copied native session"
+                    ))
+                }
+            }
+            AgentKind::Pi {
+                flowmux_agent_id, ..
+            } => {
+                self.pi
+                    .as_ref()
+                    .unwrap()
+                    .wait_until_ready(flowmux_agent_id, &copied.session_id)
+                    .await
+            }
+            _ => Ok(()),
+        };
+        if let Err(error) = verification {
+            let window = local_config.pane.trim_end_matches(".0");
+            let _ = tmux::kill_window(window);
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to verify copied native session {}; its history remains available for manual recovery",
+                    copied.session_id
+                )
+            });
+        }
+        Ok((local_config, adapter))
     }
 
     // -----------------------------------------------------------------------
@@ -597,6 +635,22 @@ fn imported_agent_config(
         git_worktree_branch: None,
         git_worktree_base_ref: None,
     }
+}
+
+fn verify_copied_session(copied: &CopiedAgent, agent_type: &AgentType) -> Result<()> {
+    let found = match agent_type {
+        AgentType::Opencode => true, // queried from its local HTTP API after launch
+        AgentType::Claude => crate::agents::claude::session_exists_for_directory(
+            &copied.session_id,
+            &copied.directory.to_string_lossy(),
+        ),
+        AgentType::Codex => crate::agents::codex::find_rollout_path(&copied.session_id).is_some(),
+        AgentType::Pi => crate::agents::pi::session_exists(&copied.session_id),
+    };
+    if !found {
+        bail!("native CLI session is missing");
+    }
+    Ok(())
 }
 
 fn prepare_worktree_directory(

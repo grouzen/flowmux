@@ -6,6 +6,7 @@ mod ghostty;
 mod git;
 mod global_config;
 mod host_terminal;
+mod import_picker;
 mod launch;
 mod logging;
 mod model_registry;
@@ -348,6 +349,31 @@ async fn main() -> Result<()> {
                                 theme,
                                 &app.create_state,
                             );
+                        }
+                        app::AppState::ImportAgentDialog => {
+                            let visible_indices = app.visible_agent_indices();
+                            ui::dashboard::render_dashboard(
+                                f,
+                                area,
+                                theme,
+                                &app.agents,
+                                &visible_indices,
+                                Some(app.selected),
+                                &app.config.projects,
+                                app.active_project_idx,
+                                &app.card_scroll,
+                                &app.card_horizontal_scroll,
+                                &mut app.card_response_heights,
+                                &mut app.card_response_widths,
+                                &mut app.card_response_content_heights,
+                                &mut app.card_response_content_widths,
+                                true,
+                                status_counts,
+                                blink_running,
+                                blink_waiting,
+                                app.startup_progress.as_ref(),
+                            );
+                            import_picker::render(f, area, theme, &app.import_state);
                         }
                         app::AppState::CreateProjectDialog => {
                             let visible_indices = app.visible_agent_indices();
