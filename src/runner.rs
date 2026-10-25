@@ -379,6 +379,7 @@ impl AgentRunner {
                     git_worktree_base_ref: stored_worktree
                         .as_ref()
                         .and_then(|wt| wt.base_ref.clone()),
+                    git_worktree_external: false,
                 };
                 Ok((config, Box::new(adapter)))
             }
@@ -420,6 +421,7 @@ impl AgentRunner {
                     git_worktree_base_ref: stored_worktree
                         .as_ref()
                         .and_then(|wt| wt.base_ref.clone()),
+                    git_worktree_external: false,
                 };
                 Ok((config, Box::new(adapter)))
             }
@@ -441,6 +443,7 @@ impl AgentRunner {
                     git_worktree_base_ref: stored_worktree
                         .as_ref()
                         .and_then(|wt| wt.base_ref.clone()),
+                    git_worktree_external: false,
                 };
                 Ok((config, Box::new(adapter)))
             }
@@ -476,6 +479,7 @@ impl AgentRunner {
                     git_worktree_base_ref: stored_worktree
                         .as_ref()
                         .and_then(|wt| wt.base_ref.clone()),
+                    git_worktree_external: false,
                 };
                 Ok((config, Box::new(adapter)))
             }
@@ -605,6 +609,7 @@ fn imported_agent_config(
     project: &str,
     agent_type: AgentType,
 ) -> AgentConfig {
+    let worktree = imported_local_worktree(copied);
     let session_id = Some(copied.session_id.clone());
     let kind = match agent_type {
         AgentType::Opencode => AgentKind::Opencode {
@@ -631,10 +636,36 @@ fn imported_agent_config(
         directory: copied.directory.to_string_lossy().into_owned(),
         project: project.to_string(),
         kind,
-        git_repo_root: None,
-        git_worktree_branch: None,
-        git_worktree_base_ref: None,
+        git_repo_root: worktree.as_ref().map(|metadata| metadata.0.clone()),
+        git_worktree_branch: worktree.as_ref().and_then(|metadata| metadata.1.clone()),
+        git_worktree_base_ref: worktree.as_ref().and_then(|metadata| metadata.2.clone()),
+        git_worktree_external: worktree.is_some(),
     }
+}
+
+/// A remote path is never valid local worktree metadata. Resolve the selected
+/// local directory through Git and retain the source base ref only when both
+/// machines have the same branch checked out there.
+fn imported_local_worktree(
+    copied: &CopiedAgent,
+) -> Option<(String, Option<String>, Option<String>)> {
+    copied.source_git_repo_root.as_ref()?;
+    let repo = git2::Repository::discover(&copied.directory).ok()?;
+    if !repo.is_worktree()
+        || repo.workdir()?.canonicalize().ok()? != copied.directory.canonicalize().ok()?
+    {
+        return None;
+    }
+    let main = git2::Repository::open(repo.commondir()).ok()?;
+    let root = main.workdir()?.canonicalize().ok()?;
+    let branch = git::current_branch(&copied.directory);
+    let base_ref = matches!(
+        (branch.as_deref(), copied.source_git_worktree_branch.as_deref()),
+        (Some(local), Some(remote)) if local == remote
+    )
+    .then(|| copied.source_git_worktree_base_ref.clone())
+    .flatten();
+    Some((root.to_string_lossy().into_owned(), branch, base_ref))
 }
 
 fn verify_copied_session(copied: &CopiedAgent, agent_type: &AgentType) -> Result<()> {
@@ -872,6 +903,9 @@ mod tests {
             agent_type: "claude".into(),
             session_id: "new-native-id".into(),
             directory: PathBuf::from("/local/project"),
+            source_git_repo_root: None,
+            source_git_worktree_branch: None,
+            source_git_worktree_base_ref: None,
         };
         let config = imported_agent_config(&copied, "Current", AgentType::Claude);
         assert_eq!(config.name, "remote name");
@@ -881,6 +915,7 @@ mod tests {
         assert!(config.pane.is_empty());
         assert!(config.git_repo_root.is_none());
         assert!(config.git_worktree_branch.is_none());
+        assert!(!config.git_worktree_external);
         assert!(matches!(
             config.kind,
             AgentKind::Claude {
@@ -961,6 +996,68 @@ mod tests {
         run_git(&repo_root, &["add", "README.md"]);
         run_git(&repo_root, &["commit", "-m", "init"]);
         repo_root
+    }
+
+    #[test]
+    fn imported_worktree_uses_local_root_and_preserves_matching_branch_metadata() {
+        let temp = TestDir::new("imported-worktree");
+        let repo_root = init_test_repo(&temp);
+        let worktree = temp.path.join("local-worktree");
+        git::create_worktree(
+            &repo_root,
+            &worktree,
+            "transfer-branch",
+            git::WorktreeStartPoint::Head,
+            false,
+        )
+        .unwrap();
+        let copied = CopiedAgent {
+            name: "remote name".into(),
+            agent_type: "codex".into(),
+            session_id: "new-native-id".into(),
+            directory: worktree.clone(),
+            source_git_repo_root: Some("/remote/repo".into()),
+            source_git_worktree_branch: Some("transfer-branch".into()),
+            source_git_worktree_base_ref: Some("origin/main".into()),
+        };
+        let config = imported_agent_config(&copied, "Current", AgentType::Codex);
+        assert_eq!(config.git_repo_root.as_deref(), repo_root.to_str());
+        assert_eq!(
+            config.git_worktree_branch.as_deref(),
+            Some("transfer-branch")
+        );
+        assert_eq!(config.git_worktree_base_ref.as_deref(), Some("origin/main"));
+        assert!(config.git_worktree_external);
+        assert!(!config.can_remove_worktree());
+
+        let different_branch = CopiedAgent {
+            source_git_worktree_branch: Some("remote-only".into()),
+            ..copied
+        };
+        let config = imported_agent_config(&different_branch, "Current", AgentType::Codex);
+        assert_eq!(
+            config.git_worktree_branch.as_deref(),
+            Some("transfer-branch")
+        );
+        assert!(config.git_worktree_base_ref.is_none());
+    }
+
+    #[test]
+    fn imported_agent_in_regular_repository_does_not_claim_worktree() {
+        let temp = TestDir::new("imported-regular-repo");
+        let repo_root = init_test_repo(&temp);
+        let copied = CopiedAgent {
+            name: "remote name".into(),
+            agent_type: "codex".into(),
+            session_id: "new-native-id".into(),
+            directory: repo_root,
+            source_git_repo_root: Some("/remote/repo".into()),
+            source_git_worktree_branch: Some("transfer-branch".into()),
+            source_git_worktree_base_ref: None,
+        };
+        let config = imported_agent_config(&copied, "Current", AgentType::Codex);
+        assert!(config.git_repo_root.is_none());
+        assert!(!config.git_worktree_external);
     }
 
     fn git_worktree_list_contains(repo_root: &Path, path: &Path) -> bool {

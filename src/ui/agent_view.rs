@@ -453,7 +453,7 @@ pub fn render_agent_view(
 
     // Stopped overlay
     if state.show_stopped_overlay {
-        let has_worktree = agent_entry.config.git_repo_root.is_some();
+        let has_worktree = agent_entry.config.can_remove_worktree();
         render_stopped_overlay(theme, f, area, has_worktree, state.remove_worktree_on_stop);
     }
 }

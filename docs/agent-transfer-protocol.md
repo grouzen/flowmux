@@ -45,6 +45,9 @@ session lock. Its shape is:
           "agent_type": "codex",
           "session_id": "native-session-id",
           "directory": "/home/user/project",
+          "git_repo_root": "/home/user/repo",
+          "git_worktree_branch": "feature",
+          "git_worktree_base_ref": "origin/main",
           "status": "idle"
         }
       ]
@@ -57,6 +60,8 @@ session lock. Its shape is:
 display it as the agent name. `agent_type` is one of `opencode`, `claude`,
 `codex`, or `pi`. `session_id` may be null. `status` is one of `starting`,
 `running`, `waiting_for_input`, `idle`, `stopped`, or `unknown`.
+The three Git worktree fields are optional and come from the source session
+config. Older version 1 listings without them remain valid.
 
 The running dashboard publishes a status snapshot every 500 milliseconds. A
 snapshot is accepted for at most three seconds. Missing, stale, malformed, or
@@ -112,6 +117,11 @@ five minutes. Flowmux checks the local native session using the relevant agent
 adapter, launches it in a new tmux pane, and saves the card only after those
 steps succeed. If the copy succeeds but a later step fails, the picker reports
 the new native session ID for manual recovery.
+When the source agent has worktree metadata and the selected destination is
+itself a local Git worktree, Flowmux records the local repository root and
+checked-out branch on the imported card. It retains the source base ref only
+when the local branch matches the source branch. Imported worktrees are
+external to Flowmux: removing the card never deletes their directory or branch.
 
 ## Codex copy command example
 

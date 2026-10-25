@@ -102,6 +102,12 @@ pub struct AgentListing {
     pub agent_type: String,
     pub session_id: Option<String>,
     pub directory: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_repo_root: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_worktree_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_worktree_base_ref: Option<String>,
     pub status: TransferStatus,
 }
 
@@ -122,6 +128,9 @@ pub struct CopiedAgent {
     pub agent_type: String,
     pub session_id: String,
     pub directory: PathBuf,
+    pub source_git_repo_root: Option<String>,
+    pub source_git_worktree_branch: Option<String>,
+    pub source_git_worktree_base_ref: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -282,6 +291,9 @@ fn agent_listing(agent: &AgentConfig, status: TransferStatus) -> AgentListing {
         agent_type: agent.agent_type_str().to_string(),
         session_id: agent.session_id().map(str::to_owned),
         directory: agent.directory.clone(),
+        git_repo_root: agent.git_repo_root.clone(),
+        git_worktree_branch: agent.git_worktree_branch.clone(),
+        git_worktree_base_ref: agent.git_worktree_base_ref.clone(),
         status,
     }
 }
@@ -526,6 +538,9 @@ pub async fn copy_native_session(
         agent_type: source.agent_type.clone(),
         session_id,
         directory,
+        source_git_repo_root: source.git_repo_root.clone(),
+        source_git_worktree_branch: source.git_worktree_branch.clone(),
+        source_git_worktree_base_ref: source.git_worktree_base_ref.clone(),
     })
 }
 
@@ -574,6 +589,7 @@ mod tests {
                 git_repo_root: None,
                 git_worktree_branch: None,
                 git_worktree_base_ref: None,
+                git_worktree_external: false,
             }],
             ..Config::default()
         }
@@ -584,6 +600,28 @@ mod tests {
         let result = list_session(config(), None);
         assert!(!result.online);
         assert_eq!(result.agents[0].status, TransferStatus::Unknown);
+    }
+
+    #[test]
+    fn listing_carries_source_worktree_metadata_and_accepts_older_listings() {
+        let mut source = config();
+        source.agents[0].git_repo_root = Some("/source/repo".into());
+        source.agents[0].git_worktree_branch = Some("feature".into());
+        source.agents[0].git_worktree_base_ref = Some("origin/main".into());
+        let listing = Listing {
+            version: PROTOCOL_VERSION,
+            sessions: vec![list_session(source, None)],
+        };
+        let encoded = serde_json::to_vec(&listing).unwrap();
+        let decoded = parse_remote_listing(&encoded).unwrap();
+        let agent = &decoded.sessions[0].agents[0];
+        assert_eq!(agent.git_repo_root.as_deref(), Some("/source/repo"));
+        assert_eq!(agent.git_worktree_branch.as_deref(), Some("feature"));
+        assert_eq!(agent.git_worktree_base_ref.as_deref(), Some("origin/main"));
+
+        let older = br#"{"version":1,"sessions":[{"name":"demo","online":false,"agents":[{"id":"pane","name":"agent","agent_type":"codex","session_id":"native","directory":"/work","status":"unknown"}]}]}"#;
+        let decoded = parse_remote_listing(older).unwrap();
+        assert!(decoded.sessions[0].agents[0].git_repo_root.is_none());
     }
 
     #[test]

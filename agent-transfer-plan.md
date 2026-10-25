@@ -155,8 +155,9 @@ transfer responsibilities for flowmux.
    destination directory. Refresh status periodically and revalidate before
    copying.
 5. Add the runner path for a returned, already-copied native session. Persist
-   a fresh local record only after validation and successful launch. Do not
-   claim ownership of a pre-existing worktree or remote path.
+   a fresh local record only after validation and successful launch. Resolve
+   source worktree metadata against the selected local Git worktree, and do
+   not claim ownership of a pre-existing worktree or remote path.
 6. Document the external command contract and provide a small **example**
    wrapper or recipe for Codex using an existing tool. Keep the example
    separate from flowmux's core transfer logic.

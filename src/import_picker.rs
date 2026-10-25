@@ -33,6 +33,7 @@ pub struct SelectedSource {
     pub agent_type: String,
     pub name: String,
     pub directory: String,
+    pub worktree_branch: Option<String>,
 }
 
 #[derive(Clone)]
@@ -136,6 +137,7 @@ impl ImportAgentState {
             agent_type: agent.agent_type,
             name: agent.name,
             directory: agent.directory,
+            worktree_branch: agent.git_worktree_branch,
         });
         self.stage = ImportStage::Directory;
         Ok(())
@@ -263,6 +265,9 @@ pub fn render(f: &mut Frame, area: Rect, theme: &Theme, state: &ImportAgentState
                     "  Source directory: {}",
                     source.directory
                 )));
+                if let Some(branch) = &source.worktree_branch {
+                    lines.push(Line::raw(format!("  Source worktree branch: {branch}")));
+                }
             }
             lines.push(Line::raw(format!("  Local directory: {}", state.directory)));
             lines.push(Line::raw(
@@ -330,6 +335,9 @@ mod tests {
                     agent_type: "codex".into(),
                     session_id: Some("native".into()),
                     directory,
+                    git_repo_root: None,
+                    git_worktree_branch: None,
+                    git_worktree_base_ref: None,
                     status: TransferStatus::Idle,
                 }],
             }],
@@ -372,6 +380,9 @@ mod tests {
                     agent_type: "codex".into(),
                     session_id: Some("native".into()),
                     directory: "/remote".into(),
+                    git_repo_root: None,
+                    git_worktree_branch: None,
+                    git_worktree_base_ref: None,
                     status: TransferStatus::Running,
                 }],
             }],

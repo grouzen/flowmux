@@ -3213,8 +3213,7 @@ impl App {
                     let has_worktree = self
                         .agents
                         .get(idx)
-                        .and_then(|e| e.config.git_repo_root.as_ref())
-                        .is_some();
+                        .is_some_and(|e| e.config.can_remove_worktree());
                     self.state = AppState::RemoveAgentDialog(RemoveAgentState {
                         idx,
                         remove_worktree: has_worktree,
@@ -3522,8 +3521,7 @@ impl App {
                     self.agent_view_state.remove_worktree_on_stop = self
                         .agents
                         .get(idx)
-                        .and_then(|e| e.config.git_repo_root.as_ref())
-                        .is_some();
+                        .is_some_and(|e| e.config.can_remove_worktree());
                     self.dirty = true;
                 }
                 self.agent_view_state.prev_status = Some(AgentStatus::Stopped.clone());
@@ -3627,8 +3625,7 @@ impl App {
                     self.agent_view_state.remove_worktree_on_stop = self
                         .agents
                         .get(idx)
-                        .and_then(|e| e.config.git_repo_root.as_ref())
-                        .is_some();
+                        .is_some_and(|e| e.config.can_remove_worktree());
                 }
                 if prev.as_ref() != Some(&new_status) {
                     self.dirty = true;
@@ -3700,8 +3697,7 @@ impl App {
                     let has_worktree = self
                         .agents
                         .get(idx)
-                        .and_then(|e| e.config.git_repo_root.as_ref())
-                        .is_some();
+                        .is_some_and(|e| e.config.can_remove_worktree());
                     if has_worktree {
                         self.agent_view_state.remove_worktree_on_stop =
                             !self.agent_view_state.remove_worktree_on_stop;
@@ -5049,8 +5045,7 @@ impl App {
                 let has_worktree = self
                     .agents
                     .get(state.idx)
-                    .and_then(|e| e.config.git_repo_root.as_ref())
-                    .is_some();
+                    .is_some_and(|e| e.config.can_remove_worktree());
                 let max_focus = if has_worktree { 1 } else { 0 };
                 if let AppState::RemoveAgentDialog(ref mut s) = self.state {
                     s.focus = if s.focus >= max_focus { 0 } else { s.focus + 1 };
@@ -5064,8 +5059,7 @@ impl App {
                             let has_worktree = self
                                 .agents
                                 .get(state.idx)
-                                .and_then(|e| e.config.git_repo_root.as_ref())
-                                .is_some();
+                                .is_some_and(|e| e.config.can_remove_worktree());
                             if has_worktree {
                                 s.remove_worktree = !s.remove_worktree;
                             }
@@ -5151,6 +5145,7 @@ impl App {
 
                 // Remove the git worktree if requested and present.
                 if remove_worktree
+                    && agent_config.can_remove_worktree()
                     && let (Some(wt_path), Some(repo_root)) = (
                         Some(agent_config.directory.as_str()),
                         agent_config.git_repo_root.as_deref(),
@@ -5216,8 +5211,7 @@ impl App {
             let remove_worktree = self
                 .agents
                 .get(idx)
-                .and_then(|entry| entry.config.git_repo_root.as_ref())
-                .is_some();
+                .is_some_and(|entry| entry.config.can_remove_worktree());
             self.remove_agent(idx, remove_worktree, true).await;
         }
 
@@ -6221,6 +6215,7 @@ mod tests {
                 git_repo_root: None,
                 git_worktree_branch: None,
                 git_worktree_base_ref: None,
+                git_worktree_external: false,
             },
             meta: AgentMeta {
                 status,
@@ -6418,6 +6413,7 @@ mod tests {
                     git_repo_root: None,
                     git_worktree_branch: None,
                     git_worktree_base_ref: None,
+                    git_worktree_external: false,
                 },
                 meta: AgentMeta::default(),
             },
@@ -6434,6 +6430,7 @@ mod tests {
                     git_repo_root: None,
                     git_worktree_branch: None,
                     git_worktree_base_ref: None,
+                    git_worktree_external: false,
                 },
                 meta: AgentMeta::default(),
             },
@@ -6451,6 +6448,7 @@ mod tests {
                     git_repo_root: None,
                     git_worktree_branch: None,
                     git_worktree_base_ref: None,
+                    git_worktree_external: false,
                 },
                 meta: AgentMeta::default(),
             },
