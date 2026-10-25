@@ -13,8 +13,9 @@ transcript conversion or synchronize project files.
 
 This document records the decisions from the design interview. The implemented
 protocol and Codex copy command example are documented in
-[`docs/agent-transfer-protocol.md`](docs/agent-transfer-protocol.md). No tool has
-yet been tested against a real cross-machine transfer.
+[`docs/agent-transfer-protocol.md`](docs/agent-transfer-protocol.md). A real
+cross-machine Codex import has been completed; automated coverage still uses
+a simulated copy command.
 
 ## Agreed user flow
 

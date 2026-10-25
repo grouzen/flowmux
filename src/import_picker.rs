@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::Path;
 use std::time::Instant;
 
 use ratatui::{
@@ -32,6 +32,7 @@ pub struct SelectedSource {
     pub session_id: String,
     pub agent_type: String,
     pub name: String,
+    pub directory: String,
 }
 
 #[derive(Clone)]
@@ -56,10 +57,6 @@ pub struct ImportAgentState {
 impl ImportAgentState {
     pub fn new(saved_hosts: Vec<String>, available_types: Vec<AgentType>) -> Self {
         let host = saved_hosts.first().cloned().unwrap_or_default();
-        let directory = std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .to_string_lossy()
-            .into_owned();
         Self {
             stage: ImportStage::Host,
             host,
@@ -71,7 +68,7 @@ impl ImportAgentState {
             session_idx: 0,
             agent_idx: 0,
             selected: None,
-            directory,
+            directory: String::new(),
             available_types,
             error: None,
             refresh_in_flight: false,
@@ -125,6 +122,11 @@ impl ImportAgentState {
             }
             (session.name.clone(), agent.clone())
         };
+        self.directory = if Path::new(&agent.directory).is_dir() {
+            agent.directory.clone()
+        } else {
+            String::new()
+        };
         self.selected = Some(SelectedSource {
             session: session_name,
             id: agent.id,
@@ -133,6 +135,7 @@ impl ImportAgentState {
                 .expect("eligible agent has a native session ID"),
             agent_type: agent.agent_type,
             name: agent.name,
+            directory: agent.directory,
         });
         self.stage = ImportStage::Directory;
         Ok(())
@@ -256,9 +259,12 @@ pub fn render(f: &mut Frame, area: Rect, theme: &Theme, state: &ImportAgentState
         ImportStage::Directory | ImportStage::Copying | ImportStage::Launching => {
             if let Some(source) = &state.selected {
                 lines.push(Line::raw(format!("  Source: {}", source.name)));
+                lines.push(Line::raw(format!(
+                    "  Source directory: {}",
+                    source.directory
+                )));
             }
-            lines.push(Line::raw(""));
-            lines.push(Line::raw(format!("  Directory: {}", state.directory)));
+            lines.push(Line::raw(format!("  Local directory: {}", state.directory)));
             lines.push(Line::raw(
                 "  Use an existing directory with synchronized project files.",
             ));
@@ -285,7 +291,7 @@ pub fn render(f: &mut Frame, area: Rect, theme: &Theme, state: &ImportAgentState
         ImportStage::Host => "  type host · up/down saved · enter connect · esc cancel",
         ImportStage::Credential => "  type secret · enter retry · esc back",
         ImportStage::Session | ImportStage::Agent => "  up/down select · enter continue · esc back",
-        ImportStage::Directory => "  type path · enter import · esc back",
+        ImportStage::Directory => "  type path · ctrl-u clear · enter import · esc back",
         _ => "  Please wait…",
     };
     f.render_widget(
@@ -310,6 +316,47 @@ fn item_line(label: &str, selected: bool, theme: &Theme) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn idle_agent_state(directory: String) -> ImportAgentState {
+        let mut state = ImportAgentState::new(Vec::new(), vec![AgentType::Codex]);
+        state.listing = Some(Listing {
+            version: 1,
+            sessions: vec![SessionListing {
+                name: "remote".into(),
+                online: true,
+                agents: vec![AgentListing {
+                    id: "pane".into(),
+                    name: "worker".into(),
+                    agent_type: "codex".into(),
+                    session_id: Some("native".into()),
+                    directory,
+                    status: TransferStatus::Idle,
+                }],
+            }],
+        });
+        state
+    }
+
+    #[test]
+    fn existing_source_directory_is_prefilled_locally() {
+        let directory = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let mut state = idle_agent_state(directory.clone());
+        state.choose_agent().unwrap();
+        assert_eq!(state.directory, directory);
+        assert_eq!(state.selected.unwrap().directory, directory);
+    }
+
+    #[test]
+    fn missing_source_directory_requires_local_selection() {
+        let directory = format!("/flowmux-missing-source-{}", uuid::Uuid::new_v4());
+        let mut state = idle_agent_state(directory.clone());
+        state.choose_agent().unwrap();
+        assert!(state.directory.is_empty());
+        assert_eq!(state.selected.unwrap().directory, directory);
+    }
 
     #[test]
     fn running_agent_is_visible_but_disabled() {

@@ -6,7 +6,9 @@ In the local dashboard, press `i` to open the import picker. Enter or select an
 SSH host, a remote Flowmux session, an idle agent with a native session ID, and
 an existing local directory. The import belongs to the currently selected
 local project. The picker refreshes remote status while it is open and checks
-the selected source again before running the copy command.
+the selected source again before running the copy command. It pre-fills the
+source directory when that path also exists locally; otherwise the local
+directory must be entered explicitly.
 
 ## Remote listing
 
@@ -135,10 +137,9 @@ handled failures. It rejects other agent types. Its argument handling and
 output have a simulated end-to-end test: `python3 -m unittest
 tools/test_agent_copy_codex_example.py`.
 
-This example has not been tested against an installed `agent-handoff` or a real
-remote Codex session. Check the installed tool's CLI and JSON result format,
-then test a real round trip before relying on it. Flowmux does not invoke
-`agent-handoff` unless this command is configured.
+A real Codex import has been completed with this example, but there is no
+automated real-SSH integration test. Flowmux does not invoke `agent-handoff`
+unless this command is configured.
 
 [`txcript`](https://github.com/skillsynchq/txcript) is another possible copy
 command backend and currently reads and writes Codex, Claude Code, OpenCode,
