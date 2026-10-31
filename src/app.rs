@@ -10,7 +10,7 @@ use crate::agents::AgentAdapter;
 use crate::config::{AgentConfig, AgentKind, Config, DEFAULT_PROJECT_NAME, MAX_PROJECTS};
 use crate::global_config::WorktreeDirectoryPreset;
 use crate::host_terminal::HostColors;
-use crate::import_picker::{ImportAgentState, ImportStage};
+use crate::import_picker::{ImportAgentState, ImportField, ImportStage};
 use crate::models::{AgentEntry, AgentMeta, AgentStatus, AgentStatusCounts, AgentType};
 use crate::runner::{self, AgentRunner};
 use crate::tmux;
@@ -180,31 +180,31 @@ pub struct TextInputState {
 }
 
 impl TextInputState {
-    fn move_left(&mut self) {
+    pub(crate) fn move_left(&mut self) {
         move_text_cursor_left(&self.value, &mut self.cursor);
     }
 
-    fn move_right(&mut self) {
+    pub(crate) fn move_right(&mut self) {
         move_text_cursor_right(&self.value, &mut self.cursor);
     }
 
-    fn move_home(&mut self) {
+    pub(crate) fn move_home(&mut self) {
         self.cursor = 0;
     }
 
-    fn move_end(&mut self) {
+    pub(crate) fn move_end(&mut self) {
         self.cursor = self.value.len();
     }
 
-    fn insert_char(&mut self, c: char) {
+    pub(crate) fn insert_char(&mut self, c: char) {
         insert_text_char(&mut self.value, &mut self.cursor, c);
     }
 
-    fn backspace(&mut self) {
+    pub(crate) fn backspace(&mut self) {
         backspace_text(&mut self.value, &mut self.cursor);
     }
 
-    fn ctrl_w_delete(&mut self) {
+    pub(crate) fn ctrl_w_delete(&mut self) {
         ctrl_w_delete_text(&mut self.value, &mut self.cursor);
     }
 }
@@ -1058,7 +1058,7 @@ impl CreateAgentState {
     }
 }
 
-fn list_subdirectories(base_path: &std::path::Path, prefix: &str) -> Vec<String> {
+pub(crate) fn list_subdirectories(base_path: &std::path::Path, prefix: &str) -> Vec<String> {
     let mut matches: Vec<String> = std::fs::read_dir(base_path)
         .into_iter()
         .flatten()
@@ -2217,7 +2217,7 @@ impl App {
             }
             Event::ImportListing { host, result } => {
                 if !matches!(self.state, AppState::ImportAgentDialog)
-                    || self.import_state.host != host
+                    || self.import_state.host.value != host
                 {
                     return true;
                 }
@@ -2230,7 +2230,14 @@ impl App {
                     return true;
                 }
                 match result {
-                    Ok(listing) => {
+                    Ok(mut listing) => {
+                        let selected_session = self.import_state.session().map(|s| s.name.clone());
+                        let selected_agent = self
+                            .import_state
+                            .visible_agents()
+                            .get(self.import_state.agent_idx)
+                            .map(|a| a.id.clone());
+                        listing.sessions.sort_by_key(|session| !session.online);
                         if let Some(runner) = self.runner.as_mut() {
                             let global = runner.global_config_mut();
                             if global.add_transfer_host(&host)
@@ -2245,10 +2252,27 @@ impl App {
                             .map(|runner| runner.global_config().transfer_hosts.clone())
                             .unwrap_or_default();
                         self.import_state.listing = Some(listing);
+                        if let Some(name) = selected_session {
+                            self.import_state.session_idx = self
+                                .import_state
+                                .listing
+                                .as_ref()
+                                .and_then(|listing| {
+                                    listing.sessions.iter().position(|s| s.name == name)
+                                })
+                                .unwrap_or(0);
+                        }
+                        if let Some(id) = selected_agent {
+                            self.import_state.agent_idx = self
+                                .import_state
+                                .visible_agents()
+                                .iter()
+                                .position(|agent| agent.id == id)
+                                .unwrap_or(0);
+                        }
                         if self.import_state.stage == ImportStage::Connecting {
                             self.import_state.stage = ImportStage::Session;
                         }
-                        self.import_state.error = None;
                     }
                     Err(error) => {
                         self.import_state.listing = None;
@@ -2279,7 +2303,8 @@ impl App {
                     return true;
                 }
                 match result {
-                    Ok(copied) => {
+                    Ok(mut copied) => {
+                        copied.name = self.import_state.local_name.value.clone();
                         let Some(mut runner) = self.runner.take() else {
                             self.import_state.error = Some(format!(
                                 "copied native session {}; local runner is unavailable",
@@ -2770,9 +2795,27 @@ impl App {
     fn handle_paste(&mut self, text: String) {
         match &self.state {
             AppState::ImportAgentDialog => match self.import_state.stage {
-                ImportStage::Host => self.import_state.host.push_str(text.trim()),
+                ImportStage::Host => {
+                    for c in text.trim().chars() {
+                        self.import_state.host.insert_char(c);
+                    }
+                    self.import_state.host_list_focused = false;
+                }
                 ImportStage::Credential => self.import_state.credential_input.push_str(&text),
-                ImportStage::Directory => self.import_state.directory.push_str(text.trim()),
+                ImportStage::Directory => {
+                    if self.import_state.focus == ImportField::Name {
+                        for c in text.chars() {
+                            self.import_state.local_name.insert_char(c);
+                        }
+                    } else if text.trim().starts_with('/') {
+                        self.import_state.directory = text.trim().to_string();
+                        self.import_state.dir_filter.clear();
+                        self.import_state.refresh_dir_matches();
+                    } else {
+                        self.import_state.dir_filter.push_str(text.trim());
+                        self.import_state.refresh_dir_matches();
+                    }
+                }
                 _ => {}
             },
             AppState::AgentView(idx) => {
@@ -2840,8 +2883,12 @@ impl App {
     fn handle_import_key(&mut self, key: KeyEvent) -> bool {
         use ImportStage::*;
         let stage = self.import_state.stage;
+        self.import_state.error = None;
         if matches!(stage, Connecting | Copying | Launching) {
             return true;
+        }
+        if stage == Directory {
+            return self.handle_import_directory_key(key);
         }
         match key.code {
             KeyCode::Esc => {
@@ -2874,7 +2921,10 @@ impl App {
                             } else {
                                 (*idx + 1).min(len - 1)
                             };
-                            self.import_state.host = self.import_state.saved_hosts[*idx].clone();
+                            self.import_state.host.value =
+                                self.import_state.saved_hosts[*idx].clone();
+                            self.import_state.host.move_end();
+                            self.import_state.host_list_focused = true;
                             self.import_state.credential = None;
                         }
                     }
@@ -2938,9 +2988,44 @@ impl App {
                 Directory => self.start_import_copy(),
                 _ => {}
             },
+            KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => match stage {
+                Host => {
+                    self.import_state.host.ctrl_w_delete();
+                    self.import_state.host_list_focused = false;
+                    self.import_state.credential = None;
+                    self.import_state.error = None;
+                }
+                Credential => {
+                    ctrl_w_delete(&mut self.import_state.credential_input);
+                    self.import_state.error = None;
+                }
+                Directory => {
+                    ctrl_w_delete_path(&mut self.import_state.directory);
+                    self.import_state.error = None;
+                }
+                _ => {}
+            },
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => match stage {
+                Host => {
+                    self.import_state.host.ctrl_w_delete();
+                    self.import_state.host_list_focused = false;
+                    self.import_state.credential = None;
+                    self.import_state.error = None;
+                }
+                Credential => {
+                    ctrl_w_delete(&mut self.import_state.credential_input);
+                    self.import_state.error = None;
+                }
+                Directory => {
+                    ctrl_w_delete_path(&mut self.import_state.directory);
+                    self.import_state.error = None;
+                }
+                _ => {}
+            },
             KeyCode::Backspace => match stage {
                 Host => {
-                    self.import_state.host.pop();
+                    self.import_state.host.backspace();
+                    self.import_state.host_list_focused = false;
                     self.import_state.credential = None;
                     self.import_state.error = None;
                 }
@@ -2956,16 +3041,35 @@ impl App {
             },
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => match stage {
                 Host => {
-                    self.import_state.host.clear();
+                    self.import_state.host.value.clear();
+                    self.import_state.host.move_home();
+                    self.import_state.host_list_focused = false;
                     self.import_state.credential = None;
                 }
                 Credential => self.import_state.credential_input.clear(),
                 Directory => self.import_state.directory.clear(),
                 _ => {}
             },
+            KeyCode::Left if stage == Host => {
+                self.import_state.host.move_left();
+                self.import_state.host_list_focused = false;
+            }
+            KeyCode::Right if stage == Host => {
+                self.import_state.host.move_right();
+                self.import_state.host_list_focused = false;
+            }
+            KeyCode::Home if stage == Host => {
+                self.import_state.host.move_home();
+                self.import_state.host_list_focused = false;
+            }
+            KeyCode::End if stage == Host => {
+                self.import_state.host.move_end();
+                self.import_state.host_list_focused = false;
+            }
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => match stage {
                 Host => {
-                    self.import_state.host.push(c);
+                    self.import_state.host.insert_char(c);
+                    self.import_state.host_list_focused = false;
                     self.import_state.credential = None;
                     self.import_state.error = None;
                 }
@@ -2984,8 +3088,101 @@ impl App {
         true
     }
 
+    fn handle_import_directory_key(&mut self, key: KeyEvent) -> bool {
+        let state = &mut self.import_state;
+        match key.code {
+            KeyCode::Esc => state.stage = ImportStage::Agent,
+            KeyCode::Tab | KeyCode::BackTab => {
+                state.focus = match state.focus {
+                    ImportField::Name => ImportField::Directory,
+                    ImportField::Directory => ImportField::Name,
+                };
+            }
+            KeyCode::Up | KeyCode::Down if state.focus == ImportField::Directory => {
+                let len = state.dir_matches.len();
+                if len > 0 {
+                    state.dir_selected_idx = if key.code == KeyCode::Up {
+                        state.dir_selected_idx.saturating_sub(1)
+                    } else {
+                        (state.dir_selected_idx + 1).min(len - 1)
+                    };
+                }
+            }
+            KeyCode::Enter => {
+                if state.focus != ImportField::Directory || !state.select_directory_match() {
+                    self.start_import_copy();
+                }
+            }
+            KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if state.focus == ImportField::Name {
+                    state.local_name.ctrl_w_delete();
+                } else {
+                    if state.dir_filter.is_empty() {
+                        ctrl_w_delete_path(&mut state.directory);
+                    } else {
+                        state.dir_filter.clear();
+                    }
+                    state.refresh_dir_matches();
+                }
+            }
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if state.focus == ImportField::Name {
+                    state.local_name.ctrl_w_delete();
+                } else {
+                    if state.dir_filter.is_empty() {
+                        ctrl_w_delete_path(&mut state.directory);
+                    } else {
+                        state.dir_filter.clear();
+                    }
+                    state.refresh_dir_matches();
+                }
+            }
+            KeyCode::Backspace => {
+                if state.focus == ImportField::Name {
+                    state.local_name.backspace();
+                } else {
+                    if state.dir_filter.is_empty() {
+                        let current = state.directory.trim_end_matches('/');
+                        state.directory = current
+                            .rfind('/')
+                            .filter(|pos| *pos > 0)
+                            .map(|pos| current[..pos].to_string())
+                            .unwrap_or_else(|| "/".into());
+                    } else {
+                        state.dir_filter.pop();
+                    }
+                    state.refresh_dir_matches();
+                }
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if state.focus == ImportField::Name {
+                    state.local_name.value.clear();
+                    state.local_name.move_home();
+                } else {
+                    state.directory = "/".into();
+                    state.dir_filter.clear();
+                    state.refresh_dir_matches();
+                }
+            }
+            KeyCode::Left if state.focus == ImportField::Name => state.local_name.move_left(),
+            KeyCode::Right if state.focus == ImportField::Name => state.local_name.move_right(),
+            KeyCode::Home if state.focus == ImportField::Name => state.local_name.move_home(),
+            KeyCode::End if state.focus == ImportField::Name => state.local_name.move_end(),
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if state.focus == ImportField::Name {
+                    state.local_name.insert_char(c);
+                } else {
+                    state.dir_filter.push(c);
+                    state.refresh_dir_matches();
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
     fn start_remote_listing(&mut self, initial: bool) {
-        let host = self.import_state.host.clone();
+        let host = self.import_state.host.value.clone();
         if host.trim().is_empty() {
             self.import_state.error = Some("enter an SSH host".into());
             return;
@@ -2997,7 +3194,9 @@ impl App {
             self.import_state.agent_idx = 0;
         }
         self.import_state.refresh_in_flight = true;
-        self.import_state.error = None;
+        if initial {
+            self.import_state.error = None;
+        }
         let tx = self.tx.clone();
         let credential = self.import_state.credential.clone();
         tokio::spawn(async move {
@@ -3030,6 +3229,14 @@ impl App {
             self.import_state.error = Some("select a source agent".into());
             return;
         };
+        if self.import_state.local_name.value.trim().is_empty() {
+            self.import_state.error = Some("enter a local agent name".into());
+            return;
+        }
+        if !self.import_state.dir_filter.is_empty() {
+            self.import_state.error = Some("select a suggested local directory".into());
+            return;
+        }
         let directory = std::path::PathBuf::from(&self.import_state.directory);
         if !directory.is_dir() {
             self.import_state.error = Some("select an existing local directory".into());
@@ -3041,7 +3248,7 @@ impl App {
         };
         let config = runner.global_config().clone();
         let available_types = runner.available_agent_types();
-        let host = self.import_state.host.clone();
+        let host = self.import_state.host.value.clone();
         let credential = self.import_state.credential.clone();
         let tx = self.tx.clone();
         self.import_state.stage = ImportStage::Copying;
@@ -6130,11 +6337,110 @@ mod tests {
     use crate::config::{AgentConfig, AgentKind};
     use crate::global_config::GlobalConfig;
 
+    #[test]
+    fn import_host_input_edits_at_cursor_and_saved_host_selection_restores_focus() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.state = AppState::ImportAgentDialog;
+        app.import_state = ImportAgentState::new(
+            vec!["first-host".into(), "second-host".into()],
+            vec![AgentType::Codex],
+        );
+        assert_eq!(app.import_state.host.cursor, "first-host".len());
+
+        app.handle_import_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        app.handle_import_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(app.import_state.host.value, "xfirst-host");
+        app.handle_import_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        app.handle_import_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(app.import_state.host.value, "xirst-host");
+        app.handle_import_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL));
+        assert_eq!(app.import_state.host.value, "irst-host");
+
+        app.handle_import_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.import_state.host.value, "second-host");
+        assert_eq!(app.import_state.host.cursor, "second-host".len());
+        assert!(app.import_state.host_list_focused);
+        app.handle_import_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        app.handle_import_key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE));
+        assert_eq!(app.import_state.host.value, "second-hos!t");
+        assert!(!app.import_state.host_list_focused);
+    }
+
+    #[tokio::test]
+    async fn import_refresh_sorts_online_sessions_and_keeps_error_until_keypress() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.state = AppState::ImportAgentDialog;
+        app.import_state.host.value = "laptop".into();
+        app.import_state.stage = ImportStage::Session;
+        app.import_state.error = Some("previous error".into());
+        app.import_state.listing = Some(Listing {
+            version: 1,
+            sessions: vec![crate::transfer::SessionListing {
+                name: "offline-selected".into(),
+                online: false,
+                agents: vec![],
+            }],
+        });
+        app.handle_event(Event::ImportListing {
+            host: "laptop".into(),
+            result: Ok(Listing {
+                version: 1,
+                sessions: vec![
+                    crate::transfer::SessionListing {
+                        name: "offline-selected".into(),
+                        online: false,
+                        agents: vec![],
+                    },
+                    crate::transfer::SessionListing {
+                        name: "online-first".into(),
+                        online: true,
+                        agents: vec![],
+                    },
+                ],
+            }),
+        })
+        .await;
+        let sessions = &app.import_state.listing.as_ref().unwrap().sessions;
+        assert_eq!(sessions[0].name, "online-first");
+        assert_eq!(sessions[1].name, "offline-selected");
+        assert_eq!(app.import_state.session().unwrap().name, "offline-selected");
+        assert_eq!(app.import_state.error.as_deref(), Some("previous error"));
+        app.handle_import_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert!(app.import_state.error.is_none());
+    }
+
+    #[test]
+    fn import_local_fields_support_name_editing_and_directory_selection() {
+        let dir = TestDir::new("import-local-fields");
+        std::fs::create_dir(dir.path.join("child")).unwrap();
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.state = AppState::ImportAgentDialog;
+        app.import_state.stage = ImportStage::Directory;
+        app.import_state.local_name.value = "worker".into();
+        app.import_state.local_name.cursor = 6;
+        app.import_state.directory = dir.path.to_string_lossy().into_owned();
+        app.import_state.refresh_dir_matches();
+
+        app.handle_import_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        app.handle_import_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(app.import_state.local_name.value, "xworker");
+        app.handle_import_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.import_state.focus, ImportField::Directory);
+        assert!(app.import_state.dir_matches.contains(&"child".to_string()));
+        app.handle_import_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            app.import_state.directory,
+            dir.path.join("child").to_string_lossy()
+        );
+        app.handle_import_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(app.import_state.directory, dir.path.to_string_lossy());
+    }
+
     #[tokio::test]
     async fn late_refresh_cannot_discard_an_in_progress_copy() {
         let mut app = test_app_with_global_config(GlobalConfig::default());
         app.state = AppState::ImportAgentDialog;
-        app.import_state.host = "laptop".into();
+        app.import_state.host.value = "laptop".into();
         app.import_state.stage = ImportStage::Copying;
         app.handle_event(Event::ImportListing {
             host: "laptop".into(),

@@ -122,19 +122,29 @@ impl GlobalConfig {
     }
 
     pub fn save(&self) -> Result<()> {
-        let Some(path) = config_path() else {
-            return Ok(());
-        };
-
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+        // Unit tests construct GlobalConfig values with defaults. Never let a
+        // test save one of those values over the user's live configuration.
+        #[cfg(test)]
+        {
+            Ok(())
         }
 
-        let content = toml::to_string_pretty(self)?;
-        let tmp_path = path.with_extension("toml.tmp");
-        std::fs::write(&tmp_path, content)?;
-        std::fs::rename(&tmp_path, &path)?;
-        Ok(())
+        #[cfg(not(test))]
+        {
+            let Some(path) = config_path() else {
+                return Ok(());
+            };
+
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+
+            let content = toml::to_string_pretty(self)?;
+            let tmp_path = path.with_extension("toml.tmp");
+            std::fs::write(&tmp_path, content)?;
+            std::fs::rename(&tmp_path, &path)?;
+            Ok(())
+        }
     }
 
     /// Split the configured git viewer command into (program, args).
