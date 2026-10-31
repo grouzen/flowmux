@@ -10,9 +10,11 @@ use crate::agents::AgentAdapter;
 use crate::config::{AgentConfig, AgentKind, Config, DEFAULT_PROJECT_NAME, MAX_PROJECTS};
 use crate::global_config::WorktreeDirectoryPreset;
 use crate::host_terminal::HostColors;
+use crate::import_picker::{ImportAgentState, ImportField, ImportStage};
 use crate::models::{AgentEntry, AgentMeta, AgentStatus, AgentStatusCounts, AgentType};
 use crate::runner::{self, AgentRunner};
 use crate::tmux;
+use crate::transfer::{self, CopiedAgent, CopyRequest, Listing};
 use crate::ui::dashboard::{PROJECT_TABS_HEIGHT, grid_layout, project_tab_label};
 use crate::ui::theme::{
     Theme, theme_by_id, theme_by_index, theme_id_or_default, theme_index_by_id,
@@ -178,31 +180,31 @@ pub struct TextInputState {
 }
 
 impl TextInputState {
-    fn move_left(&mut self) {
+    pub(crate) fn move_left(&mut self) {
         move_text_cursor_left(&self.value, &mut self.cursor);
     }
 
-    fn move_right(&mut self) {
+    pub(crate) fn move_right(&mut self) {
         move_text_cursor_right(&self.value, &mut self.cursor);
     }
 
-    fn move_home(&mut self) {
+    pub(crate) fn move_home(&mut self) {
         self.cursor = 0;
     }
 
-    fn move_end(&mut self) {
+    pub(crate) fn move_end(&mut self) {
         self.cursor = self.value.len();
     }
 
-    fn insert_char(&mut self, c: char) {
+    pub(crate) fn insert_char(&mut self, c: char) {
         insert_text_char(&mut self.value, &mut self.cursor, c);
     }
 
-    fn backspace(&mut self) {
+    pub(crate) fn backspace(&mut self) {
         backspace_text(&mut self.value, &mut self.cursor);
     }
 
-    fn ctrl_w_delete(&mut self) {
+    pub(crate) fn ctrl_w_delete(&mut self) {
         ctrl_w_delete_text(&mut self.value, &mut self.cursor);
     }
 }
@@ -366,6 +368,7 @@ pub enum AppState {
     Dashboard,
     StartupGuide(StartupGuideState),
     CreateAgentDialog,
+    ImportAgentDialog,
     CreateProjectDialog,
     SettingsDialog(SettingsState),
     AgentView(usize),
@@ -462,6 +465,18 @@ pub enum Event {
     },
     StartupFinished {
         runner: AgentRunner,
+    },
+    ImportListing {
+        host: String,
+        result: Result<Listing, String>,
+    },
+    ImportCopied {
+        result: Result<CopiedAgent, String>,
+    },
+    ImportAttached {
+        runner: Box<AgentRunner>,
+        copied: CopiedAgent,
+        result: Result<(AgentConfig, Box<dyn AgentAdapter>), String>,
     },
 }
 
@@ -1043,7 +1058,7 @@ impl CreateAgentState {
     }
 }
 
-fn list_subdirectories(base_path: &std::path::Path, prefix: &str) -> Vec<String> {
+pub(crate) fn list_subdirectories(base_path: &std::path::Path, prefix: &str) -> Vec<String> {
     let mut matches: Vec<String> = std::fs::read_dir(base_path)
         .into_iter()
         .flatten()
@@ -1092,6 +1107,7 @@ pub struct App {
     pub terminal_view_state: Option<TerminalViewState>,
     pub terminal_panes: std::collections::HashMap<usize, String>,
     pub create_state: CreateAgentState,
+    pub import_state: ImportAgentState,
     pub create_project_state: CreateProjectState,
     pub active_theme_id: String,
     pub preview_theme_id: Option<String>,
@@ -1138,6 +1154,10 @@ impl App {
         let card_count = agents.len();
         let active_theme_id =
             theme_id_or_default(runner.global_config().theme.as_deref()).to_string();
+        let import_state = ImportAgentState::new(
+            runner.global_config().transfer_hosts.clone(),
+            runner.available_agent_types(),
+        );
         let mut app = Self {
             agents,
             adapters,
@@ -1158,6 +1178,7 @@ impl App {
             terminal_view_state: None,
             terminal_panes: std::collections::HashMap::new(),
             create_state: CreateAgentState::default(),
+            import_state,
             create_project_state: CreateProjectState::default(),
             active_theme_id,
             preview_theme_id: None,
@@ -2085,6 +2106,7 @@ impl App {
             }
             Event::DashboardTick => {
                 self.handle_dashboard_tick().await;
+                self.maybe_refresh_import();
                 self.dirty = true;
                 true
             }
@@ -2190,6 +2212,171 @@ impl App {
                     self.pending_startup_guide_dismissal = false;
                 }
                 self.runner = Some(runner);
+                self.dirty = true;
+                true
+            }
+            Event::ImportListing { host, result } => {
+                if !matches!(self.state, AppState::ImportAgentDialog)
+                    || self.import_state.host.value != host
+                {
+                    return true;
+                }
+                self.import_state.refresh_in_flight = false;
+                self.import_state.last_refresh = Some(std::time::Instant::now());
+                if matches!(
+                    self.import_state.stage,
+                    ImportStage::Copying | ImportStage::Launching
+                ) {
+                    return true;
+                }
+                match result {
+                    Ok(mut listing) => {
+                        let selected_session = self.import_state.session().map(|s| s.name.clone());
+                        let selected_agent = self
+                            .import_state
+                            .visible_agents()
+                            .get(self.import_state.agent_idx)
+                            .map(|a| a.id.clone());
+                        listing.sessions.sort_by_key(|session| !session.online);
+                        if let Some(runner) = self.runner.as_mut() {
+                            let global = runner.global_config_mut();
+                            if global.add_transfer_host(&host)
+                                && let Err(error) = global.save()
+                            {
+                                log::warn!("failed to save transfer host: {error:#}");
+                            }
+                        }
+                        self.import_state.saved_hosts = self
+                            .runner
+                            .as_ref()
+                            .map(|runner| runner.global_config().transfer_hosts.clone())
+                            .unwrap_or_default();
+                        self.import_state.listing = Some(listing);
+                        if let Some(name) = selected_session {
+                            self.import_state.session_idx = self
+                                .import_state
+                                .listing
+                                .as_ref()
+                                .and_then(|listing| {
+                                    listing.sessions.iter().position(|s| s.name == name)
+                                })
+                                .unwrap_or(0);
+                        }
+                        if let Some(id) = selected_agent {
+                            self.import_state.agent_idx = self
+                                .import_state
+                                .visible_agents()
+                                .iter()
+                                .position(|agent| agent.id == id)
+                                .unwrap_or(0);
+                        }
+                        if self.import_state.stage == ImportStage::Connecting {
+                            self.import_state.stage = ImportStage::Session;
+                        }
+                    }
+                    Err(error) => {
+                        self.import_state.listing = None;
+                        if error.contains("Permission denied") {
+                            self.import_state.stage = ImportStage::Credential;
+                            self.import_state.credential = None;
+                            self.import_state.credential_input.clear();
+                            self.import_state.error = Some(
+                                "SSH authentication failed. Enter the password or key passphrase."
+                                    .into(),
+                            );
+                        } else if self.import_state.stage == ImportStage::Connecting {
+                            self.import_state.stage = ImportStage::Host;
+                            self.import_state.error = Some(error);
+                        } else {
+                            self.import_state.stage = ImportStage::Session;
+                            self.import_state.error = Some(error);
+                        }
+                    }
+                }
+                self.dirty = true;
+                true
+            }
+            Event::ImportCopied { result } => {
+                if !matches!(self.state, AppState::ImportAgentDialog)
+                    || self.import_state.stage != ImportStage::Copying
+                {
+                    return true;
+                }
+                match result {
+                    Ok(mut copied) => {
+                        copied.name = self.import_state.local_name.value.clone();
+                        let Some(mut runner) = self.runner.take() else {
+                            self.import_state.error = Some(format!(
+                                "copied native session {}; local runner is unavailable",
+                                copied.session_id
+                            ));
+                            self.import_state.stage = ImportStage::Directory;
+                            return true;
+                        };
+                        self.import_state.stage = ImportStage::Launching;
+                        let project = self.active_project_name().to_string();
+                        let tx = self.tx.clone();
+                        tokio::spawn(async move {
+                            let result = runner
+                                .attach_copied(&copied, &project)
+                                .await
+                                .map_err(|error| format!("{error:#}"));
+                            let _ = tx.send(Event::ImportAttached {
+                                runner: Box::new(runner),
+                                copied,
+                                result,
+                            });
+                        });
+                    }
+                    Err(error) => {
+                        self.import_state.error = Some(error);
+                        self.import_state.stage = ImportStage::Directory;
+                    }
+                }
+                self.dirty = true;
+                true
+            }
+            Event::ImportAttached {
+                runner,
+                copied,
+                result,
+            } => {
+                self.runner = Some(*runner);
+                match result {
+                    Ok((config, adapter)) => {
+                        if adapter.get_cached_session_id().as_deref() != Some(&copied.session_id) {
+                            let _ = tmux::kill_window(config.pane.trim_end_matches(".0"));
+                            self.import_state.error = Some(format!(
+                                "local agent did not resume copied session {}; recover it manually",
+                                copied.session_id
+                            ));
+                            self.import_state.stage = ImportStage::Directory;
+                        } else {
+                            self.config.agents.push(config.clone());
+                            if let Err(error) = self.config.save() {
+                                self.config.agents.pop();
+                                let _ = tmux::kill_window(config.pane.trim_end_matches(".0"));
+                                self.import_state.error = Some(format!(
+                                    "could not save imported agent: {error}; copied session {} remains available",
+                                    copied.session_id
+                                ));
+                                self.import_state.stage = ImportStage::Directory;
+                            } else {
+                                let meta = initial_agent_meta(adapter.as_ref()).await;
+                                self.agents.push(AgentEntry { config, meta });
+                                self.adapters.push(adapter);
+                                self.agent_view_scroll
+                                    .push(StoredAgentViewScroll::default());
+                                let new_idx = self.agents.len() - 1;
+                                self.enter_agent_view(new_idx);
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        self.import_state.error = Some(error);
+                        self.import_state.stage = ImportStage::Directory;
+                    }
+                }
                 self.dirty = true;
                 true
             }
@@ -2607,6 +2794,30 @@ impl App {
     /// pasting large blocks of text fast.
     fn handle_paste(&mut self, text: String) {
         match &self.state {
+            AppState::ImportAgentDialog => match self.import_state.stage {
+                ImportStage::Host => {
+                    for c in text.trim().chars() {
+                        self.import_state.host.insert_char(c);
+                    }
+                    self.import_state.host_list_focused = false;
+                }
+                ImportStage::Credential => self.import_state.credential_input.push_str(&text),
+                ImportStage::Directory => {
+                    if self.import_state.focus == ImportField::Name {
+                        for c in text.chars() {
+                            self.import_state.local_name.insert_char(c);
+                        }
+                    } else if text.trim().starts_with('/') {
+                        self.import_state.directory = text.trim().to_string();
+                        self.import_state.dir_filter.clear();
+                        self.import_state.refresh_dir_matches();
+                    } else {
+                        self.import_state.dir_filter.push_str(text.trim());
+                        self.import_state.refresh_dir_matches();
+                    }
+                }
+                _ => {}
+            },
             AppState::AgentView(idx) => {
                 let idx = *idx;
                 if self.agent_view_state.show_stopped_overlay || !self.agent_is_ready(idx) {
@@ -2654,6 +2865,7 @@ impl App {
                 self.handle_agent_view_key(key, idx).await
             }
             AppState::CreateAgentDialog => self.handle_create_key(key).await,
+            AppState::ImportAgentDialog => self.handle_import_key(key),
             AppState::CreateProjectDialog => self.handle_create_project_key(key),
             AppState::RemoveAgentDialog(state) => {
                 let state = state.clone();
@@ -2666,6 +2878,400 @@ impl App {
             AppState::GitViewer(_) => self.handle_git_viewer_key(key),
             AppState::TerminalView(_) => self.handle_terminal_view_key(key),
         }
+    }
+
+    fn handle_import_key(&mut self, key: KeyEvent) -> bool {
+        use ImportStage::*;
+        let stage = self.import_state.stage;
+        self.import_state.error = None;
+        if matches!(stage, Connecting | Copying | Launching) {
+            return true;
+        }
+        if stage == Directory {
+            return self.handle_import_directory_key(key);
+        }
+        match key.code {
+            KeyCode::Esc => {
+                self.import_state.error = None;
+                self.import_state.stage = match stage {
+                    Host => {
+                        self.state = AppState::Dashboard;
+                        return true;
+                    }
+                    Session => Host,
+                    Credential => {
+                        self.import_state.credential_input.clear();
+                        self.import_state.credential = None;
+                        Host
+                    }
+                    Agent => Session,
+                    Directory => Agent,
+                    _ => unreachable!(),
+                };
+            }
+            KeyCode::Up | KeyCode::Down => {
+                let up = key.code == KeyCode::Up;
+                match stage {
+                    Host => {
+                        let len = self.import_state.saved_hosts.len();
+                        if len > 0 {
+                            let idx = &mut self.import_state.host_idx;
+                            *idx = if up {
+                                idx.saturating_sub(1)
+                            } else {
+                                (*idx + 1).min(len - 1)
+                            };
+                            self.import_state.host.value =
+                                self.import_state.saved_hosts[*idx].clone();
+                            self.import_state.host.move_end();
+                            self.import_state.host_list_focused = true;
+                            self.import_state.credential = None;
+                        }
+                    }
+                    Session => {
+                        let len = self
+                            .import_state
+                            .listing
+                            .as_ref()
+                            .map(|listing| listing.sessions.len())
+                            .unwrap_or(0);
+                        if len > 0 {
+                            let idx = &mut self.import_state.session_idx;
+                            *idx = if up {
+                                idx.saturating_sub(1)
+                            } else {
+                                (*idx + 1).min(len - 1)
+                            };
+                        }
+                    }
+                    Agent => {
+                        let len = self.import_state.visible_agents().len();
+                        if len > 0 {
+                            let idx = &mut self.import_state.agent_idx;
+                            *idx = if up {
+                                idx.saturating_sub(1)
+                            } else {
+                                (*idx + 1).min(len - 1)
+                            };
+                        }
+                    }
+                    _ => {}
+                }
+                self.import_state.error = None;
+            }
+            KeyCode::Enter => match stage {
+                Host => self.start_remote_listing(true),
+                Credential => {
+                    if self.import_state.credential_input.is_empty() {
+                        self.import_state.error = Some("enter an SSH credential".into());
+                    } else {
+                        self.import_state.credential =
+                            Some(std::mem::take(&mut self.import_state.credential_input));
+                        self.start_remote_listing(true);
+                    }
+                }
+                Session => {
+                    if let Some(session) = self.import_state.session() {
+                        if session.online {
+                            self.import_state.stage = Agent;
+                            self.import_state.agent_idx = 0;
+                            self.import_state.error = None;
+                        } else {
+                            self.import_state.error =
+                                Some("remote Flowmux session is offline".into());
+                        }
+                    }
+                }
+                Agent => {
+                    self.import_state.error = self.import_state.choose_agent().err();
+                }
+                Directory => self.start_import_copy(),
+                _ => {}
+            },
+            KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => match stage {
+                Host => {
+                    self.import_state.host.ctrl_w_delete();
+                    self.import_state.host_list_focused = false;
+                    self.import_state.credential = None;
+                    self.import_state.error = None;
+                }
+                Credential => {
+                    ctrl_w_delete(&mut self.import_state.credential_input);
+                    self.import_state.error = None;
+                }
+                Directory => {
+                    ctrl_w_delete_path(&mut self.import_state.directory);
+                    self.import_state.error = None;
+                }
+                _ => {}
+            },
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => match stage {
+                Host => {
+                    self.import_state.host.ctrl_w_delete();
+                    self.import_state.host_list_focused = false;
+                    self.import_state.credential = None;
+                    self.import_state.error = None;
+                }
+                Credential => {
+                    ctrl_w_delete(&mut self.import_state.credential_input);
+                    self.import_state.error = None;
+                }
+                Directory => {
+                    ctrl_w_delete_path(&mut self.import_state.directory);
+                    self.import_state.error = None;
+                }
+                _ => {}
+            },
+            KeyCode::Backspace => match stage {
+                Host => {
+                    self.import_state.host.backspace();
+                    self.import_state.host_list_focused = false;
+                    self.import_state.credential = None;
+                    self.import_state.error = None;
+                }
+                Credential => {
+                    self.import_state.credential_input.pop();
+                    self.import_state.error = None;
+                }
+                Directory => {
+                    self.import_state.directory.pop();
+                    self.import_state.error = None;
+                }
+                _ => {}
+            },
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => match stage {
+                Host => {
+                    self.import_state.host.value.clear();
+                    self.import_state.host.move_home();
+                    self.import_state.host_list_focused = false;
+                    self.import_state.credential = None;
+                }
+                Credential => self.import_state.credential_input.clear(),
+                Directory => self.import_state.directory.clear(),
+                _ => {}
+            },
+            KeyCode::Left if stage == Host => {
+                self.import_state.host.move_left();
+                self.import_state.host_list_focused = false;
+            }
+            KeyCode::Right if stage == Host => {
+                self.import_state.host.move_right();
+                self.import_state.host_list_focused = false;
+            }
+            KeyCode::Home if stage == Host => {
+                self.import_state.host.move_home();
+                self.import_state.host_list_focused = false;
+            }
+            KeyCode::End if stage == Host => {
+                self.import_state.host.move_end();
+                self.import_state.host_list_focused = false;
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => match stage {
+                Host => {
+                    self.import_state.host.insert_char(c);
+                    self.import_state.host_list_focused = false;
+                    self.import_state.credential = None;
+                    self.import_state.error = None;
+                }
+                Credential => {
+                    self.import_state.credential_input.push(c);
+                    self.import_state.error = None;
+                }
+                Directory => {
+                    self.import_state.directory.push(c);
+                    self.import_state.error = None;
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        true
+    }
+
+    fn handle_import_directory_key(&mut self, key: KeyEvent) -> bool {
+        let state = &mut self.import_state;
+        match key.code {
+            KeyCode::Esc => state.stage = ImportStage::Agent,
+            KeyCode::Tab | KeyCode::BackTab => {
+                state.focus = match state.focus {
+                    ImportField::Name => ImportField::Directory,
+                    ImportField::Directory => ImportField::Name,
+                };
+            }
+            KeyCode::Up | KeyCode::Down if state.focus == ImportField::Directory => {
+                let len = state.dir_matches.len();
+                if len > 0 {
+                    state.dir_selected_idx = if key.code == KeyCode::Up {
+                        state.dir_selected_idx.saturating_sub(1)
+                    } else {
+                        (state.dir_selected_idx + 1).min(len - 1)
+                    };
+                }
+            }
+            KeyCode::Enter => {
+                if state.focus != ImportField::Directory || !state.select_directory_match() {
+                    self.start_import_copy();
+                }
+            }
+            KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if state.focus == ImportField::Name {
+                    state.local_name.ctrl_w_delete();
+                } else {
+                    if state.dir_filter.is_empty() {
+                        ctrl_w_delete_path(&mut state.directory);
+                    } else {
+                        state.dir_filter.clear();
+                    }
+                    state.refresh_dir_matches();
+                }
+            }
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if state.focus == ImportField::Name {
+                    state.local_name.ctrl_w_delete();
+                } else {
+                    if state.dir_filter.is_empty() {
+                        ctrl_w_delete_path(&mut state.directory);
+                    } else {
+                        state.dir_filter.clear();
+                    }
+                    state.refresh_dir_matches();
+                }
+            }
+            KeyCode::Backspace => {
+                if state.focus == ImportField::Name {
+                    state.local_name.backspace();
+                } else {
+                    if state.dir_filter.is_empty() {
+                        let current = state.directory.trim_end_matches('/');
+                        state.directory = current
+                            .rfind('/')
+                            .filter(|pos| *pos > 0)
+                            .map(|pos| current[..pos].to_string())
+                            .unwrap_or_else(|| "/".into());
+                    } else {
+                        state.dir_filter.pop();
+                    }
+                    state.refresh_dir_matches();
+                }
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if state.focus == ImportField::Name {
+                    state.local_name.value.clear();
+                    state.local_name.move_home();
+                } else {
+                    state.directory = "/".into();
+                    state.dir_filter.clear();
+                    state.refresh_dir_matches();
+                }
+            }
+            KeyCode::Left if state.focus == ImportField::Name => state.local_name.move_left(),
+            KeyCode::Right if state.focus == ImportField::Name => state.local_name.move_right(),
+            KeyCode::Home if state.focus == ImportField::Name => state.local_name.move_home(),
+            KeyCode::End if state.focus == ImportField::Name => state.local_name.move_end(),
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if state.focus == ImportField::Name {
+                    state.local_name.insert_char(c);
+                } else {
+                    state.dir_filter.push(c);
+                    state.refresh_dir_matches();
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
+    fn start_remote_listing(&mut self, initial: bool) {
+        let host = self.import_state.host.value.clone();
+        if host.trim().is_empty() {
+            self.import_state.error = Some("enter an SSH host".into());
+            return;
+        }
+        if initial {
+            self.import_state.stage = ImportStage::Connecting;
+            self.import_state.listing = None;
+            self.import_state.session_idx = 0;
+            self.import_state.agent_idx = 0;
+        }
+        self.import_state.refresh_in_flight = true;
+        if initial {
+            self.import_state.error = None;
+        }
+        let tx = self.tx.clone();
+        let credential = self.import_state.credential.clone();
+        tokio::spawn(async move {
+            let result = transfer::fetch_remote_listing(&host, credential.as_deref())
+                .await
+                .map_err(|error| format!("{error:#}"));
+            let _ = tx.send(Event::ImportListing { host, result });
+        });
+    }
+
+    fn maybe_refresh_import(&mut self) {
+        if !matches!(self.state, AppState::ImportAgentDialog)
+            || !matches!(
+                self.import_state.stage,
+                ImportStage::Session | ImportStage::Agent | ImportStage::Directory
+            )
+            || self.import_state.refresh_in_flight
+            || self
+                .import_state
+                .last_refresh
+                .is_some_and(|at| at.elapsed() < Duration::from_secs(2))
+        {
+            return;
+        }
+        self.start_remote_listing(false);
+    }
+
+    fn start_import_copy(&mut self) {
+        let Some(source) = self.import_state.selected.clone() else {
+            self.import_state.error = Some("select a source agent".into());
+            return;
+        };
+        if self.import_state.local_name.value.trim().is_empty() {
+            self.import_state.error = Some("enter a local agent name".into());
+            return;
+        }
+        if !self.import_state.dir_filter.is_empty() {
+            self.import_state.error = Some("select a suggested local directory".into());
+            return;
+        }
+        let directory = std::path::PathBuf::from(&self.import_state.directory);
+        if !directory.is_dir() {
+            self.import_state.error = Some("select an existing local directory".into());
+            return;
+        }
+        let Some(runner) = self.runner.as_ref() else {
+            self.import_state.error = Some("local runner is unavailable".into());
+            return;
+        };
+        let config = runner.global_config().clone();
+        let available_types = runner.available_agent_types();
+        let host = self.import_state.host.value.clone();
+        let credential = self.import_state.credential.clone();
+        let tx = self.tx.clone();
+        self.import_state.stage = ImportStage::Copying;
+        self.import_state.error = None;
+        tokio::spawn(async move {
+            let request = CopyRequest {
+                host: &host,
+                flowmux_session: &source.session,
+                source_id: &source.id,
+                source_session_id: &source.session_id,
+                agent_type: &source.agent_type,
+                destination_directory: &directory,
+            };
+            let result = transfer::copy_native_session(
+                &config,
+                &request,
+                &available_types,
+                credential.as_deref(),
+            )
+            .await
+            .map_err(|error| format!("{error:#}"));
+            let _ = tx.send(Event::ImportCopied { result });
+        });
     }
 
     // -----------------------------------------------------------------------
@@ -2744,7 +3350,7 @@ impl App {
         // and opening cards stay available throughout restoration.
         let startup_mutation = matches!(
             key.code,
-            KeyCode::Char('n') | KeyCode::Char('S') | KeyCode::Char('d')
+            KeyCode::Char('n') | KeyCode::Char('i') | KeyCode::Char('S') | KeyCode::Char('d')
         ) || (key.code == KeyCode::Char('p') && !ctrl)
             || (ctrl
                 && matches!(
@@ -2781,6 +3387,16 @@ impl App {
                 self.load_create_state_worktree_presets();
                 self.state = AppState::CreateAgentDialog;
             }
+            KeyCode::Char('i') => {
+                let Some(runner) = self.runner.as_ref() else {
+                    return true;
+                };
+                self.import_state = ImportAgentState::new(
+                    runner.global_config().transfer_hosts.clone(),
+                    runner.available_agent_types(),
+                );
+                self.state = AppState::ImportAgentDialog;
+            }
             KeyCode::Char('S') => {
                 self.open_settings_dialog();
             }
@@ -2804,8 +3420,7 @@ impl App {
                     let has_worktree = self
                         .agents
                         .get(idx)
-                        .and_then(|e| e.config.git_repo_root.as_ref())
-                        .is_some();
+                        .is_some_and(|e| e.config.can_remove_worktree());
                     self.state = AppState::RemoveAgentDialog(RemoveAgentState {
                         idx,
                         remove_worktree: has_worktree,
@@ -3113,8 +3728,7 @@ impl App {
                     self.agent_view_state.remove_worktree_on_stop = self
                         .agents
                         .get(idx)
-                        .and_then(|e| e.config.git_repo_root.as_ref())
-                        .is_some();
+                        .is_some_and(|e| e.config.can_remove_worktree());
                     self.dirty = true;
                 }
                 self.agent_view_state.prev_status = Some(AgentStatus::Stopped.clone());
@@ -3218,8 +3832,7 @@ impl App {
                     self.agent_view_state.remove_worktree_on_stop = self
                         .agents
                         .get(idx)
-                        .and_then(|e| e.config.git_repo_root.as_ref())
-                        .is_some();
+                        .is_some_and(|e| e.config.can_remove_worktree());
                 }
                 if prev.as_ref() != Some(&new_status) {
                     self.dirty = true;
@@ -3291,8 +3904,7 @@ impl App {
                     let has_worktree = self
                         .agents
                         .get(idx)
-                        .and_then(|e| e.config.git_repo_root.as_ref())
-                        .is_some();
+                        .is_some_and(|e| e.config.can_remove_worktree());
                     if has_worktree {
                         self.agent_view_state.remove_worktree_on_stop =
                             !self.agent_view_state.remove_worktree_on_stop;
@@ -4640,8 +5252,7 @@ impl App {
                 let has_worktree = self
                     .agents
                     .get(state.idx)
-                    .and_then(|e| e.config.git_repo_root.as_ref())
-                    .is_some();
+                    .is_some_and(|e| e.config.can_remove_worktree());
                 let max_focus = if has_worktree { 1 } else { 0 };
                 if let AppState::RemoveAgentDialog(ref mut s) = self.state {
                     s.focus = if s.focus >= max_focus { 0 } else { s.focus + 1 };
@@ -4655,8 +5266,7 @@ impl App {
                             let has_worktree = self
                                 .agents
                                 .get(state.idx)
-                                .and_then(|e| e.config.git_repo_root.as_ref())
-                                .is_some();
+                                .is_some_and(|e| e.config.can_remove_worktree());
                             if has_worktree {
                                 s.remove_worktree = !s.remove_worktree;
                             }
@@ -4742,6 +5352,7 @@ impl App {
 
                 // Remove the git worktree if requested and present.
                 if remove_worktree
+                    && agent_config.can_remove_worktree()
                     && let (Some(wt_path), Some(repo_root)) = (
                         Some(agent_config.directory.as_str()),
                         agent_config.git_repo_root.as_deref(),
@@ -4807,8 +5418,7 @@ impl App {
             let remove_worktree = self
                 .agents
                 .get(idx)
-                .and_then(|entry| entry.config.git_repo_root.as_ref())
-                .is_some();
+                .is_some_and(|entry| entry.config.can_remove_worktree());
             self.remove_agent(idx, remove_worktree, true).await;
         }
 
@@ -5726,6 +6336,120 @@ mod tests {
     use crate::agents::AgentAdapter;
     use crate::config::{AgentConfig, AgentKind};
     use crate::global_config::GlobalConfig;
+
+    #[test]
+    fn import_host_input_edits_at_cursor_and_saved_host_selection_restores_focus() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.state = AppState::ImportAgentDialog;
+        app.import_state = ImportAgentState::new(
+            vec!["first-host".into(), "second-host".into()],
+            vec![AgentType::Codex],
+        );
+        assert_eq!(app.import_state.host.cursor, "first-host".len());
+
+        app.handle_import_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        app.handle_import_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(app.import_state.host.value, "xfirst-host");
+        app.handle_import_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        app.handle_import_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(app.import_state.host.value, "xirst-host");
+        app.handle_import_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL));
+        assert_eq!(app.import_state.host.value, "irst-host");
+
+        app.handle_import_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.import_state.host.value, "second-host");
+        assert_eq!(app.import_state.host.cursor, "second-host".len());
+        assert!(app.import_state.host_list_focused);
+        app.handle_import_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        app.handle_import_key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE));
+        assert_eq!(app.import_state.host.value, "second-hos!t");
+        assert!(!app.import_state.host_list_focused);
+    }
+
+    #[tokio::test]
+    async fn import_refresh_sorts_online_sessions_and_keeps_error_until_keypress() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.state = AppState::ImportAgentDialog;
+        app.import_state.host.value = "laptop".into();
+        app.import_state.stage = ImportStage::Session;
+        app.import_state.error = Some("previous error".into());
+        app.import_state.listing = Some(Listing {
+            version: 1,
+            sessions: vec![crate::transfer::SessionListing {
+                name: "offline-selected".into(),
+                online: false,
+                agents: vec![],
+            }],
+        });
+        app.handle_event(Event::ImportListing {
+            host: "laptop".into(),
+            result: Ok(Listing {
+                version: 1,
+                sessions: vec![
+                    crate::transfer::SessionListing {
+                        name: "offline-selected".into(),
+                        online: false,
+                        agents: vec![],
+                    },
+                    crate::transfer::SessionListing {
+                        name: "online-first".into(),
+                        online: true,
+                        agents: vec![],
+                    },
+                ],
+            }),
+        })
+        .await;
+        let sessions = &app.import_state.listing.as_ref().unwrap().sessions;
+        assert_eq!(sessions[0].name, "online-first");
+        assert_eq!(sessions[1].name, "offline-selected");
+        assert_eq!(app.import_state.session().unwrap().name, "offline-selected");
+        assert_eq!(app.import_state.error.as_deref(), Some("previous error"));
+        app.handle_import_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert!(app.import_state.error.is_none());
+    }
+
+    #[test]
+    fn import_local_fields_support_name_editing_and_directory_selection() {
+        let dir = TestDir::new("import-local-fields");
+        std::fs::create_dir(dir.path.join("child")).unwrap();
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.state = AppState::ImportAgentDialog;
+        app.import_state.stage = ImportStage::Directory;
+        app.import_state.local_name.value = "worker".into();
+        app.import_state.local_name.cursor = 6;
+        app.import_state.directory = dir.path.to_string_lossy().into_owned();
+        app.import_state.refresh_dir_matches();
+
+        app.handle_import_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        app.handle_import_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(app.import_state.local_name.value, "xworker");
+        app.handle_import_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.import_state.focus, ImportField::Directory);
+        assert!(app.import_state.dir_matches.contains(&"child".to_string()));
+        app.handle_import_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            app.import_state.directory,
+            dir.path.join("child").to_string_lossy()
+        );
+        app.handle_import_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(app.import_state.directory, dir.path.to_string_lossy());
+    }
+
+    #[tokio::test]
+    async fn late_refresh_cannot_discard_an_in_progress_copy() {
+        let mut app = test_app_with_global_config(GlobalConfig::default());
+        app.state = AppState::ImportAgentDialog;
+        app.import_state.host.value = "laptop".into();
+        app.import_state.stage = ImportStage::Copying;
+        app.handle_event(Event::ImportListing {
+            host: "laptop".into(),
+            result: Err("SSH disconnected".into()),
+        })
+        .await;
+        assert_eq!(app.import_state.stage, ImportStage::Copying);
+        assert!(app.import_state.error.is_none());
+    }
     use crate::models::ContextInfo;
     use async_trait::async_trait;
     use std::collections::BTreeMap;
@@ -5797,6 +6521,7 @@ mod tests {
                 git_repo_root: None,
                 git_worktree_branch: None,
                 git_worktree_base_ref: None,
+                git_worktree_external: false,
             },
             meta: AgentMeta {
                 status,
@@ -5994,6 +6719,7 @@ mod tests {
                     git_repo_root: None,
                     git_worktree_branch: None,
                     git_worktree_base_ref: None,
+                    git_worktree_external: false,
                 },
                 meta: AgentMeta::default(),
             },
@@ -6010,6 +6736,7 @@ mod tests {
                     git_repo_root: None,
                     git_worktree_branch: None,
                     git_worktree_base_ref: None,
+                    git_worktree_external: false,
                 },
                 meta: AgentMeta::default(),
             },
@@ -6027,6 +6754,7 @@ mod tests {
                     git_repo_root: None,
                     git_worktree_branch: None,
                     git_worktree_base_ref: None,
+                    git_worktree_external: false,
                 },
                 meta: AgentMeta::default(),
             },

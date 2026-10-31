@@ -51,21 +51,32 @@ pub struct AgentConfig {
     #[serde(flatten)]
     pub kind: AgentKind,
     /// Absolute path to the git repository root the worktree belongs to.
-    /// `Some(_)` iff this agent was launched with a git worktree; the agent's
-    /// `directory` field already points to the worktree path itself.
-    /// Required for `git worktree remove` and branch deletion on agent removal.
+    /// `Some(_)` when this agent uses a Git worktree; the agent's `directory`
+    /// field already points to the worktree path itself. For imported agents,
+    /// this is resolved on the local machine, never copied from the source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_repo_root: Option<String>,
-    /// Local branch checked out in the worktree, when Flowmux created one.
+    /// Local branch checked out in the worktree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_worktree_branch: Option<String>,
-    /// Base ref used to create the local worktree branch, if it did not come
-    /// from the repository's current HEAD.
+    /// Base ref used to create the branch, if known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_worktree_base_ref: Option<String>,
+    /// Imported worktrees already exist locally and are never removed by
+    /// Flowmux when the agent card is deleted.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub git_worktree_external: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 impl AgentConfig {
+    pub fn can_remove_worktree(&self) -> bool {
+        self.git_repo_root.is_some() && !self.git_worktree_external
+    }
+
     /// Return a display string for the agent type (e.g. "opencode", "claude", "codex").
     pub fn agent_type_str(&self) -> &'static str {
         match &self.kind {
@@ -260,6 +271,7 @@ mod tests {
                 git_repo_root: None,
                 git_worktree_branch: None,
                 git_worktree_base_ref: None,
+                git_worktree_external: false,
             },
             AgentConfig {
                 name: "cl".into(),
@@ -274,6 +286,7 @@ mod tests {
                 git_repo_root: Some("/tmp/repo".into()),
                 git_worktree_branch: Some("cl-help".into()),
                 git_worktree_base_ref: Some("origin/feature".into()),
+                git_worktree_external: true,
             },
             AgentConfig {
                 name: "cx".into(),
@@ -287,6 +300,7 @@ mod tests {
                 git_repo_root: None,
                 git_worktree_branch: None,
                 git_worktree_base_ref: None,
+                git_worktree_external: false,
             },
             AgentConfig {
                 name: "pi".into(),
@@ -300,6 +314,7 @@ mod tests {
                 git_repo_root: None,
                 git_worktree_branch: None,
                 git_worktree_base_ref: None,
+                git_worktree_external: false,
             },
         ];
 
@@ -335,6 +350,8 @@ mod tests {
             back.agents[1].git_worktree_base_ref.as_deref(),
             Some("origin/feature")
         );
+        assert!(back.agents[1].git_worktree_external);
+        assert!(!back.agents[1].can_remove_worktree());
 
         assert!(matches!(
             back.agents[2].kind,
@@ -363,6 +380,7 @@ mod tests {
                     git_repo_root: None,
                     git_worktree_branch: None,
                     git_worktree_base_ref: None,
+                    git_worktree_external: false,
                 },
                 AgentConfig {
                     name: "cl".into(),
@@ -377,6 +395,7 @@ mod tests {
                     git_repo_root: None,
                     git_worktree_branch: None,
                     git_worktree_base_ref: None,
+                    git_worktree_external: false,
                 },
             ],
             session_name: "flowmux".into(),
@@ -410,5 +429,7 @@ git_repo_root = "/tmp/repo"
         assert_eq!(config.git_repo_root.as_deref(), Some("/tmp/repo"));
         assert_eq!(config.git_worktree_branch, None);
         assert_eq!(config.git_worktree_base_ref, None);
+        assert!(!config.git_worktree_external);
+        assert!(config.can_remove_worktree());
     }
 }

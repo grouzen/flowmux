@@ -363,6 +363,18 @@ fn infer_transcript_path(session_id: &str, directory: Option<&str>) -> Option<St
     None
 }
 
+pub(crate) fn session_exists_for_directory(session_id: &str, directory: &str) -> bool {
+    let Some(home) = std::env::var_os("HOME") else {
+        return false;
+    };
+    std::path::Path::new(&home)
+        .join(".claude")
+        .join("projects")
+        .join(directory.replace('/', "-"))
+        .join(format!("{session_id}.jsonl"))
+        .is_file()
+}
+
 // ---------------------------------------------------------------------------
 // Hook installation
 // ---------------------------------------------------------------------------
