@@ -6,6 +6,7 @@ mod ghostty;
 mod git;
 mod global_config;
 mod host_terminal;
+mod import_picker;
 mod launch;
 mod logging;
 mod model_registry;
@@ -13,6 +14,7 @@ mod models;
 mod platform;
 mod runner;
 mod tmux;
+mod transfer;
 mod tui;
 mod ui;
 
@@ -55,6 +57,22 @@ enum Commands {
     Launch {
         #[command(subcommand)]
         command: launch::LaunchCommand,
+    },
+    /// Read-only agent transfer protocol commands.
+    Transfer {
+        #[command(subcommand)]
+        command: TransferCommand,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum TransferCommand {
+    /// Print versioned JSON listing saved sessions and their live status.
+    List,
+    /// Fetch a remote machine's listing over SSH and save its host on success.
+    RemoteList {
+        #[arg(long)]
+        host: String,
     },
 }
 
@@ -99,10 +117,34 @@ fn acquire_session_lock(session: &str) -> Result<std::fs::File> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if std::env::args_os()
+        .next()
+        .as_ref()
+        .and_then(|path| std::path::Path::new(path).file_name())
+        .is_some_and(|name| name == "flowmux-askpass")
+    {
+        return transfer::answer_ssh_prompt();
+    }
     let cli = Cli::parse();
 
     if let Some(Commands::Launch { command }) = cli.command.clone() {
         return launch::run(command).await;
+    }
+    if let Some(Commands::Transfer { command }) = cli.command.clone() {
+        match command {
+            TransferCommand::List => {
+                println!("{}", serde_json::to_string(&transfer::list()?)?);
+            }
+            TransferCommand::RemoteList { host } => {
+                let listing = transfer::fetch_remote_listing(&host, None).await?;
+                let mut config = GlobalConfig::load()?;
+                if config.add_transfer_host(&host) {
+                    config.save()?;
+                }
+                println!("{}", serde_json::to_string(&listing)?);
+            }
+        }
+        return Ok(());
     }
 
     let log_path = logging::init(&cli.tmux_session)?;
@@ -112,6 +154,7 @@ async fn main() -> Result<()> {
 
     // Ensure only one instance runs per tmux session.
     let _session_lock = acquire_session_lock(&cli.tmux_session)?;
+    let _status_snapshot = transfer::StatusSnapshotGuard::new(&cli.tmux_session)?;
 
     // Probe $PATH for agent binaries
     let discovered = DiscoveredAgents::probe();
@@ -315,6 +358,31 @@ async fn main() -> Result<()> {
                                 &app.create_state,
                             );
                         }
+                        app::AppState::ImportAgentDialog => {
+                            let visible_indices = app.visible_agent_indices();
+                            ui::dashboard::render_dashboard(
+                                f,
+                                area,
+                                theme,
+                                &app.agents,
+                                &visible_indices,
+                                Some(app.selected),
+                                &app.config.projects,
+                                app.active_project_idx,
+                                &app.card_scroll,
+                                &app.card_horizontal_scroll,
+                                &mut app.card_response_heights,
+                                &mut app.card_response_widths,
+                                &mut app.card_response_content_heights,
+                                &mut app.card_response_content_widths,
+                                true,
+                                status_counts,
+                                blink_running,
+                                blink_waiting,
+                                app.startup_progress.as_ref(),
+                            );
+                            import_picker::render(f, area, theme, &app.import_state);
+                        }
                         app::AppState::CreateProjectDialog => {
                             let visible_indices = app.visible_agent_indices();
                             ui::dashboard::render_dashboard(
@@ -465,7 +533,12 @@ async fn main() -> Result<()> {
 
             // Wait for next event and dispatch
             let should_continue = if let Some(event) = app.rx.recv().await {
-                app.handle_event(event).await
+                let publish = matches!(event, app::Event::DashboardTick);
+                let keep_running = app.handle_event(event).await;
+                if publish && let Err(error) = transfer::publish_status(&app.config, &app.agents) {
+                    log::warn!("failed to publish transfer status: {error:#}");
+                }
+                keep_running
             } else {
                 false
             };
